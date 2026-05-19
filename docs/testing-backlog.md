@@ -24,6 +24,7 @@ Captured 2026-05-19. Rust-side unit + integration tests are in good shape (26 pa
 - [ ] `cargo bench` encoder benchmark via `criterion`. Each available backend × resolutions {240p, 480p, 720p, 1080p}. Output a CSV; commit a baseline; CI alerts on > 20% regression.
 - [ ] PerfBudget equivalent of gonogo's `PerfBudget` for the sidecar — declarative budgets that fail tests when exceeded. Important for catching encoder regressions before they hit users.
 - [ ] WebRTC peer integration test (no real browser): spawn the sidecar binary, drive it via a Rust-side WebRTC peer (also `webrtc-rs`), assert frames flow.
+- [ ] **Cross-language `MmapFrameRing` roundtrip.** Small C# fixture tool that writes a known frame (specific dimensions, specific RGBA pattern, specific timestamp) into a ring file; Rust test opens that file and asserts the exact bytes round-trip. Locks the cross-process binary layout contract — without this we're trusting that the field offsets in C#'s `MmapFrameRing.cs` match Rust's `mmap.rs` purely by inspection.
 
 ### Bigger
 

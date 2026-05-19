@@ -1,0 +1,66 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Kerbcam KSP plugin. Builds the Kerbcam.dll that drops into
+    `GameData/Kerbcam/Plugins/`. Mirrors the pattern from the OCISLY
+    fork's Mac.csproj: SDK-style, net48, references KSP's Unity
+    assemblies via a `$KspManaged` directory the developer passes in.
+
+    Build:
+      dotnet build Plugin/Kerbcam.csproj -c Release \
+        /p:KspManaged=/path/to/KSP_Data/Managed \
+        /p:KspGameData=/path/to/GameData
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework>
+    <RootNamespace>Kerbcam</RootNamespace>
+    <AssemblyName>Kerbcam</AssemblyName>
+    <OutputType>Library</OutputType>
+    <Configuration Condition=" '$(Configuration)' == '' ">Release</Configuration>
+    <Optimize>true</Optimize>
+    <DebugType>portable</DebugType>
+    <DebugSymbols>true</DebugSymbols>
+    <Deterministic>true</Deterministic>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
+    <ProduceReferenceAssembly>false</ProduceReferenceAssembly>
+    <!-- MmapFrameRing.cs uses unsafe pointer arithmetic over the mmap'd
+         region for atomic Interlocked operations at known offsets. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <!-- net48 reference assemblies (works without a Mono / Windows SDK
+       install). Same approach as the OCISLY fork. -->
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+  </ItemGroup>
+
+  <PropertyGroup>
+    <!-- Default to a non-existent path; user passes the real one. -->
+    <KspManaged Condition=" '$(KspManaged)' == '' ">__pass_KspManaged__</KspManaged>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="UnityEngine">
+      <HintPath>$(KspManaged)/UnityEngine.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="UnityEngine.CoreModule">
+      <HintPath>$(KspManaged)/UnityEngine.CoreModule.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="Assembly-CSharp">
+      <HintPath>$(KspManaged)/Assembly-CSharp.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+  </ItemGroup>
+
+  <!-- SDK-style csproj auto-includes all .cs files under the project
+       directory — no explicit <Compile Include> needed. -->
+
+</Project>
