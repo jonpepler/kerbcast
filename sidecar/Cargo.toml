@@ -45,13 +45,18 @@ memmap2 = "0.9"
 # OCISLY's JPEG-over-gRPC architecture which is what we're trying to escape.
 webrtc = "0.13"
 
+# HTTP signalling endpoint — POST /offer accepts the browser's SDP, returns
+# the sidecar's answer. axum is the lightest tokio-native option that
+# handles JSON bodies + static-file serving (for the bundled test page)
+# without ceremony. Tower stack is needed for tower-http's ServeDir/cors.
+axum = "0.8"
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "fs", "trace"] }
+base64 = "0.22"
+
 # Transport deps still deferred:
 #   ffmpeg-next            — for the tier-1 libva hardware encode backend on
 #                            Steam Deck (currently a stub)
 
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util"] }
-# Used by examples/webrtc_peer.rs for the manual stdin/stdout SDP exchange —
-# pasting raw multi-line SDP through a terminal is fragile, base64 is one
-# line and round-trips cleanly through whatever clipboard.
-base64 = "0.22"

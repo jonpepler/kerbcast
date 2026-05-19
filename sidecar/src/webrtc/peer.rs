@@ -3,6 +3,7 @@
 //! actual transport — stdin/stdout for the dev spike, HTTP signalling
 //! later). webrtc-rs handles ICE/DTLS/SRTP/RTP packetisation internally.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -28,6 +29,10 @@ pub struct KerbcamPeer {
     pc: Arc<RTCPeerConnection>,
     video_track: Arc<TrackLocalStaticSample>,
     connected: Arc<Notify>,
+    /// Flipped to `false` when the underlying RTCPeerConnection reaches a
+    /// terminal state (Disconnected, Failed, or Closed). The daemon polls
+    /// `is_alive()` on each consume-loop tick and prunes dead peers.
+    alive: Arc<AtomicBool>,
 }
 
 impl KerbcamPeer {
@@ -75,11 +80,21 @@ impl KerbcamPeer {
         });
 
         let connected = Arc::new(Notify::new());
+        let alive = Arc::new(AtomicBool::new(true));
         let connected_for_handler = connected.clone();
+        let alive_for_handler = alive.clone();
         pc.on_peer_connection_state_change(Box::new(move |state: RTCPeerConnectionState| {
             info!(?state, "peer connection state");
             if state == RTCPeerConnectionState::Connected {
                 connected_for_handler.notify_waiters();
+            }
+            if matches!(
+                state,
+                RTCPeerConnectionState::Disconnected
+                    | RTCPeerConnectionState::Failed
+                    | RTCPeerConnectionState::Closed
+            ) {
+                alive_for_handler.store(false, Ordering::Release);
             }
             Box::pin(async {})
         }));
@@ -88,7 +103,36 @@ impl KerbcamPeer {
             pc,
             video_track,
             connected,
+            alive,
         })
+    }
+
+    /// Browser-initiated SDP flow used by the HTTP signalling endpoint.
+    /// Browser POSTs its offer, we set it as the remote description, then
+    /// create + return our answer.
+    pub async fn answer_to_offer(&self, offer_sdp: String) -> Result<String> {
+        let offer = RTCSessionDescription::offer(offer_sdp)?;
+        self.pc.set_remote_description(offer).await?;
+
+        let answer = self.pc.create_answer(None).await?;
+        self.pc.set_local_description(answer).await?;
+
+        let mut gather_complete = self.pc.gathering_complete_promise().await;
+        let _ = gather_complete.recv().await;
+
+        let local = self
+            .pc
+            .local_description()
+            .await
+            .ok_or_else(|| anyhow!("local description missing after set_local_description"))?;
+        Ok(local.sdp)
+    }
+
+    /// True until the underlying peer connection hits a terminal state.
+    /// Daemon prunes dead peers from its subscriber set when this returns
+    /// `false`.
+    pub fn is_alive(&self) -> bool {
+        self.alive.load(Ordering::Acquire)
     }
 
     /// Create an SDP offer for this peer, set it as the local description,

@@ -9,6 +9,7 @@
 pub mod encoder;
 pub mod protocol;
 pub mod shared_mem;
+pub mod signalling;
 pub mod webrtc;
 
 /// Crate version exposed for `--version` and the `/health` reporting endpoint.

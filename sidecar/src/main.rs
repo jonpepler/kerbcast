@@ -1,21 +1,29 @@
-//! kerbcam sidecar binary entry. Parses CLI args, initialises logging, opens
-//! the shared-memory ring written by the KSP plugin, encodes each frame
-//! through the selected EncoderBackend, and logs throughput stats.
+//! kerbcam sidecar binary. Reads RGBA frames from the KSP plugin's
+//! shared-memory ring, encodes them via the selected EncoderBackend,
+//! fans the resulting NAL units out to every connected WebRTC peer.
+//! Browsers connect via the HTTP signalling endpoint at `--http-bind`.
 //!
-//! v0.1 scaffold: encoding terminates at logging the NAL byte rate. WebRTC
-//! transport + control-channel handling come online in subsequent spikes.
+//! Subscription-driven: when no peer is connected, the encoder idles and
+//! we don't poll the ring beyond the heartbeat interval. The plugin keeps
+//! writing frames into the ring; the sidecar just doesn't consume them.
 
+use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use clap::{Parser, ValueEnum};
+use tokio::net::TcpListener;
 use tokio::signal;
+use tokio::sync::RwLock;
 use tokio::time::sleep;
 use tracing::{info, warn};
 
 use kerbcam_sidecar::encoder::{self, EncodeConfig, EncoderBackend, RawFrame};
 use kerbcam_sidecar::shared_mem::{MmapFrameRing, MmapRingConfig};
+use kerbcam_sidecar::signalling::{router, AppState};
+use kerbcam_sidecar::webrtc::KerbcamPeer;
 use kerbcam_sidecar::VERSION;
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
@@ -30,42 +38,44 @@ enum EncoderChoice {
 #[derive(Parser, Debug)]
 #[command(name = "kerbcam-sidecar", version = VERSION, about)]
 struct Cli {
-    /// Encoder backend to use. `auto` enumerates capabilities at startup.
     #[arg(long, value_enum, default_value_t = EncoderChoice::Auto)]
     encoder: EncoderChoice,
 
     /// Path to the shared-memory ring file the KSP plugin writes to.
-    /// Plugin and sidecar must agree on this path.
     #[arg(long, default_value = "/tmp/kerbcam-frames")]
     shm_path: PathBuf,
 
-    /// Max width per slot in the ring. Must match what the plugin writes.
     #[arg(long, default_value_t = 1280)]
     max_width: u32,
 
-    /// Max height per slot in the ring.
     #[arg(long, default_value_t = 720)]
     max_height: u32,
 
-    /// Number of frame slots in the ring.
     #[arg(long, default_value_t = 4)]
     slot_count: u32,
 
-    /// Target framerate the encoder is configured for. Used for bitrate
-    /// budgeting; the actual rate is determined by how fast the plugin
-    /// produces frames.
     #[arg(long, default_value_t = 30)]
     fps: u32,
 
-    /// Target encoder bitrate, bits per second.
     #[arg(long, default_value_t = 1_500_000)]
     bitrate_bps: u32,
 
-    /// Polling interval (ms) for the consumer loop. The ring is read at
-    /// most this often; if frames arrive faster they're dropped on the
-    /// reader side (we always read .latest, not a queue).
+    /// Polling interval (ms) for the consumer loop while at least one
+    /// peer is subscribed. When no peer is subscribed the loop sleeps for
+    /// `idle_interval_ms` instead.
     #[arg(long, default_value_t = 16)]
     poll_interval_ms: u64,
+
+    /// Sleep interval (ms) when no peer is subscribed. Keeps CPU near
+    /// zero while still checking the subscriber set often enough to wake
+    /// up promptly when a browser connects.
+    #[arg(long, default_value_t = 250)]
+    idle_interval_ms: u64,
+
+    /// HTTP bind address for the signalling endpoint. The bundled browser
+    /// test page is served at `GET /`; POST `/offer` accepts SDP.
+    #[arg(long, default_value = "127.0.0.1:8088")]
+    http_bind: SocketAddr,
 }
 
 #[tokio::main(flavor = "multi_thread")]
@@ -83,16 +93,13 @@ async fn main() -> Result<()> {
         version = VERSION,
         shm_path = %cli.shm_path.display(),
         encoder = ?cli.encoder,
+        http_bind = %cli.http_bind,
         "kerbcam sidecar starting",
     );
 
     let backend = select_backend(cli.encoder);
     info!(backend = backend.name(), "encoder backend selected");
 
-    // Wait for the plugin to create the ring file before we open it. The
-    // plugin runs as part of KSP, which may take longer to start than the
-    // sidecar. Don't fail outright — the user-facing experience is "kerbcam
-    // is patient and connects when KSP is ready".
     let ring_cfg = MmapRingConfig {
         slot_count: cli.slot_count,
         max_width: cli.max_width,
@@ -106,10 +113,29 @@ async fn main() -> Result<()> {
         "ring attached",
     );
 
+    let state = AppState {
+        peers: Arc::new(RwLock::new(Vec::new())),
+    };
+    let peers = state.peers.clone();
+
+    let http_listener = TcpListener::bind(cli.http_bind)
+        .await
+        .with_context(|| format!("binding HTTP signalling endpoint at {}", cli.http_bind))?;
+    let http_addr = http_listener.local_addr().unwrap_or(cli.http_bind);
+    info!(addr = %http_addr, "HTTP signalling endpoint listening");
+    let http_app = router(state);
+    let http_server = tokio::spawn(async move {
+        if let Err(e) = axum::serve(http_listener, http_app).await {
+            warn!(error = %e, "HTTP server exited with error");
+        }
+    });
+
     let consume = consume_loop(
         ring,
         backend,
+        peers,
         Duration::from_millis(cli.poll_interval_ms),
+        Duration::from_millis(cli.idle_interval_ms),
         cli.fps,
         cli.bitrate_bps,
     );
@@ -118,6 +144,7 @@ async fn main() -> Result<()> {
         result = consume => result,
         _ = signal::ctrl_c() => {
             info!("ctrl-c received, shutting down");
+            http_server.abort();
             Ok(())
         }
     }
@@ -155,7 +182,9 @@ async fn wait_for_ring(path: &std::path::Path, cfg: MmapRingConfig) -> Result<Mm
 async fn consume_loop(
     ring: MmapFrameRing,
     mut backend: Box<dyn EncoderBackend>,
+    peers: Arc<RwLock<Vec<Arc<KerbcamPeer>>>>,
     poll_interval: Duration,
+    idle_interval: Duration,
     fps: u32,
     bitrate_bps: u32,
 ) -> Result<()> {
@@ -167,8 +196,20 @@ async fn consume_loop(
     let mut nal_bytes: u64 = 0;
     let mut last_stats_at = Instant::now();
     let stats_interval = Duration::from_secs(5);
+    let frame_duration = Duration::from_secs(1) / fps;
 
     loop {
+        // Subscription-driven: prune dead peers, idle if nobody's watching.
+        let active_peers = {
+            let mut guard = peers.write().await;
+            guard.retain(|p| p.is_alive());
+            guard.clone()
+        };
+        if active_peers.is_empty() {
+            sleep(idle_interval).await;
+            continue;
+        }
+
         let frame = match ring.latest() {
             Ok(Some(frame)) => frame,
             Ok(None) => {
@@ -183,14 +224,10 @@ async fn consume_loop(
         };
 
         if frame.sequence == last_sequence {
-            // Same frame we already encoded — wait for a new one.
             sleep(poll_interval).await;
             continue;
         }
 
-        // Detect dropped frames so we report them in stats. With a 4-slot
-        // ring and a slow consumer we can lap easily; the operator should
-        // see this surfaced.
         if last_sequence > 0 {
             let expected = last_sequence + 1;
             if frame.sequence > expected {
@@ -199,8 +236,6 @@ async fn consume_loop(
         }
         last_sequence = frame.sequence;
 
-        // Lazy init the encoder on first frame so it sees real dimensions.
-        // The CLI doesn't get them up front — the plugin's RT shape decides.
         if !encoder_initialised {
             backend
                 .init(EncodeConfig {
@@ -220,21 +255,34 @@ async fn consume_loop(
             encoder_initialised = true;
         }
 
-        match backend.encode(&RawFrame {
+        let nals = match backend.encode(&RawFrame {
             width: frame.width,
             height: frame.height,
             data: &frame.pixels,
             capture_ts_ms: frame.capture_ts_ms,
         }) {
-            Ok(nals) => {
-                frames_seen += 1;
-                nals_emitted += nals.len() as u64;
-                for nal in &nals {
-                    nal_bytes += nal.0.len() as u64;
-                }
-            }
+            Ok(n) => n,
             Err(e) => {
                 warn!(error = %e, "encode failed on frame {}", frame.sequence);
+                continue;
+            }
+        };
+
+        frames_seen += 1;
+        nals_emitted += nals.len() as u64;
+        for nal in &nals {
+            nal_bytes += nal.0.len() as u64;
+        }
+
+        // Fan-out: every alive peer gets the same NAL set. write_sample is
+        // backpressure-aware inside webrtc-rs (it'll skip if the SCTP buffer
+        // is wedged), so we don't need to worry about a slow consumer
+        // blocking the encoder loop.
+        if !nals.is_empty() {
+            for peer in &active_peers {
+                if let Err(e) = peer.send_h264_nals(&nals, frame_duration).await {
+                    warn!(error = %e, "send_h264_nals failed; peer will be pruned next tick");
+                }
             }
         }
 
@@ -243,6 +291,7 @@ async fn consume_loop(
             let fps_in = frames_seen as f64 / secs;
             let bps_out = (nal_bytes as f64 * 8.0) / secs;
             info!(
+                peer_count = active_peers.len(),
                 frames_seen,
                 fps_in = format!("{fps_in:.1}"),
                 frames_dropped,

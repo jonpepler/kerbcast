@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>kerbcam</title>
+<style>
+  body { font-family: -apple-system, system-ui, sans-serif; max-width: 760px; margin: 2rem auto; padding: 0 1rem; }
+  button { padding: 0.5rem 1rem; }
+  video { width: 100%; max-width: 640px; background: #111; margin-top: 0.5rem; }
+  pre { background: #f4f4f4; padding: 0.5rem; overflow-x: auto; font-size: 12px; }
+  .row { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
+</style>
+</head>
+<body>
+<h1>kerbcam</h1>
+<p>Connects to the sidecar's <code>/offer</code> endpoint and shows the active camera stream.</p>
+
+<div class="row">
+  <button id="connectBtn">Connect</button>
+  <span id="status" style="color:#666">idle</span>
+</div>
+
+<video id="video" autoplay playsinline controls></video>
+
+<h3>Stats</h3>
+<pre id="stats">no stats yet</pre>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const setStatus = (text, color = "#666") => { $("status").textContent = text; $("status").style.color = color; };
+
+let pc = null;
+let statsTimer = null;
+
+$("connectBtn").addEventListener("click", async () => {
+  setStatus("creating peer connection");
+  pc = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] });
+
+  pc.addTransceiver("video", { direction: "recvonly" });
+
+  pc.ontrack = (ev) => {
+    setStatus("track received");
+    if (ev.streams && ev.streams[0]) {
+      $("video").srcObject = ev.streams[0];
+    } else {
+      const ms = new MediaStream();
+      ms.addTrack(ev.track);
+      $("video").srcObject = ms;
+    }
+  };
+
+  pc.oniceconnectionstatechange = () => setStatus(`ICE: ${pc.iceConnectionState}`);
+  pc.onconnectionstatechange = () => setStatus(`PC: ${pc.connectionState}`,
+    pc.connectionState === "connected" ? "green" :
+    pc.connectionState === "failed" ? "red" : "#666");
+
+  const offer = await pc.createOffer();
+  await pc.setLocalDescription(offer);
+
+  // Wait for ICE gathering complete so the offer carries candidates
+  await new Promise((resolve) => {
+    if (pc.iceGatheringState === "complete") return resolve();
+    const check = () => { if (pc.iceGatheringState === "complete") { pc.removeEventListener("icegatheringstatechange", check); resolve(); } };
+    pc.addEventListener("icegatheringstatechange", check);
+  });
+
+  setStatus("posting offer to sidecar");
+  const res = await fetch("/offer", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sdp: pc.localDescription.sdp }),
+  });
+  if (!res.ok) {
+    setStatus(`offer failed: ${res.status}`, "red");
+    return;
+  }
+  const { sdp: answerSdp } = await res.json();
+  await pc.setRemoteDescription({ type: "answer", sdp: answerSdp });
+  setStatus("answer applied, waiting for media", "green");
+
+  if (statsTimer) clearInterval(statsTimer);
+  statsTimer = setInterval(async () => {
+    if (!pc) return;
+    const stats = await pc.getStats(null);
+    const lines = [];
+    stats.forEach((report) => {
+      if (report.type === "inbound-rtp" && report.kind === "video") {
+        lines.push(`inbound-rtp video: packets=${report.packetsReceived} bytes=${report.bytesReceived} framesReceived=${report.framesReceived ?? "?"} framesDecoded=${report.framesDecoded ?? "?"} jitter=${report.jitter?.toFixed(4) ?? "?"}`);
+      }
+    });
+    $("stats").textContent = lines.length ? lines.join("\n") : "waiting for inbound video stats";
+  }, 1000);
+});
+</script>
+</body>
+</html>
