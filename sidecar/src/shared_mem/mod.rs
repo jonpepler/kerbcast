@@ -1,9 +1,19 @@
-//! Shared-memory ring buffer skeleton. The KSP plugin (C# writer) and the
-//! sidecar (Rust reader) agree on the layout via this module — the binary
-//! shape here is the cross-language contract. Real `mmap` plumbing is
-//! pending the §8 spike #2 work; for now we model the header + slot layout
-//! and expose a unit-testable in-process implementation that round-trips
-//! frames through a `Vec<u8>` backing store.
+//! Shared-memory ring buffer for the cross-process KSP plugin → sidecar
+//! frame handoff.
+//!
+//! Two implementations live here:
+//!
+//! - [`mmap::MmapFrameRing`] is the real one — file-backed mmap with a
+//!   seqlock-style sync protocol, designed to bridge to a C# Mono writer
+//!   using `System.IO.MemoryMappedFiles.MemoryMappedFile`. The binary
+//!   layout is the cross-language contract; see `mmap.rs` for the field
+//!   table.
+//! - [`FrameRing`] (below) is the in-process Mutex-backed model — useful
+//!   for unit tests of consumer code that doesn't need a real second
+//!   process, and as a comparison reference when debugging the mmap path.
+
+pub mod mmap;
+pub use mmap::{FrameView, MmapFrameRing, MmapRingConfig, MmapRingError};
 
 use std::sync::Mutex;
 

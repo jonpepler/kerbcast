@@ -31,10 +31,15 @@ clap = { version = "4", features = ["derive"] }
 # (precompiled binary) is a one-line change.
 openh264 = { version = "0.9", default-features = false, features = ["source"] }
 
-# Transport + shared-memory deps deferred to later spikes:
+# File-backed shared memory for the KSP-plugin <-> sidecar frame handoff.
+# Plain mmap of a regular file (NOT POSIX shm_open) so the C# side of the
+# bridge can use System.IO.MemoryMappedFiles.MemoryMappedFile.CreateFromFile
+# with the same path — Mono on Linux's MMF API uses regular files, not
+# /dev/shm/, so we have to meet it where it lives.
+memmap2 = "0.9"
+
+# Transport deps still deferred:
 #   webrtc-rs              — peer connection, media tracks, data channels
-#   shared_memory          — cross-platform shm ring buffer (replaces the
-#                            in-process Mutex-backed FrameRing skeleton)
 #   ffmpeg-next            — for the tier-1 libva hardware encode backend on
 #                            Steam Deck (currently a stub)
 
