@@ -1,0 +1,60 @@
+name: sidecar-ci
+
+# Sidecar-only CI for now. Plugin and integration-harness pipelines land in
+# separate workflow files when those targets come online.
+#
+# Validates: cargo fmt, cargo clippy, cargo test on every push to main and
+# every PR that touches sidecar/ or this workflow. Runs on ubuntu-latest
+# (tier-1 Linux) — macOS and Windows runners get added when their backends
+# are non-stubs and warrant the CI minutes.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'sidecar/**'
+      - '.github/workflows/sidecar-ci.yml'
+  pull_request:
+    paths:
+      - 'sidecar/**'
+      - '.github/workflows/sidecar-ci.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: fmt + clippy + test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sidecar
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install stable Rust + components
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo registry + target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            sidecar/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('sidecar/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: cargo fmt --check
+        run: cargo fmt --check
+
+      - name: cargo clippy
+        # -D warnings makes clippy advisories CI failures. Tighten or loosen
+        # by editing the explicit allow-list below as we hit real lints.
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: cargo test
+        run: cargo test --all-targets
