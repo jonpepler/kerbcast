@@ -8,27 +8,34 @@ kerbcam isn't ready for general consumption yet.
 
 - Linux / Steam Deck support is tier-1.
 - macOS and Windows are experimental tier-2 — code paths exist, polish does not.
-- Mod-platform listings (CKAN, SpaceDock, KSP Forums) are intentionally deferred until reliability is proven on the author's personal install for an extended period.
+- Mod-platform listings (CKAN, SpaceDock, KSP Forums) will come at 1.0.
 
-Stars and issues welcome. PRs that change architecture without prior discussion will be politely declined.
+Issues and PRs are welcome, particularly if you'd like to 'adopt' macOS or Windows support.
 
-## What it does (when it works)
+## What it does
 
-- Captures KSP Hullcam VDS camera feeds inside the game via `AsyncGPUReadback` — zero stall on the game's main thread.
-- Encodes them in hardware (libva on Linux / Steam Deck; VideoToolbox / NVENC on other tier-2 platforms) in an out-of-process sidecar.
-- Streams them out as WebRTC media tracks — adaptive bitrate, congestion control, packet loss recovery come along for the ride.
-- Honours each camera's `cameraMode` so B&W / CRT / night-vision variants look like they do in the in-game Hullcam GUI.
-- Renders cameras only when a peer is subscribed — no idle CPU work.
+- Captures KSP Hullcam VDS camera feeds inside the game via `AsyncGPUReadback` — zero stall on the game's main thread
+- Encodes them in hardware (libva on Linux / Steam Deck; VideoToolbox / NVENC on other tier-2 platforms) in an out-of-process 'sidecar'
+- Streams them out as WebRTC media tracks — adaptive bitrate, congestion control, packet loss recovery for free
+- Honours each camera's `cameraMode` so B&W / CRT / night-vision variants look like they do in the in-game Hullcam GUI
+- Renders cameras only when a peer is subscribed — no idle CPU work, no in-game UI required
 
-## Why not just use OCISLY
+## Differences to OCISLY
 
-OCISLY uses `ReadPixels` + `EncodeToJPG` on the game's main thread and ships JPEG over unary gRPC at 30 Hz. That works, but it costs the Steam Deck real frame budget and ignores the visual character that Hullcam VDS encodes per part. kerbcam fixes both. The full motivation, design, and trade-off analysis lives in the consumer project's [rebuild design doc](../gonogo/local_docs/ocisly_state_and_rebuild.md).
+OCISLY uses `ReadPixels` + `EncodeToJPG` on the game's main thread and ships JPEG over unary gRPC at 30 Hz. That works, but it costs real frame budget, particularly on lower powered devices, and doesn't support the visual character that Hullcam VDS encodes per part. Kerbcam aims to fix both while prioritising high performance through hardware encoding and modern Unity API use.
 
-## Topology this is built for
+### Example performance
 
-- KSP runs on a Steam Deck (AMD Van Gogh APU, VCN 2.0 hardware H.264).
-- A browser on a MacBook Pro M4 displays the feeds via WebRTC.
-- LAN by default; no public TURN required for the common case.
+Measured on a Steam Deck running KSP 1.12 with 5 hullcams streaming (OpenGL / Mesa 22.2):
+
+| Scenario                                        | In-game framerate (p50) |
+| ----------------------------------------------- | ----------------------- |
+| No camera mod                                   | 56 fps                  |
+| OCISLY                                          | 9 fps                   |
+| OCISLY + experimental `AsyncGPUReadback` patch  | 17 fps (+88%)           |
+| Target Kerbcam (_target only - not delivered!_) | ~55 fps                 |
+
+The patch row is a real measurement from an experimental branch on the OCISLY fork ([kerbcam-spike](https://github.com/jonpepler/OfCourseIStillLoveYou/tree/kerbcam-spike)). The full rebuild target is the no-camera-mod ceiling — once JPEG encode moves off the main thread into a hardware encoder, the per-frame cost is GPU-bound and the streaming workload stops competing with the simulation.
 
 ## Toolchain
 
@@ -38,19 +45,20 @@ OCISLY uses `ReadPixels` + `EncodeToJPG` on the game's main thread and ships JPE
 
 ## Companion project
 
-[gonogo](../gonogo) — the mission-control browser SPA that consumes kerbcam feeds. Not required to use kerbcam (any WebRTC-capable browser will do once the protocol is documented), but it's where the design context for this mod was hammered out.
+[gonogo](https://github.com/jonpepler/gonogo) - a mission-control browser SPA that consumes kerbcam feeds (and a few other things). Not required to use kerbcam (any WebRTC-capable browser will do).
 
-## TODO before public release
+## TODO
 
 - [ ] Codesign and notarise macOS sidecar binaries (Apple notarytool workflow)
 - [ ] Establish SmartScreen reputation for Windows binaries
 - [ ] Publish NetKAN metadata to CKAN's indexer
 - [ ] Create SpaceDock listing
-- [ ] KSP Forums announcement post
+- [ ] KSP Forums post
 - [ ] User-facing install and quickstart docs
 - [ ] Telemetry / error reporting opt-in
-- [ ] Author-personal-install ≥ 1 month soak with no reliability regressions
 
-## License
+## Future work
 
-TBD — likely MIT or Apache-2.0. Will be set before any public distribution.
+- [ ] Better tier-2 OS support
+- [ ] Support Hullcam VDS cameras that take zoom commands
+- [ ] Extend Hullcam with a pivotable camera
