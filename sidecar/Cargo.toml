@@ -25,13 +25,18 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 clap = { version = "4", features = ["derive"] }
 
-# Encoder + transport deps deferred to later spikes — adding them now would
-# pull a tree of heavy native libs we can't compile-test cleanly across the
-# author's macOS dev machine and the Steam Deck tier-1 target.
-# Planned later:
+# Software H.264 encoder (Cisco OpenH264). Bundled source — builds the C
+# library at compile time, no system libs required. The "source" feature is
+# the crate's default; we name it explicitly so a future swap to "libloading"
+# (precompiled binary) is a one-line change.
+openh264 = { version = "0.9", default-features = false, features = ["source"] }
+
+# Transport + shared-memory deps deferred to later spikes:
 #   webrtc-rs              — peer connection, media tracks, data channels
-#   ffmpeg-next / openh264 — hardware + software H.264 encoders
-#   shared_memory          — cross-platform shm ring buffer
+#   shared_memory          — cross-platform shm ring buffer (replaces the
+#                            in-process Mutex-backed FrameRing skeleton)
+#   ffmpeg-next            — for the tier-1 libva hardware encode backend on
+#                            Steam Deck (currently a stub)
 
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util"] }

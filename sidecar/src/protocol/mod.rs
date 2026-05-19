@@ -57,9 +57,13 @@ pub enum SidecarToClient {
         cameras: Vec<CameraMetadata>,
     },
     #[serde(rename_all = "camelCase")]
-    Subscribed { camera_id: String },
+    Subscribed {
+        camera_id: String,
+    },
     #[serde(rename_all = "camelCase")]
-    Unsubscribed { camera_id: String },
+    Unsubscribed {
+        camera_id: String,
+    },
     /// Frame-adjacent metadata. Emitted on every vessel change AND when
     /// configuration changes (FOV, quality cap, etc.) so the browser can
     /// keep its widget chrome in sync with the active stream.
@@ -114,7 +118,10 @@ mod tests {
         assert!(s.contains("\"cameraId\":\"cam-1\""));
         let back: ClientToSidecar = serde_json::from_str(&s).unwrap();
         match back {
-            ClientToSidecar::Subscribe { camera_id, max_width } => {
+            ClientToSidecar::Subscribe {
+                camera_id,
+                max_width,
+            } => {
                 assert_eq!(camera_id, "cam-1");
                 assert_eq!(max_width, 720);
             }

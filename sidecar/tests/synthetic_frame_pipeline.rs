@@ -55,10 +55,16 @@ fn end_to_end_synthetic_frames_through_ring_into_encoder() {
             })
             .expect("encode");
 
-        // Software encoder is stubbed — produces zero NALs. Real encoder
-        // will produce at least one IDR + N P-frames in a 10-frame batch.
-        // The test exists to lock the pipeline shape, not the contents.
-        assert!(nals.is_empty(), "stub returns no nals");
+        // First frame is the IDR (keyframe). OpenH264 emits SPS + PPS +
+        // IDR NALs on frame 0 — always >= 1 NAL. Subsequent P-frames may
+        // be empty if the bitrate controller decides to drop. We assert
+        // each call returns ok (no error), not a specific NAL count.
+        if n == 0 {
+            assert!(
+                !nals.is_empty(),
+                "first frame should be a keyframe with at least one NAL"
+            );
+        }
     }
 
     encoder.close();
