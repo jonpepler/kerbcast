@@ -1,0 +1,34 @@
+# Rust
+target/
+**/*.rs.bk
+# Cargo.lock IS committed — this crate ships as a binary (kerbcam-sidecar),
+# so reproducible builds win over the lib-crate convention of ignoring it.
+
+# .NET
+bin/
+obj/
+*.user
+*.suo
+.vs/
+
+# Build output
+/dist/
+/build/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude Code
+.claude/
+
+# Packaged binaries (built by CI, not committed)
+GameData/KerbCam/Sidecar/*/kerbcam-sidecar
+GameData/KerbCam/Sidecar/*/kerbcam-sidecar.exe
+GameData/KerbCam/Plugin/*.dll

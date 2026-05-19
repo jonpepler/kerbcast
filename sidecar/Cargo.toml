@@ -1,0 +1,37 @@
+[package]
+name = "kerbcam-sidecar"
+version = "0.1.0"
+edition = "2021"
+description = "kerbcam KSP camera-streaming sidecar (per-OS hardware encode + WebRTC)"
+license = "MIT OR Apache-2.0"
+publish = false
+default-run = "kerbcam-sidecar"
+
+[lib]
+name = "kerbcam_sidecar"
+path = "src/lib.rs"
+
+[[bin]]
+name = "kerbcam-sidecar"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
+anyhow = "1"
+thiserror = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+clap = { version = "4", features = ["derive"] }
+
+# Encoder + transport deps deferred to later spikes — adding them now would
+# pull a tree of heavy native libs we can't compile-test cleanly across the
+# author's macOS dev machine and the Steam Deck tier-1 target.
+# Planned later:
+#   webrtc-rs              — peer connection, media tracks, data channels
+#   ffmpeg-next / openh264 — hardware + software H.264 encoders
+#   shared_memory          — cross-platform shm ring buffer
+
+[dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }
