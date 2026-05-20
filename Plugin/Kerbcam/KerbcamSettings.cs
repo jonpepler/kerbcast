@@ -50,6 +50,10 @@ namespace Kerbcam
         // Cameras whose PartName isn't here default to CameraLayers.All.
         private readonly Dictionary<string, CameraLayers> _initialLayers =
             new Dictionary<string, CameraLayers>();
+        // Per-PartName render-size overrides. Each entry is (width, height);
+        // cameras without an override use the global Width × Height.
+        private readonly Dictionary<string, (int, int)> _renderSize =
+            new Dictionary<string, (int, int)>();
 
         /// <summary>
         /// Initial layer mask for a part. Falls back to All if no override
@@ -63,6 +67,19 @@ namespace Kerbcam
                 return layers;
             }
             return CameraLayers.All;
+        }
+
+        /// <summary>
+        /// Per-PartName render-size override, if any. Returns the global
+        /// Width × Height when no override is configured.
+        /// </summary>
+        public (int width, int height) GetRenderSize(string partName)
+        {
+            if (!string.IsNullOrEmpty(partName) && _renderSize.TryGetValue(partName, out var dims))
+            {
+                return dims;
+            }
+            return (Width, Height);
         }
 
         public static KerbcamSettings Load()
@@ -104,6 +121,26 @@ namespace Kerbcam
                 {
                     settings._initialLayers[partName] = ParseLayers(layersRaw);
                 }
+                // Per-camera Width/Height overrides must be even (H.264
+                // chroma sampling) and <= the global Width/Height (the
+                // ring's allocated capacity). Either field defaults to the
+                // global value if omitted.
+                int? w = TryParseIntField(camNode, "Width");
+                int? h = TryParseIntField(camNode, "Height");
+                if (w.HasValue || h.HasValue)
+                {
+                    int width = w ?? settings.Width;
+                    int height = h ?? settings.Height;
+                    if (width % 2 != 0) width = width - (width & 1);
+                    if (height % 2 != 0) height = height - (height & 1);
+                    if (width > settings.Width || height > settings.Height)
+                    {
+                        Debug.LogWarning($"[Kerbcam] settings.cfg: Camera '{partName}' size {width}x{height} exceeds global max {settings.Width}x{settings.Height}; capping");
+                        if (width > settings.Width) width = settings.Width;
+                        if (height > settings.Height) height = settings.Height;
+                    }
+                    settings._renderSize[partName] = (width, height);
+                }
             }
 
             var camCount = settings._initialLayers.Count;
@@ -130,6 +167,15 @@ namespace Kerbcam
             // and mean "render nothing for this camera" — almost certainly
             // not what the operator meant. Fall back to All.
             return mask == CameraLayers.None ? CameraLayers.All : mask;
+        }
+
+        private static int? TryParseIntField(ConfigNode node, string key)
+        {
+            var raw = node.GetValue(key);
+            if (string.IsNullOrEmpty(raw)) return null;
+            if (int.TryParse(raw.Trim(), out int v)) return v;
+            Debug.LogWarning($"[Kerbcam] settings.cfg: {key}='{raw}' is not an integer; ignoring");
+            return null;
         }
 
         private static void ApplyString(ConfigNode node, string key, System.Action<string> set)

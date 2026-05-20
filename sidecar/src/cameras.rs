@@ -14,7 +14,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::Instant;
 
@@ -69,8 +69,16 @@ pub struct CameraState {
     pub camera_name: String,
     pub vessel_name: String,
     /// Lazy: created on first encoded frame so the encoder sees the
-    /// actual frame dimensions, not the ring's max.
+    /// actual frame dimensions, not the ring's max. Closed + reinit if
+    /// the frame dimensions change (the plugin's adaptive downscale
+    /// path triggers this).
     pub encoder: Mutex<Option<Box<dyn EncoderBackend>>>,
+    /// Width/height the encoder is currently initialised for. The
+    /// consume loop compares these against the incoming frame's
+    /// dimensions to detect adaptive-downscale resolution changes.
+    /// Both 0 when no encoder is running.
+    pub encoder_width: AtomicU32,
+    pub encoder_height: AtomicU32,
     /// Last wall-clock instant we *encoded* (and emitted NALs to) a frame.
     /// The consume loop uses this to pace encodes against the configured
     /// `fps`, instead of running once per ring write at LateUpdate's
@@ -178,6 +186,8 @@ impl CameraRegistry {
                             camera_name: manifest.camera_name,
                             vessel_name: manifest.vessel_name,
                             encoder: Mutex::new(None),
+                            encoder_width: AtomicU32::new(0),
+                            encoder_height: AtomicU32::new(0),
                             last_encoded_at: Mutex::new(None),
                             last_sequence: AtomicU64::new(0),
                             subscribers: AtomicUsize::new(0),

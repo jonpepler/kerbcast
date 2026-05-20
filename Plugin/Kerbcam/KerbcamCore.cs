@@ -46,10 +46,15 @@ namespace Kerbcam
         private int _fpsCount; // up to FpsSamples; growing-average until full
         private float _fpsAvg;
         private int _shedLevel;
-        private const float ShedGalaxyBelowFps = 22f;
-        private const float RestoreGalaxyAboveFps = 27f;
-        private const float ShedScaledBelowFps = 12f;
-        private const float RestoreScaledAboveFps = 17f;
+        // Shed level transitions (5 fps hysteresis on each step). Order
+        // matches KerbcamCamera.ApplyAutoShed: resolution first, then
+        // galaxy layer, then scaled layer.
+        private const float HalveResolutionBelowFps = 25f;
+        private const float RestoreResolutionAboveFps = 30f;
+        private const float ShedGalaxyBelowFps = 18f;
+        private const float RestoreGalaxyAboveFps = 23f;
+        private const float ShedScaledBelowFps = 10f;
+        private const float RestoreScaledAboveFps = 15f;
 
         private static string ResolveRingDir()
         {
@@ -239,12 +244,15 @@ namespace Kerbcam
                 {
                     var partName = part.partInfo?.name ?? string.Empty;
                     var initialLayers = _settings.GetInitialLayers(partName);
+                    var (renderW, renderH) = _settings.GetRenderSize(partName);
                     _cameras.Add(new KerbcamCamera(
                         hullcam,
                         RingDir,
                         RingSlots,
                         _settings.Width,
                         _settings.Height,
+                        renderW,
+                        renderH,
                         initialLayers));
                 }
                 catch (Exception ex)
@@ -294,14 +302,18 @@ namespace Kerbcam
             switch (_shedLevel)
             {
                 case 0:
-                    if (_fpsAvg < ShedGalaxyBelowFps) desired = 1;
+                    if (_fpsAvg < HalveResolutionBelowFps) desired = 1;
                     break;
                 case 1:
-                    if (_fpsAvg < ShedScaledBelowFps) desired = 2;
-                    else if (_fpsAvg > RestoreGalaxyAboveFps) desired = 0;
+                    if (_fpsAvg < ShedGalaxyBelowFps) desired = 2;
+                    else if (_fpsAvg > RestoreResolutionAboveFps) desired = 0;
                     break;
                 case 2:
-                    if (_fpsAvg > RestoreScaledAboveFps) desired = 1;
+                    if (_fpsAvg < ShedScaledBelowFps) desired = 3;
+                    else if (_fpsAvg > RestoreGalaxyAboveFps) desired = 1;
+                    break;
+                case 3:
+                    if (_fpsAvg > RestoreScaledAboveFps) desired = 2;
                     break;
             }
 

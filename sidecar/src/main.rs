@@ -257,7 +257,25 @@ async fn encode_and_fan_out(
 
     // Lazy encoder init — first encoded frame per camera. Done under
     // the camera's encoder lock so concurrent ticks can't double-init.
+    // If the frame dimensions have changed since last encode (plugin's
+    // adaptive downscale path), close the existing encoder and reinit
+    // at the new size; the next encoded frame produces SPS/PPS at the
+    // new dims and the browser decoder picks them up automatically.
     let mut encoder_guard = cam.encoder.lock().await;
+    let cur_w = cam.encoder_width.load(Ordering::Acquire);
+    let cur_h = cam.encoder_height.load(Ordering::Acquire);
+    let dims_changed = encoder_guard.is_some() && (cur_w != frame.width || cur_h != frame.height);
+    if dims_changed {
+        if let Some(mut backend) = encoder_guard.take() {
+            backend.close();
+        }
+        info!(
+            flight_id = cam.flight_id,
+            from = format!("{cur_w}x{cur_h}"),
+            to = format!("{}x{}", frame.width, frame.height),
+            "resolution change, encoder reinit",
+        );
+    }
     if encoder_guard.is_none() {
         let mut backend = select_backend(encoder_choice);
         if let Err(e) = backend.init(EncodeConfig {
@@ -275,6 +293,8 @@ async fn encode_and_fan_out(
             height = frame.height,
             "per-camera encoder initialised",
         );
+        cam.encoder_width.store(frame.width, Ordering::Release);
+        cam.encoder_height.store(frame.height, Ordering::Release);
         *encoder_guard = Some(backend);
     }
     let encoder = encoder_guard.as_mut().unwrap();

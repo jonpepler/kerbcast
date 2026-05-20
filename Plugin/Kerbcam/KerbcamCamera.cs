@@ -34,15 +34,21 @@ namespace Kerbcam
     {
         public uint FlightId { get; }
         public MuMechModuleHullCamera Hullcam { get; }
-        public int Width { get; }
-        public int Height { get; }
+        public int MaxWidth { get; }
+        public int MaxHeight { get; }
+        public int RenderWidth { get; private set; }
+        public int RenderHeight { get; private set; }
+        /// <summary>Operator-requested render size — ceiling for adaptive
+        /// downscale (level 3 halves below this).</summary>
+        public int OperatorWidth { get; private set; }
+        public int OperatorHeight { get; private set; }
 
         private Camera _nearCam;
         private Camera _scaledCam;
         private Camera _galaxyCam;
-        private readonly RenderTexture _captureRt;
-        private readonly RenderTexture _readbackRt; // depth=0, GL_TEXTURE_2D-clean
-        private readonly Texture2D _scratchTex;
+        private RenderTexture _captureRt;
+        private RenderTexture _readbackRt; // depth=0, GL_TEXTURE_2D-clean
+        private Texture2D _scratchTex;
         private readonly MmapFrameRing _ring;
         private readonly string _ringPath;
         private readonly string _infoPath;
@@ -68,23 +74,40 @@ namespace Kerbcam
             MuMechModuleHullCamera hullcam,
             string ringDir,
             int slotCount,
-            int width,
-            int height,
+            int maxWidth,
+            int maxHeight,
+            int renderWidth,
+            int renderHeight,
             CameraLayers initialLayers)
         {
             Hullcam = hullcam;
             FlightId = hullcam.part.flightID;
-            Width = width;
-            Height = height;
+            MaxWidth = maxWidth;
+            MaxHeight = maxHeight;
+            OperatorWidth = renderWidth;
+            OperatorHeight = renderHeight;
+            RenderWidth = renderWidth;
+            RenderHeight = renderHeight;
             _operatorLayers = initialLayers;
             _layers = initialLayers;
 
             _ringPath = Path.Combine(ringDir, $"{FlightId}.ring");
             _infoPath = Path.Combine(ringDir, $"{FlightId}.info.json");
             _controlPath = Path.Combine(ringDir, $"{FlightId}.control.json");
-            _ring = MmapFrameRing.Create(_ringPath, slotCount, width, height);
+            // Ring is allocated at the global max — adaptive resolution
+            // shrinks the rendered frame but the ring's slot capacity
+            // stays the same. Each slot's header carries the actual
+            // content size so the sidecar encodes at the current dim.
+            _ring = MmapFrameRing.Create(_ringPath, slotCount, maxWidth, maxHeight);
             WriteInfoManifest();
 
+            BuildRenderTargets(renderWidth, renderHeight);
+            SetCameras();
+            ApplyLayers();
+        }
+
+        private void BuildRenderTargets(int width, int height)
+        {
             _captureRt = new RenderTexture(width, height, 24, RenderTextureFormat.ARGB32)
             {
                 antiAliasing = 1,
@@ -102,9 +125,50 @@ namespace Kerbcam
             // narrow set of GraphicsFormats as readback destinations; RGBA32
             // (R8G8B8A8_UNorm) is in the list, ARGB32 (B8G8R8A8_SRGB) isn't.
             _scratchTex = new Texture2D(width, height, TextureFormat.RGBA32, mipChain: false);
+        }
 
-            SetCameras();
-            ApplyLayers();
+        /// <summary>
+        /// Rebuild the RenderTexture chain at a new size and rebind every
+        /// Unity Camera to it. Caller is responsible for staying within
+        /// MaxWidth × MaxHeight (the ring slot capacity). Even dimensions
+        /// only — H.264 chroma sampling requires that.
+        /// </summary>
+        public void SetRenderSize(int width, int height)
+        {
+            if (width <= 0 || height <= 0) return;
+            if (width % 2 != 0 || height % 2 != 0) return;
+            if (width > MaxWidth || height > MaxHeight) return;
+            if (width == RenderWidth && height == RenderHeight) return;
+
+            // Drop any in-flight readback before destroying its source RT.
+            _readbackInFlight = false;
+
+            if (_captureRt != null) { _captureRt.Release(); UnityEngine.Object.Destroy(_captureRt); }
+            if (_readbackRt != null) { _readbackRt.Release(); UnityEngine.Object.Destroy(_readbackRt); }
+            if (_scratchTex != null) UnityEngine.Object.Destroy(_scratchTex);
+
+            BuildRenderTargets(width, height);
+            RenderWidth = width;
+            RenderHeight = height;
+
+            if (_nearCam != null) _nearCam.targetTexture = _captureRt;
+            if (_scaledCam != null) _scaledCam.targetTexture = _captureRt;
+            if (_galaxyCam != null) _galaxyCam.targetTexture = _captureRt;
+
+            Debug.Log($"[Kerbcam] cam={FlightId} render size → {width}×{height}");
+        }
+
+        /// <summary>
+        /// Update the operator-set ceiling for render size. Adaptive
+        /// downscale can render below this; never above. Currently only
+        /// settable at construction; runtime API for resolution is a
+        /// future addition.
+        /// </summary>
+        public void SetOperatorRenderSize(int width, int height)
+        {
+            OperatorWidth = width;
+            OperatorHeight = height;
+            SetRenderSize(width, height);
         }
 
         // Layered camera triple. Each layer copies the corresponding KSP
@@ -202,20 +266,42 @@ namespace Kerbcam
         }
 
         /// <summary>
-        /// Apply an adaptive-shed level driven by KSP framerate. Subtracts
-        /// (from cheapest first) layers from the operator-set ceiling.
-        /// Level 0 = no shed, 1 = drop galaxy, 2 = drop galaxy + scaled.
+        /// Apply an adaptive-shed level driven by KSP framerate. Order is
+        /// "smallest perceptual impact first":
+        ///   level 0: full
+        ///   level 1: halve render resolution (everything still visible,
+        ///            just blurrier — biggest single perf win)
+        ///   level 2: also drop the galaxy layer (skybox/stars gone)
+        ///   level 3: also drop the scaled layer (planet surface gone)
         /// Near is never auto-shed — it's the camera's reason to exist.
         /// </summary>
         public void ApplyAutoShed(int level)
         {
-            var target = _operatorLayers;
-            if (level >= 1) target &= ~CameraLayers.Galaxy;
-            if (level >= 2) target &= ~CameraLayers.Scaled;
-            if (_layers == target) return;
-            _layers = target;
-            ApplyLayers();
+            // Resolution first — halving renders 4× fewer pixels across
+            // every layer, so even dropping galaxy + scaled saves less.
+            int targetW = OperatorWidth;
+            int targetH = OperatorHeight;
+            if (level >= 1)
+            {
+                targetW = MakeEven(OperatorWidth / 2);
+                targetH = MakeEven(OperatorHeight / 2);
+            }
+            if (targetW != RenderWidth || targetH != RenderHeight)
+            {
+                SetRenderSize(targetW, targetH);
+            }
+
+            var targetLayers = _operatorLayers;
+            if (level >= 2) targetLayers &= ~CameraLayers.Galaxy;
+            if (level >= 3) targetLayers &= ~CameraLayers.Scaled;
+            if (_layers != targetLayers)
+            {
+                _layers = targetLayers;
+                ApplyLayers();
+            }
         }
+
+        private static int MakeEven(int v) => v - (v & 1);
 
         private void ApplyLayers()
         {
@@ -380,7 +466,7 @@ namespace Kerbcam
                 _scratchTex.Apply();
                 var rgba = _scratchTex.GetRawTextureData();
 
-                _ring.Produce(Width, Height, _pendingCaptureTsMs, rgba, 0, rgba.Length);
+                _ring.Produce(RenderWidth, RenderHeight, _pendingCaptureTsMs, rgba, 0, rgba.Length);
                 _consecutiveErrors = 0;
             }
             catch (Exception ex)
