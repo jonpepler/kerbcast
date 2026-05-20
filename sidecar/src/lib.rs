@@ -6,6 +6,7 @@
 //! `local_docs/ocisly_state_and_rebuild.md` §2.3 for the encoder-backend-
 //! trait design.
 
+pub mod cameras;
 pub mod encoder;
 pub mod protocol;
 pub mod shared_mem;

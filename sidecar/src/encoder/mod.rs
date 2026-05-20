@@ -5,6 +5,7 @@
 //! NVENC (Windows/NVIDIA). Software fallback (OpenH264 / x264) ships always
 //! to guarantee any host can encode at reduced quality.
 
+use clap::ValueEnum;
 use thiserror::Error;
 
 mod libva;
@@ -16,6 +17,30 @@ pub use libva::Libva;
 pub use nvenc::Nvenc;
 pub use software::Software;
 pub use videotoolbox::VideoToolbox;
+
+/// CLI/registry-friendly enum of backends. `Auto` picks the best
+/// available at construction time.
+#[derive(Copy, Clone, Debug, ValueEnum)]
+pub enum EncoderChoice {
+    Auto,
+    Libva,
+    Videotoolbox,
+    Nvenc,
+    Software,
+}
+
+/// Construct a fresh backend for an `EncoderChoice`. One call per
+/// per-camera encoder session — each camera gets its own backend
+/// instance with its own SPS/PPS + keyframe state.
+pub fn select_backend(choice: EncoderChoice) -> Box<dyn EncoderBackend> {
+    match choice {
+        EncoderChoice::Auto => auto_select(),
+        EncoderChoice::Libva => Box::new(Libva::new()),
+        EncoderChoice::Videotoolbox => Box::new(VideoToolbox::new()),
+        EncoderChoice::Nvenc => Box::new(Nvenc::new()),
+        EncoderChoice::Software => Box::new(Software::new()),
+    }
+}
 
 /// A single encoded NAL unit. The exact slicing is encoder-specific; consumers
 /// (the WebRTC packetiser) should treat each Nal as one bytestring to feed

@@ -1,12 +1,14 @@
-//! HTTP signalling endpoint: browsers POST an SDP offer, the daemon
-//! creates a fresh `KerbcamPeer`, returns the answer SDP, and registers
-//! the peer in the subscriber set. The consume loop in main.rs then fans
-//! NAL units out to every alive subscriber.
+//! HTTP signalling endpoint. Two endpoints + a test page:
 //!
-//! Wire format is intentionally tiny: one JSON field for the SDP, one for
-//! the answer. Future iterations might bolt on ICE candidate trickle, a
-//! per-camera selector, or a control data-channel — none of that's needed
-//! for the "open the browser, see frames" MVP.
+//! - `GET /cameras` returns a JSON list of currently-attached cameras
+//!   (`[{ flight_id, max_width, max_height }, ...]`); the browser polls
+//!   this to populate its picker.
+//! - `POST /offer` takes `{ sdp, cameras: [flight_id, ...] }`, creates a
+//!   `KerbcamPeer` with one track per selected camera, answers the SDP,
+//!   and returns the answer. Unknown camera IDs are dropped with a
+//!   warning rather than failing the whole request.
+//! - `GET /` serves the bundled test page that does the picker + connect
+//!   + render flow.
 
 use std::sync::Arc;
 
@@ -20,34 +22,51 @@ use tokio::sync::RwLock;
 use tower_http::cors::{Any, CorsLayer};
 use tracing::{info, warn};
 
+use crate::cameras::{CameraInfo, CameraRegistry};
+use crate::encoder::EncoderChoice;
 use crate::webrtc::KerbcamPeer;
 
-/// Shared application state: the active peer subscriber set.
 #[derive(Clone)]
 pub struct AppState {
+    pub registry: Arc<CameraRegistry>,
     pub peers: Arc<RwLock<Vec<Arc<KerbcamPeer>>>>,
+    /// Carried through so peers and the consume loop initialise encoders
+    /// against the same settings. Encoders themselves live in the
+    /// registry; AppState just plumbs the configuration.
+    pub encoder_choice: EncoderChoice,
+    pub fps: u32,
+    pub bitrate_bps: u32,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct OfferRequest {
     pub sdp: String,
+    /// flight IDs the browser wants tracks for. Empty = subscribe to
+    /// every currently-known camera (useful for the dev test page).
+    #[serde(default)]
+    pub cameras: Vec<u32>,
 }
 
 #[derive(Debug, Serialize)]
 pub struct AnswerResponse {
     pub sdp: String,
+    /// Echo of the cameras actually subscribed (after filtering unknown
+    /// IDs). The browser uses this to render the right number of video
+    /// elements.
+    pub cameras: Vec<u32>,
 }
 
-/// Build the axum router. The bundled `webrtc_peer.html` test page is
-/// served at `/` so a browser visit goes straight to a connect button —
-/// no copy-paste of localhost paths.
+#[derive(Debug, Serialize)]
+pub struct CamerasResponse {
+    pub cameras: Vec<CameraInfo>,
+}
+
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/", get(serve_index))
         .route("/health", get(health))
+        .route("/cameras", get(cameras))
         .route("/offer", post(offer))
-        // Permissive CORS so the test page can also run from `file://` or
-        // a different origin during dev. Tighten before public release.
         .layer(
             CorsLayer::new()
                 .allow_origin(Any)
@@ -69,11 +88,14 @@ async fn serve_index() -> impl IntoResponse {
     )
 }
 
+async fn cameras(State(state): State<AppState>) -> impl IntoResponse {
+    let list = state.registry.list().await;
+    (StatusCode::OK, Json(CamerasResponse { cameras: list })).into_response()
+}
+
 async fn offer(State(state): State<AppState>, Json(req): Json<OfferRequest>) -> impl IntoResponse {
-    match handle_offer(state, req.sdp).await {
-        Ok(answer_sdp) => {
-            (StatusCode::OK, Json(AnswerResponse { sdp: answer_sdp })).into_response()
-        }
+    match handle_offer(state, req).await {
+        Ok(resp) => (StatusCode::OK, Json(resp)).into_response(),
         Err(e) => {
             warn!(error = %e, "offer handling failed");
             (
@@ -85,16 +107,40 @@ async fn offer(State(state): State<AppState>, Json(req): Json<OfferRequest>) -> 
     }
 }
 
-async fn handle_offer(state: AppState, offer_sdp: String) -> anyhow::Result<String> {
-    let peer = Arc::new(KerbcamPeer::new().await?);
-    let answer_sdp = peer.answer_to_offer(offer_sdp).await?;
+async fn handle_offer(state: AppState, req: OfferRequest) -> anyhow::Result<AnswerResponse> {
+    // Resolve selection: if the browser didn't ask for specific cameras,
+    // subscribe to all of them. Useful for the v0.2 test page which
+    // populates the picker from /cameras but lets the user click
+    // "connect to all" without an explicit selection.
+    let requested: Vec<u32> = if req.cameras.is_empty() {
+        state
+            .registry
+            .list()
+            .await
+            .iter()
+            .map(|c| c.flight_id)
+            .collect()
+    } else {
+        req.cameras
+    };
+
+    let peer = Arc::new(KerbcamPeer::new(&state.registry, &requested).await?);
+    let answer_sdp = peer.answer_to_offer(req.sdp).await?;
+    let subscribed = peer.subscribed.clone();
 
     let peer_count = {
         let mut peers = state.peers.write().await;
-        peers.push(peer.clone());
+        peers.push(peer);
         peers.len()
     };
-    info!(peer_count, "peer registered, returning answer");
+    info!(
+        peer_count,
+        cameras = ?subscribed,
+        "peer registered, returning answer",
+    );
 
-    Ok(answer_sdp)
+    Ok(AnswerResponse {
+        sdp: answer_sdp,
+        cameras: subscribed,
+    })
 }

@@ -1,11 +1,16 @@
-//! Minimal WebRTC peer for the kerbcam sidecar. One H.264 video track,
-//! offer/answer SDP exchange via async API calls (the caller does the
-//! actual transport — stdin/stdout for the dev spike, HTTP signalling
-//! later). webrtc-rs handles ICE/DTLS/SRTP/RTP packetisation internally.
+//! WebRTC peer for the kerbcam sidecar. One `KerbcamPeer` per browser
+//! connection; each carries one H.264 video track per camera the browser
+//! subscribed to. webrtc-rs handles ICE/DTLS/SRTP/RTP packetisation
+//! internally.
+//!
+//! Track lifecycle: the peer owns Arcs to its tracks for the duration of
+//! its RTCPeerConnection. Each camera's registry entry holds a Weak ref
+//! to the same track + a subscriber count. When the peer is dropped,
+//! the Arcs go with it; the camera-side consume loop notices the dead
+//! Weaks on its next tick and decrements its subscriber count.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 use tokio::sync::Notify;
@@ -14,7 +19,6 @@ use tracing::{debug, info, warn};
 use webrtc::api::media_engine::{MediaEngine, MIME_TYPE_H264};
 use webrtc::api::APIBuilder;
 use webrtc::ice_transport::ice_server::RTCIceServer;
-use webrtc::media::Sample;
 use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
@@ -23,23 +27,28 @@ use webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability;
 use webrtc::track::track_local::track_local_static_sample::TrackLocalStaticSample;
 use webrtc::track::track_local::TrackLocal;
 
-use crate::encoder::Nal;
+use crate::cameras::CameraRegistry;
 
 pub struct KerbcamPeer {
     pc: Arc<RTCPeerConnection>,
-    video_track: Arc<TrackLocalStaticSample>,
+    /// Arcs held for the lifetime of the peer connection. Dropping the
+    /// peer drops these Arcs; the matching Weak refs in each camera's
+    /// `tracks` list become stale and are pruned on the next encode tick.
+    _tracks: Vec<Arc<TrackLocalStaticSample>>,
+    /// flight_ids the peer subscribed to — surfaced for logging.
+    pub subscribed: Vec<u32>,
     connected: Arc<Notify>,
     /// Flipped to `false` when the underlying RTCPeerConnection reaches a
-    /// terminal state (Disconnected, Failed, or Closed). The daemon polls
-    /// `is_alive()` on each consume-loop tick and prunes dead peers.
+    /// terminal state. The daemon polls `is_alive()` each consume tick.
     alive: Arc<AtomicBool>,
 }
 
 impl KerbcamPeer {
-    /// Build a peer with a single H.264 video track and the default Google
-    /// STUN server. The caller drives SDP exchange via `create_offer` +
-    /// `set_remote_answer`, and pushes frames via `send_h264_nals`.
-    pub async fn new() -> Result<Self> {
+    /// Build a peer with one H.264 track per requested camera that exists
+    /// in the registry. Unknown camera IDs are dropped with a warning —
+    /// the caller can still return a useful answer to the browser with
+    /// the surviving tracks.
+    pub async fn new(registry: &CameraRegistry, requested: &[u32]) -> Result<Self> {
         let mut media_engine = MediaEngine::default();
         media_engine.register_default_codecs()?;
         let api = APIBuilder::new().with_media_engine(media_engine).build();
@@ -54,30 +63,44 @@ impl KerbcamPeer {
 
         let pc = Arc::new(api.new_peer_connection(config).await?);
 
-        let video_track = Arc::new(TrackLocalStaticSample::new(
-            RTCRtpCodecCapability {
-                mime_type: MIME_TYPE_H264.to_owned(),
-                ..Default::default()
-            },
-            "video".to_owned(),
-            "kerbcam".to_owned(),
-        ));
+        let mut owned_tracks = Vec::with_capacity(requested.len());
+        let mut subscribed = Vec::with_capacity(requested.len());
 
-        let rtp_sender = pc
-            .add_track(video_track.clone() as Arc<dyn TrackLocal + Send + Sync>)
-            .await?;
+        for &flight_id in requested {
+            let cam = match registry.get(flight_id).await {
+                Some(c) => c,
+                None => {
+                    warn!(flight_id, "requested camera not found, skipping track");
+                    continue;
+                }
+            };
 
-        // webrtc-rs requires us to drain the RTCP-feedback stream from the
-        // sender, otherwise the receiver-driven mechanisms (NACK, PLI for
-        // keyframe requests, REMB for bandwidth estimation) silently break.
-        // We don't process the packets yet — just drain to keep the channel
-        // flowing. A future iteration wires PLI back to the encoder's
-        // request_keyframe() so receivers can recover from packet loss.
-        tokio::spawn(async move {
-            let mut rtcp_buf = vec![0u8; 1500];
-            while let Ok((_, _)) = rtp_sender.read(&mut rtcp_buf).await {}
-            debug!("RTCP drain loop exited");
-        });
+            let track = Arc::new(TrackLocalStaticSample::new(
+                RTCRtpCodecCapability {
+                    mime_type: MIME_TYPE_H264.to_owned(),
+                    ..Default::default()
+                },
+                format!("video-{flight_id}"),
+                format!("kerbcam-{flight_id}"),
+            ));
+
+            let rtp_sender = pc
+                .add_track(track.clone() as Arc<dyn TrackLocal + Send + Sync>)
+                .await?;
+
+            // webrtc-rs requires us to drain the RTCP feedback stream from
+            // each sender, otherwise NACK / PLI / REMB break silently.
+            // Spawned per track; loop exits when the sender closes.
+            tokio::spawn(async move {
+                let mut rtcp_buf = vec![0u8; 1500];
+                while rtp_sender.read(&mut rtcp_buf).await.is_ok() {}
+                debug!("RTCP drain loop exited");
+            });
+
+            cam.add_track(track.clone()).await;
+            owned_tracks.push(track);
+            subscribed.push(flight_id);
+        }
 
         let connected = Arc::new(Notify::new());
         let alive = Arc::new(AtomicBool::new(true));
@@ -101,7 +124,8 @@ impl KerbcamPeer {
 
         Ok(Self {
             pc,
-            video_track,
+            _tracks: owned_tracks,
+            subscribed,
             connected,
             alive,
         })
@@ -128,75 +152,18 @@ impl KerbcamPeer {
         Ok(local.sdp)
     }
 
-    /// True until the underlying peer connection hits a terminal state.
-    /// Daemon prunes dead peers from its subscriber set when this returns
-    /// `false`.
     pub fn is_alive(&self) -> bool {
         self.alive.load(Ordering::Acquire)
     }
 
-    /// Create an SDP offer for this peer, set it as the local description,
-    /// and wait for ICE gathering to finish so the returned SDP carries all
-    /// candidates (no trickle needed in this dev path). Returns the SDP
-    /// string the caller hands to the browser.
-    pub async fn create_offer(&self) -> Result<String> {
-        let offer = self.pc.create_offer(None).await?;
-        self.pc.set_local_description(offer).await?;
-
-        // Wait until ICE gathering completes. With trickle this would emit
-        // candidates incrementally; for the manual-SDP spike we bundle them
-        // into the offer.
-        let mut gather_complete = self.pc.gathering_complete_promise().await;
-        let _ = gather_complete.recv().await;
-
-        let local = self
-            .pc
-            .local_description()
-            .await
-            .ok_or_else(|| anyhow!("local description missing after set_local_description"))?;
-        Ok(local.sdp)
-    }
-
-    /// Set the SDP answer received from the browser.
-    pub async fn set_remote_answer(&self, sdp: String) -> Result<()> {
-        let answer = RTCSessionDescription::answer(sdp)?;
-        self.pc.set_remote_description(answer).await?;
-        Ok(())
-    }
-
-    /// Push one frame's worth of encoded NAL units to the video track. We
-    /// concatenate the NALs into a single Annex-B bytestream — webrtc-rs's
-    /// H.264 packetiser handles RFC 6184 fragmentation/aggregation from
-    /// there.
-    pub async fn send_h264_nals(&self, nals: &[Nal], duration: Duration) -> Result<()> {
-        if nals.is_empty() {
-            return Ok(());
-        }
-        let total_len: usize = nals.iter().map(|n| n.0.len()).sum();
-        let mut combined = Vec::with_capacity(total_len);
-        for nal in nals {
-            combined.extend_from_slice(&nal.0);
-        }
-        let sample = Sample {
-            data: combined.into(),
-            duration,
-            ..Default::default()
-        };
-        self.video_track.write_sample(&sample).await.map_err(|e| {
-            warn!(error = %e, "write_sample failed");
-            anyhow!("write_sample: {e}")
-        })?;
-        Ok(())
-    }
-
-    /// Block until the peer reaches the Connected state. Useful for the
-    /// dev binary's "don't start streaming until the browser is actually
-    /// listening" handshake.
+    /// Block until the peer reaches the Connected state. Used by tests.
+    #[allow(dead_code)]
     pub async fn wait_connected(&self) {
         self.connected.notified().await;
     }
 
     /// Tear down the peer cleanly. Idempotent.
+    #[allow(dead_code)]
     pub async fn close(&self) -> Result<()> {
         self.pc.close().await?;
         Ok(())

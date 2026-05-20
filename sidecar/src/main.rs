@@ -9,31 +9,25 @@
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result};
-use clap::{Parser, ValueEnum};
+use anyhow::Result;
+use clap::Parser;
 use tokio::net::TcpListener;
 use tokio::signal;
 use tokio::sync::RwLock;
 use tokio::time::sleep;
 use tracing::{info, warn};
+use webrtc::media::Sample;
 
-use kerbcam_sidecar::encoder::{self, EncodeConfig, EncoderBackend, RawFrame};
-use kerbcam_sidecar::shared_mem::{MmapFrameRing, MmapRingConfig};
+use kerbcam_sidecar::cameras::{CameraRegistry, CameraState};
+use kerbcam_sidecar::encoder::{select_backend, EncodeConfig, EncoderChoice, RawFrame};
+use kerbcam_sidecar::shared_mem::MmapRingConfig;
 use kerbcam_sidecar::signalling::{router, AppState};
 use kerbcam_sidecar::webrtc::KerbcamPeer;
 use kerbcam_sidecar::VERSION;
-
-#[derive(Copy, Clone, Debug, ValueEnum)]
-enum EncoderChoice {
-    Auto,
-    Libva,
-    Videotoolbox,
-    Nvenc,
-    Software,
-}
 
 #[derive(Parser, Debug)]
 #[command(name = "kerbcam-sidecar", version = VERSION, about)]
@@ -41,13 +35,14 @@ struct Cli {
     #[arg(long, value_enum, default_value_t = EncoderChoice::Auto)]
     encoder: EncoderChoice,
 
-    /// Path to the shared-memory ring file the KSP plugin writes to.
-    /// Matches the plugin's `KerbcamCore.ResolveRingPath` default —
-    /// `$XDG_RUNTIME_DIR/kerbcam.ring` if that dir exists, else
-    /// `/tmp/kerbcam.ring`. Override with `--shm-path` when running
-    /// against a relocated install or a recorded fixture.
-    #[arg(long, default_value_os_t = default_shm_path())]
-    shm_path: PathBuf,
+    /// Directory the KSP plugin drops per-camera ring files into.
+    /// Matches the plugin's `KerbcamCore.ResolveRingDir` default —
+    /// `$XDG_RUNTIME_DIR/kerbcam/` if that dir exists, else
+    /// `/tmp/kerbcam/`. Override with `--shm-dir` when running
+    /// against a relocated install or a recorded fixture. Each file
+    /// inside is named `<flight_id>.ring`.
+    #[arg(long, default_value_os_t = default_shm_dir())]
+    shm_dir: PathBuf,
 
     #[arg(long, default_value_t = 768)]
     max_width: u32,
@@ -82,16 +77,16 @@ struct Cli {
     http_bind: SocketAddr,
 }
 
-fn default_shm_path() -> PathBuf {
+fn default_shm_dir() -> PathBuf {
     // Mirror the C# plugin's path-picking so a vanilla `cargo run` lines
     // up with a vanilla KSP launch on the same machine.
     if let Some(xdg) = std::env::var_os("XDG_RUNTIME_DIR") {
         let p = PathBuf::from(xdg);
         if p.is_dir() {
-            return p.join("kerbcam.ring");
+            return p.join("kerbcam");
         }
     }
-    PathBuf::from("/tmp/kerbcam.ring")
+    PathBuf::from("/tmp/kerbcam")
 }
 
 #[tokio::main(flavor = "multi_thread")]
@@ -107,36 +102,38 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     info!(
         version = VERSION,
-        shm_path = %cli.shm_path.display(),
+        shm_dir = %cli.shm_dir.display(),
         encoder = ?cli.encoder,
         http_bind = %cli.http_bind,
         "kerbcam sidecar starting",
     );
-
-    let backend = select_backend(cli.encoder);
-    info!(backend = backend.name(), "encoder backend selected");
 
     let ring_cfg = MmapRingConfig {
         slot_count: cli.slot_count,
         max_width: cli.max_width,
         max_height: cli.max_height,
     };
-    let ring = wait_for_ring(&cli.shm_path, ring_cfg).await?;
+
+    let registry = Arc::new(CameraRegistry::new(cli.shm_dir.clone(), ring_cfg));
     info!(
-        path = %cli.shm_path.display(),
+        dir = %cli.shm_dir.display(),
         slot_count = ring_cfg.slot_count,
         max_dims = format!("{}x{}", ring_cfg.max_width, ring_cfg.max_height),
-        "ring attached",
+        "camera registry initialised — scanning for rings",
     );
 
+    let peers: Arc<RwLock<Vec<Arc<KerbcamPeer>>>> = Arc::new(RwLock::new(Vec::new()));
     let state = AppState {
-        peers: Arc::new(RwLock::new(Vec::new())),
+        registry: registry.clone(),
+        peers: peers.clone(),
+        encoder_choice: cli.encoder,
+        fps: cli.fps,
+        bitrate_bps: cli.bitrate_bps,
     };
-    let peers = state.peers.clone();
 
-    let http_listener = TcpListener::bind(cli.http_bind)
-        .await
-        .with_context(|| format!("binding HTTP signalling endpoint at {}", cli.http_bind))?;
+    let http_listener = TcpListener::bind(cli.http_bind).await.map_err(|e| {
+        anyhow::anyhow!("binding HTTP signalling endpoint at {}: {e}", cli.http_bind)
+    })?;
     let http_addr = http_listener.local_addr().unwrap_or(cli.http_bind);
     info!(addr = %http_addr, "HTTP signalling endpoint listening");
     let http_app = router(state);
@@ -147,11 +144,12 @@ async fn main() -> Result<()> {
     });
 
     let consume = consume_loop(
-        ring,
-        backend,
+        registry,
         peers,
+        cli.encoder,
         Duration::from_millis(cli.poll_interval_ms),
         Duration::from_millis(cli.idle_interval_ms),
+        Duration::from_secs(1), // rescan cadence
         cli.fps,
         cli.bitrate_bps,
     );
@@ -166,160 +164,152 @@ async fn main() -> Result<()> {
     }
 }
 
-fn select_backend(choice: EncoderChoice) -> Box<dyn EncoderBackend> {
-    match choice {
-        EncoderChoice::Auto => encoder::auto_select(),
-        EncoderChoice::Libva => Box::new(encoder::Libva::new()),
-        EncoderChoice::Videotoolbox => Box::new(encoder::VideoToolbox::new()),
-        EncoderChoice::Nvenc => Box::new(encoder::Nvenc::new()),
-        EncoderChoice::Software => Box::new(encoder::Software::new()),
-    }
-}
-
-async fn wait_for_ring(path: &std::path::Path, cfg: MmapRingConfig) -> Result<MmapFrameRing> {
-    let mut last_log = Instant::now();
-    loop {
-        if path.exists() {
-            match MmapFrameRing::open(path, cfg) {
-                Ok(ring) => return Ok(ring),
-                Err(e) => {
-                    warn!(error = %e, "ring file exists but open failed, retrying");
-                }
-            }
-        }
-        if last_log.elapsed() > Duration::from_secs(10) {
-            info!(path = %path.display(), "waiting for plugin to create ring file");
-            last_log = Instant::now();
-        }
-        sleep(Duration::from_millis(500)).await;
-    }
-}
-
+/// Per-tick: rescan the rings dir periodically; for every camera with
+/// at least one subscribed track, read its latest frame, lazy-init its
+/// own encoder, and fan the encoded sample out to its alive tracks.
+/// Idle-sleeps when no camera has subscribers.
+#[allow(clippy::too_many_arguments)]
 async fn consume_loop(
-    ring: MmapFrameRing,
-    mut backend: Box<dyn EncoderBackend>,
+    registry: Arc<CameraRegistry>,
     peers: Arc<RwLock<Vec<Arc<KerbcamPeer>>>>,
+    encoder_choice: EncoderChoice,
     poll_interval: Duration,
     idle_interval: Duration,
+    rescan_interval: Duration,
     fps: u32,
     bitrate_bps: u32,
 ) -> Result<()> {
-    let mut encoder_initialised = false;
-    let mut last_sequence: u64 = 0;
-    let mut frames_seen: u64 = 0;
-    let mut frames_dropped: u64 = 0;
-    let mut nals_emitted: u64 = 0;
-    let mut nal_bytes: u64 = 0;
-    let mut last_stats_at = Instant::now();
-    let stats_interval = Duration::from_secs(5);
+    let mut last_rescan = Instant::now() - rescan_interval; // rescan immediately
     let frame_duration = Duration::from_secs(1) / fps;
 
     loop {
-        // Subscription-driven: prune dead peers, idle if nobody's watching.
-        let active_peers = {
+        if last_rescan.elapsed() >= rescan_interval {
+            registry.rescan().await;
+            last_rescan = Instant::now();
+        }
+
+        // Prune dead peers — dropped Arcs propagate to the Weak refs in
+        // each CameraState.tracks list, which we GC inline below.
+        {
             let mut guard = peers.write().await;
             guard.retain(|p| p.is_alive());
-            guard.clone()
-        };
-        if active_peers.is_empty() {
-            sleep(idle_interval).await;
-            continue;
         }
 
-        let frame = match ring.latest() {
-            Ok(Some(frame)) => frame,
-            Ok(None) => {
-                sleep(poll_interval).await;
-                continue;
-            }
-            Err(e) => {
-                warn!(error = %e, "ring read failed, retrying");
-                sleep(poll_interval).await;
-                continue;
-            }
-        };
+        let cameras = registry.snapshot().await;
+        let mut any_active = false;
 
-        if frame.sequence == last_sequence {
+        for cam in &cameras {
+            if cam.subscribers.load(Ordering::Acquire) == 0 {
+                continue;
+            }
+            any_active = true;
+            encode_and_fan_out(cam, encoder_choice, fps, bitrate_bps, frame_duration).await;
+        }
+
+        if any_active {
             sleep(poll_interval).await;
-            continue;
+        } else {
+            sleep(idle_interval).await;
         }
+    }
+}
 
-        if last_sequence > 0 {
-            let expected = last_sequence + 1;
-            if frame.sequence > expected {
-                frames_dropped += frame.sequence - expected;
-            }
+async fn encode_and_fan_out(
+    cam: &Arc<CameraState>,
+    encoder_choice: EncoderChoice,
+    fps: u32,
+    bitrate_bps: u32,
+    frame_duration: Duration,
+) {
+    let frame = match cam.ring.latest() {
+        Ok(Some(f)) => f,
+        Ok(None) => return,
+        Err(e) => {
+            warn!(flight_id = cam.flight_id, error = %e, "ring read failed");
+            return;
         }
-        last_sequence = frame.sequence;
+    };
 
-        if !encoder_initialised {
-            backend
-                .init(EncodeConfig {
-                    width: frame.width,
-                    height: frame.height,
-                    fps,
-                    bitrate_bps,
-                })
-                .context("encoder init")?;
-            info!(
-                width = frame.width,
-                height = frame.height,
-                fps,
-                bitrate_bps,
-                "encoder initialised on first frame"
-            );
-            encoder_initialised = true;
-        }
+    let last = cam.last_sequence.load(Ordering::Acquire);
+    if frame.sequence <= last {
+        return;
+    }
+    cam.last_sequence.store(frame.sequence, Ordering::Release);
 
-        let nals = match backend.encode(&RawFrame {
+    // Lazy encoder init — first encoded frame per camera. Done under
+    // the camera's encoder lock so concurrent ticks can't double-init.
+    let mut encoder_guard = cam.encoder.lock().await;
+    if encoder_guard.is_none() {
+        let mut backend = select_backend(encoder_choice);
+        if let Err(e) = backend.init(EncodeConfig {
             width: frame.width,
             height: frame.height,
-            data: &frame.pixels,
-            capture_ts_ms: frame.capture_ts_ms,
+            fps,
+            bitrate_bps,
         }) {
-            Ok(n) => n,
-            Err(e) => {
-                warn!(error = %e, "encode failed on frame {}", frame.sequence);
-                continue;
+            warn!(flight_id = cam.flight_id, error = %e, "encoder init failed");
+            return;
+        }
+        info!(
+            flight_id = cam.flight_id,
+            width = frame.width,
+            height = frame.height,
+            "per-camera encoder initialised",
+        );
+        *encoder_guard = Some(backend);
+    }
+    let encoder = encoder_guard.as_mut().unwrap();
+
+    let nals = match encoder.encode(&RawFrame {
+        width: frame.width,
+        height: frame.height,
+        data: &frame.pixels,
+        capture_ts_ms: frame.capture_ts_ms,
+    }) {
+        Ok(n) => n,
+        Err(e) => {
+            warn!(flight_id = cam.flight_id, error = %e, "encode failed");
+            return;
+        }
+    };
+    drop(encoder_guard);
+
+    if nals.is_empty() {
+        return;
+    }
+
+    // Concatenate NALs into the Annex-B bytestream webrtc-rs expects.
+    let total_len: usize = nals.iter().map(|n| n.0.len()).sum();
+    let mut combined = Vec::with_capacity(total_len);
+    for nal in &nals {
+        combined.extend_from_slice(&nal.0);
+    }
+    let sample = Sample {
+        data: combined.into(),
+        duration: frame_duration,
+        ..Default::default()
+    };
+
+    // Fan-out + GC dead weak refs in one pass. Pruned weaks mean a peer
+    // dropped without telling us — decrement the camera's subscriber
+    // count so the encoder can idle once the last viewer leaves.
+    let mut tracks = cam.tracks.write().await;
+    let prev = std::mem::take(&mut *tracks);
+    let mut alive = Vec::with_capacity(prev.len());
+    let mut pruned = 0usize;
+    for weak in prev {
+        if let Some(track) = weak.upgrade() {
+            if let Err(e) = track.write_sample(&sample).await {
+                warn!(flight_id = cam.flight_id, error = %e, "write_sample failed");
             }
-        };
-
-        frames_seen += 1;
-        nals_emitted += nals.len() as u64;
-        for nal in &nals {
-            nal_bytes += nal.0.len() as u64;
+            alive.push(weak);
+        } else {
+            pruned += 1;
         }
-
-        // Fan-out: every alive peer gets the same NAL set. write_sample is
-        // backpressure-aware inside webrtc-rs (it'll skip if the SCTP buffer
-        // is wedged), so we don't need to worry about a slow consumer
-        // blocking the encoder loop.
-        if !nals.is_empty() {
-            for peer in &active_peers {
-                if let Err(e) = peer.send_h264_nals(&nals, frame_duration).await {
-                    warn!(error = %e, "send_h264_nals failed; peer will be pruned next tick");
-                }
-            }
-        }
-
-        if last_stats_at.elapsed() >= stats_interval {
-            let secs = last_stats_at.elapsed().as_secs_f64();
-            let fps_in = frames_seen as f64 / secs;
-            let bps_out = (nal_bytes as f64 * 8.0) / secs;
-            info!(
-                peer_count = active_peers.len(),
-                frames_seen,
-                fps_in = format!("{fps_in:.1}"),
-                frames_dropped,
-                nals_emitted,
-                bps_out = format!("{:.2} Mbps", bps_out / 1_000_000.0),
-                "stats"
-            );
-            frames_seen = 0;
-            frames_dropped = 0;
-            nals_emitted = 0;
-            nal_bytes = 0;
-            last_stats_at = Instant::now();
-        }
+    }
+    *tracks = alive;
+    drop(tracks);
+    if pruned > 0 {
+        cam.release(pruned);
     }
 }

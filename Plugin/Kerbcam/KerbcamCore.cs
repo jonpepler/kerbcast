@@ -1,17 +1,20 @@
 // KSPAddon entry point. Hooks into the Flight scene, scans the active
 // vessel for Hullcam VDS parts, and pumps an AsyncGPUReadback per camera
-// each LateUpdate. Frames land in a single shared MmapFrameRing that the
-// Rust sidecar mmaps and encodes to H.264.
+// each LateUpdate. Each KerbcamCamera owns its own MmapFrameRing keyed
+// by KSP's stable Part.flightID; the Rust sidecar discovers rings by
+// globbing the kerbcam/ subdirectory under XDG_RUNTIME_DIR.
 //
 // Lifecycle:
 //   - Awake:    spawn AsyncReadbackUpdater (KSP loads mod DLLs after
 //               [RuntimeInitializeOnLoadMethod] would fire, so the
 //               vendored yangrc updater never auto-attaches).
-//               Allocate the mmap ring at $XDG_RUNTIME_DIR/kerbcam.ring
-//               (or /tmp on macOS/non-Linux).
-//   - GameEvents.onVesselChange: rebuild the camera list.
+//               Ensure the rings directory exists, then spawn sidecar
+//               pointed at that directory.
+//   - GameEvents.onVesselChange: rebuild the camera list (which
+//               creates/destroys the matching ring files).
 //   - LateUpdate: refresh each tracked camera.
-//   - OnDestroy: tear down cameras, dispose ring.
+//   - OnDestroy: tear down cameras (each disposes its own ring + deletes
+//               its ring file) and stop the sidecar.
 
 using System;
 using System.Collections.Generic;
@@ -28,26 +31,26 @@ namespace Kerbcam
     public sealed class KerbcamCore : MonoBehaviour
     {
         private const int RingSlots = 4;
-        private static readonly string RingPath = ResolveRingPath();
+        private static readonly string RingDir = ResolveRingDir();
 
         private KerbcamSettings _settings;
-        private MmapFrameRing _ring;
         private readonly List<KerbcamCamera> _cameras = new List<KerbcamCamera>();
-        private int _nextCameraId;
         private Process _sidecar;
 
-        private static string ResolveRingPath()
+        private static string ResolveRingDir()
         {
             // XDG_RUNTIME_DIR is the right home on Steam Deck / Linux —
             // it's a per-user tmpfs that survives the process and is
             // cleaned up at logout. Fall back to /tmp on macOS / when
             // XDG_RUNTIME_DIR isn't set (Mono returns "" not null there).
+            // The kerbcam/ subdirectory namespaces our ring files so the
+            // sidecar's *.ring glob doesn't pick up stray files.
             var xdg = Environment.GetEnvironmentVariable("XDG_RUNTIME_DIR");
             if (!string.IsNullOrEmpty(xdg) && Directory.Exists(xdg))
             {
-                return Path.Combine(xdg, "kerbcam.ring");
+                return Path.Combine(xdg, "kerbcam");
             }
-            return "/tmp/kerbcam.ring";
+            return "/tmp/kerbcam";
         }
 
         private void Awake()
@@ -77,12 +80,12 @@ namespace Kerbcam
 
             try
             {
-                _ring = MmapFrameRing.Create(RingPath, RingSlots, _settings.Width, _settings.Height);
-                Debug.Log($"[Kerbcam] ring opened at {RingPath} ({RingSlots} × {_settings.Width}×{_settings.Height} RGBA)");
+                Directory.CreateDirectory(RingDir);
+                Debug.Log($"[Kerbcam] rings directory ready at {RingDir} ({RingSlots} slots × {_settings.Width}×{_settings.Height} RGBA per camera)");
             }
             catch (Exception ex)
             {
-                Debug.LogError($"[Kerbcam] failed to open mmap ring at {RingPath}: {ex}");
+                Debug.LogError($"[Kerbcam] failed to create rings directory at {RingDir}: {ex}");
                 enabled = false;
                 return;
             }
@@ -127,7 +130,7 @@ namespace Kerbcam
                 // so there's no config file to keep in sync on the
                 // sidecar side.
                 var args =
-                    $"--shm-path \"{RingPath}\" " +
+                    $"--shm-dir \"{RingDir}\" " +
                     $"--http-bind {_settings.HttpBind} " +
                     $"--max-width {_settings.Width} " +
                     $"--max-height {_settings.Height}";
@@ -220,7 +223,8 @@ namespace Kerbcam
                 if (hullcam == null) continue;
                 try
                 {
-                    _cameras.Add(new KerbcamCamera(_nextCameraId++, hullcam, _ring));
+                    _cameras.Add(new KerbcamCamera(
+                        hullcam, RingDir, RingSlots, _settings.Width, _settings.Height));
                 }
                 catch (Exception ex)
                 {
@@ -234,7 +238,6 @@ namespace Kerbcam
         // the scene into our RenderTextures before we kick the readback.
         private void LateUpdate()
         {
-            if (_ring == null) return;
             for (int i = 0; i < _cameras.Count; i++)
             {
                 _cameras[i].Refresh();
@@ -247,8 +250,6 @@ namespace Kerbcam
             foreach (var cam in _cameras) cam.Dispose();
             _cameras.Clear();
             StopSidecar();
-            _ring?.Dispose();
-            _ring = null;
         }
     }
 }

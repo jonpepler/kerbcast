@@ -12,6 +12,7 @@
 // pure-managed object rather than a TrackingCamera wrapping a GUI window.
 
 using System;
+using System.IO;
 using HullcamVDS;
 using UnityEngine;
 using UnityEngine.Rendering;
@@ -21,30 +22,36 @@ namespace Kerbcam
 {
     internal sealed class KerbcamCamera
     {
-        public int Id { get; }
+        public uint FlightId { get; }
         public MuMechModuleHullCamera Hullcam { get; }
-
-        private const int Width = 768;
-        private const int Height = 768;
+        public int Width { get; }
+        public int Height { get; }
 
         private readonly Camera[] _cameras = new Camera[3];
         private readonly RenderTexture _captureRt;
         private readonly RenderTexture _readbackRt; // depth=0, GL_TEXTURE_2D-clean
         private readonly Texture2D _scratchTex;
         private readonly MmapFrameRing _ring;
+        private readonly string _ringPath;
 
         private UniversalAsyncGPUReadbackRequest _pendingRequest;
         private bool _readbackInFlight;
         private double _pendingCaptureTsMs;
         private int _consecutiveErrors;
 
-        public KerbcamCamera(int id, MuMechModuleHullCamera hullcam, MmapFrameRing ring)
+        public KerbcamCamera(MuMechModuleHullCamera hullcam, string ringDir, int slotCount, int width, int height)
         {
-            Id = id;
             Hullcam = hullcam;
-            _ring = ring;
+            FlightId = hullcam.part.flightID;
+            Width = width;
+            Height = height;
 
-            _captureRt = new RenderTexture(Width, Height, 24, RenderTextureFormat.ARGB32)
+            // Per-camera ring keyed by the part's stable flightID. Survives
+            // save/reload of the same craft; unique per part on a vessel.
+            _ringPath = Path.Combine(ringDir, $"{FlightId}.ring");
+            _ring = MmapFrameRing.Create(_ringPath, slotCount, width, height);
+
+            _captureRt = new RenderTexture(width, height, 24, RenderTextureFormat.ARGB32)
             {
                 antiAliasing = 1,
             };
@@ -54,13 +61,13 @@ namespace Kerbcam
             // handle on Mesa OpenGL. With depth=24 (the capture RT) the
             // yangrc plugin's glGetTexLevelParameteriv reads back zero
             // dimensions and silently does nothing.
-            _readbackRt = new RenderTexture(Width, Height, 0, RenderTextureFormat.ARGB32);
+            _readbackRt = new RenderTexture(width, height, 0, RenderTextureFormat.ARGB32);
             _readbackRt.Create();
 
             // RGBA32 (not ARGB32). DX11/Mesa async readback only supports a
             // narrow set of GraphicsFormats as readback destinations; RGBA32
             // (R8G8B8A8_UNorm) is in the list, ARGB32 (B8G8R8A8_SRGB) isn't.
-            _scratchTex = new Texture2D(Width, Height, TextureFormat.RGBA32, mipChain: false);
+            _scratchTex = new Texture2D(width, height, TextureFormat.RGBA32, mipChain: false);
 
             SetCameras();
         }
@@ -75,11 +82,11 @@ namespace Kerbcam
             var partTransform = Hullcam.part.transform.Find(Hullcam.cameraTransformName);
             if (partTransform == null)
             {
-                Debug.LogWarning($"[Kerbcam] cam={Id} cameraTransformName '{Hullcam.cameraTransformName}' not found on part {Hullcam.part.name}");
+                Debug.LogWarning($"[Kerbcam] cam={FlightId} cameraTransformName '{Hullcam.cameraTransformName}' not found on part {Hullcam.part.name}");
                 return;
             }
 
-            var nearGo = new GameObject($"Kerbcam_{Id}_Near");
+            var nearGo = new GameObject($"Kerbcam_{FlightId}_Near");
             nearGo.transform.SetParent(partTransform, worldPositionStays: false);
             nearGo.transform.localPosition = Hullcam.cameraPosition;
             nearGo.transform.localRotation = Quaternion.LookRotation(Hullcam.cameraForward, Hullcam.cameraUp);
@@ -159,7 +166,7 @@ namespace Kerbcam
             // 1-in-300 frames at 30fps = log at most once per 10s per camera.
             if (_consecutiveErrors == 0 || _consecutiveErrors % 300 == 0)
             {
-                Debug.Log($"[Kerbcam] cam={Id} {message}");
+                Debug.Log($"[Kerbcam] cam={FlightId} {message}");
             }
             _consecutiveErrors++;
         }
@@ -173,6 +180,18 @@ namespace Kerbcam
             if (_captureRt != null) _captureRt.Release();
             if (_readbackRt != null) _readbackRt.Release();
             UnityEngine.Object.Destroy(_scratchTex);
+
+            _ring?.Dispose();
+            // Best-effort: drop the ring file so the sidecar's directory
+            // scan stops surfacing this camera once it's gone.
+            try
+            {
+                if (File.Exists(_ringPath)) File.Delete(_ringPath);
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"[Kerbcam] cam={FlightId} ring file delete failed: {ex.Message}");
+            }
         }
     }
 }

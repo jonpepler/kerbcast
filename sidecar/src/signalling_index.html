@@ -9,16 +9,21 @@
   video { width: 100%; max-width: 640px; background: #111; margin-top: 0.5rem; }
   pre { background: #f4f4f4; padding: 0.5rem; overflow-x: auto; font-size: 12px; }
   .row { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
+  .camera-line { font-family: ui-monospace, monospace; font-size: 13px; color: #444; }
 </style>
 </head>
 <body>
 <h1>kerbcam</h1>
-<p>Connects to the sidecar's <code>/offer</code> endpoint and shows the active camera stream.</p>
+<p>Lists the cameras the sidecar has discovered, connects to the first one, and shows its stream.</p>
 
 <div class="row">
-  <button id="connectBtn">Connect</button>
+  <button id="refreshBtn">Refresh cameras</button>
+  <button id="connectBtn" disabled>Connect to first camera</button>
   <span id="status" style="color:#666">idle</span>
 </div>
+
+<h3>Detected cameras</h3>
+<pre id="cameras" class="camera-line">none yet (click Refresh)</pre>
 
 <video id="video" autoplay playsinline controls></video>
 
@@ -31,15 +36,41 @@ const setStatus = (text, color = "#666") => { $("status").textContent = text; $(
 
 let pc = null;
 let statsTimer = null;
+let discovered = [];
+
+async function refreshCameras() {
+  try {
+    const res = await fetch("/cameras");
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const { cameras } = await res.json();
+    discovered = cameras || [];
+    if (discovered.length === 0) {
+      $("cameras").textContent = "(no cameras attached — is KSP running with Hullcam parts?)";
+      $("connectBtn").disabled = true;
+    } else {
+      $("cameras").textContent = discovered
+        .map((c) => `flight_id=${c.flight_id}  ${c.max_width}x${c.max_height}`)
+        .join("\n");
+      $("connectBtn").disabled = false;
+    }
+  } catch (e) {
+    $("cameras").textContent = `error fetching /cameras: ${e.message}`;
+  }
+}
+
+$("refreshBtn").addEventListener("click", refreshCameras);
+refreshCameras();
 
 $("connectBtn").addEventListener("click", async () => {
-  setStatus("creating peer connection");
-  pc = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] });
+  if (discovered.length === 0) return;
+  const targetId = discovered[0].flight_id;
+  setStatus(`creating peer connection (cam ${targetId})`);
 
+  pc = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] });
   pc.addTransceiver("video", { direction: "recvonly" });
 
   pc.ontrack = (ev) => {
-    setStatus("track received");
+    setStatus(`track received (${ev.track.id})`);
     if (ev.streams && ev.streams[0]) {
       $("video").srcObject = ev.streams[0];
     } else {
@@ -57,7 +88,6 @@ $("connectBtn").addEventListener("click", async () => {
   const offer = await pc.createOffer();
   await pc.setLocalDescription(offer);
 
-  // Wait for ICE gathering complete so the offer carries candidates
   await new Promise((resolve) => {
     if (pc.iceGatheringState === "complete") return resolve();
     const check = () => { if (pc.iceGatheringState === "complete") { pc.removeEventListener("icegatheringstatechange", check); resolve(); } };
@@ -68,15 +98,15 @@ $("connectBtn").addEventListener("click", async () => {
   const res = await fetch("/offer", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ sdp: pc.localDescription.sdp }),
+    body: JSON.stringify({ sdp: pc.localDescription.sdp, cameras: [targetId] }),
   });
   if (!res.ok) {
     setStatus(`offer failed: ${res.status}`, "red");
     return;
   }
-  const { sdp: answerSdp } = await res.json();
+  const { sdp: answerSdp, cameras: subscribed } = await res.json();
   await pc.setRemoteDescription({ type: "answer", sdp: answerSdp });
-  setStatus("answer applied, waiting for media", "green");
+  setStatus(`answer applied, subscribed to ${subscribed?.join(",") || "?"}`, "green");
 
   if (statsTimer) clearInterval(statsTimer);
   statsTimer = setInterval(async () => {
