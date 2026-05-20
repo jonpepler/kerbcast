@@ -46,15 +46,16 @@ namespace Kerbcam
         private int _fpsCount; // up to FpsSamples; growing-average until full
         private float _fpsAvg;
         private int _shedLevel;
-        // Shed level transitions (5 fps hysteresis on each step). Order
-        // matches KerbcamCamera.ApplyAutoShed: resolution first, then
-        // galaxy layer, then scaled layer.
-        private const float HalveResolutionBelowFps = 25f;
-        private const float RestoreResolutionAboveFps = 30f;
-        private const float ShedGalaxyBelowFps = 18f;
-        private const float RestoreGalaxyAboveFps = 23f;
-        private const float ShedScaledBelowFps = 10f;
-        private const float RestoreScaledAboveFps = 15f;
+        // Shed level transitions. Each pair = (escalate-below, restore-above)
+        // for the transition from level N to level N+1. Hysteresis (~5 fps)
+        // prevents flapping. See KerbcamCamera.ShedTable for what each level
+        // actually applies — scaled is in level 5 so the trigger is severe.
+        //
+        // Levels:  0 → 1 → 2 → 3 → 4 → 5
+        //
+        // Transition: 0→1     1→2     2→3     3→4     4→5
+        private static readonly float[] ShedBelow    = { 25f, 18f, 12f,  7f, 3f };
+        private static readonly float[] RestoreAbove = { 30f, 23f, 17f, 12f, 7f };
 
         private static string ResolveRingDir()
         {
@@ -299,22 +300,19 @@ namespace Kerbcam
             if (_fpsCount < FpsSamples) return;
 
             int desired = _shedLevel;
-            switch (_shedLevel)
+            int maxLevel = KerbcamCamera.MaxShedLevel;
+            // Escalate one level if we're below this transition's shed
+            // threshold; de-escalate one level if we're above the
+            // previous transition's restore threshold. One step per tick
+            // so the system doesn't lurch through multiple resolution
+            // changes in a single LateUpdate.
+            if (_shedLevel < maxLevel && _fpsAvg < ShedBelow[_shedLevel])
             {
-                case 0:
-                    if (_fpsAvg < HalveResolutionBelowFps) desired = 1;
-                    break;
-                case 1:
-                    if (_fpsAvg < ShedGalaxyBelowFps) desired = 2;
-                    else if (_fpsAvg > RestoreResolutionAboveFps) desired = 0;
-                    break;
-                case 2:
-                    if (_fpsAvg < ShedScaledBelowFps) desired = 3;
-                    else if (_fpsAvg > RestoreGalaxyAboveFps) desired = 1;
-                    break;
-                case 3:
-                    if (_fpsAvg > RestoreScaledAboveFps) desired = 2;
-                    break;
+                desired = _shedLevel + 1;
+            }
+            else if (_shedLevel > 0 && _fpsAvg > RestoreAbove[_shedLevel - 1])
+            {
+                desired = _shedLevel - 1;
             }
 
             if (desired == _shedLevel) return;

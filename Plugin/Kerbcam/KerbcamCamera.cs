@@ -266,34 +266,41 @@ namespace Kerbcam
         }
 
         /// <summary>
-        /// Apply an adaptive-shed level driven by KSP framerate. Order is
-        /// "smallest perceptual impact first":
-        ///   level 0: full
-        ///   level 1: halve render resolution (everything still visible,
-        ///            just blurrier — biggest single perf win)
-        ///   level 2: also drop the galaxy layer (skybox/stars gone)
-        ///   level 3: also drop the scaled layer (planet surface gone)
-        /// Near is never auto-shed — it's the camera's reason to exist.
+        /// Cascade table: (resolution multiplier, layers to drop). Lower
+        /// levels are gentler on perception. Resolution reduction wins
+        /// over layer dropping because it preserves scene completeness
+        /// — a blurrier full image is more useful than a sharp scene
+        /// with missing planet terrain. Scaled goes last because it's
+        /// the operator's situational-awareness layer.
         /// </summary>
+        private static readonly (float ResScale, CameraLayers Drop)[] ShedTable =
+        {
+            (1.00f, CameraLayers.None),                                 // 0: full
+            (0.75f, CameraLayers.None),                                 // 1: gentle res drop
+            (0.50f, CameraLayers.None),                                 // 2: half res
+            (0.50f, CameraLayers.Galaxy),                               // 3: + drop galaxy
+            (0.25f, CameraLayers.Galaxy),                               // 4: quarter res
+            (0.25f, CameraLayers.Galaxy | CameraLayers.Scaled),         // 5: emergency
+        };
+
+        public static int MaxShedLevel => ShedTable.Length - 1;
+
         public void ApplyAutoShed(int level)
         {
-            // Resolution first — halving renders 4× fewer pixels across
-            // every layer, so even dropping galaxy + scaled saves less.
-            int targetW = OperatorWidth;
-            int targetH = OperatorHeight;
-            if (level >= 1)
-            {
-                targetW = MakeEven(OperatorWidth / 2);
-                targetH = MakeEven(OperatorHeight / 2);
-            }
+            if (level < 0) level = 0;
+            if (level > MaxShedLevel) level = MaxShedLevel;
+            var (resScale, drop) = ShedTable[level];
+
+            int targetW = MakeEven((int)(OperatorWidth * resScale));
+            int targetH = MakeEven((int)(OperatorHeight * resScale));
+            if (targetW < 2) targetW = 2;
+            if (targetH < 2) targetH = 2;
             if (targetW != RenderWidth || targetH != RenderHeight)
             {
                 SetRenderSize(targetW, targetH);
             }
 
-            var targetLayers = _operatorLayers;
-            if (level >= 2) targetLayers &= ~CameraLayers.Galaxy;
-            if (level >= 3) targetLayers &= ~CameraLayers.Scaled;
+            var targetLayers = _operatorLayers & ~drop;
             if (_layers != targetLayers)
             {
                 _layers = targetLayers;
