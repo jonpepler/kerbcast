@@ -43,6 +43,7 @@
   <PropertyGroup>
     <!-- Default to a non-existent path; user passes the real one. -->
     <KspManaged Condition=" '$(KspManaged)' == '' ">__pass_KspManaged__</KspManaged>
+    <KspGameData Condition=" '$(KspGameData)' == '' ">__pass_KspGameData__</KspGameData>
   </PropertyGroup>
 
   <ItemGroup>
@@ -54,8 +55,18 @@
       <HintPath>$(KspManaged)/UnityEngine.CoreModule.dll</HintPath>
       <Private>False</Private>
     </Reference>
+    <Reference Include="UnityEngine.ImageConversionModule">
+      <HintPath>$(KspManaged)/UnityEngine.ImageConversionModule.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
     <Reference Include="Assembly-CSharp">
       <HintPath>$(KspManaged)/Assembly-CSharp.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <!-- Hullcam VDS Continued — provides MuMechModuleHullCamera which
+         every kerbcam-tracked camera part has attached. -->
+    <Reference Include="HullcamVDSContinued">
+      <HintPath>$(KspGameData)/HullCameraVDS/Plugins/HullcamVDSContinued.dll</HintPath>
       <Private>False</Private>
     </Reference>
   </ItemGroup>

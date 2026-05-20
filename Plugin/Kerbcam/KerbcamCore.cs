@@ -1,0 +1,254 @@
+// KSPAddon entry point. Hooks into the Flight scene, scans the active
+// vessel for Hullcam VDS parts, and pumps an AsyncGPUReadback per camera
+// each LateUpdate. Frames land in a single shared MmapFrameRing that the
+// Rust sidecar mmaps and encodes to H.264.
+//
+// Lifecycle:
+//   - Awake:    spawn AsyncReadbackUpdater (KSP loads mod DLLs after
+//               [RuntimeInitializeOnLoadMethod] would fire, so the
+//               vendored yangrc updater never auto-attaches).
+//               Allocate the mmap ring at $XDG_RUNTIME_DIR/kerbcam.ring
+//               (or /tmp on macOS/non-Linux).
+//   - GameEvents.onVesselChange: rebuild the camera list.
+//   - LateUpdate: refresh each tracked camera.
+//   - OnDestroy: tear down cameras, dispose ring.
+
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.IO;
+using HullcamVDS;
+using UnityEngine;
+using Yangrc.OpenGLAsyncReadback;
+using Debug = UnityEngine.Debug;
+
+namespace Kerbcam
+{
+    [KSPAddon(KSPAddon.Startup.Flight, once: false)]
+    public sealed class KerbcamCore : MonoBehaviour
+    {
+        private const int RingSlots = 4;
+        private static readonly string RingPath = ResolveRingPath();
+
+        private KerbcamSettings _settings;
+        private MmapFrameRing _ring;
+        private readonly List<KerbcamCamera> _cameras = new List<KerbcamCamera>();
+        private int _nextCameraId;
+        private Process _sidecar;
+
+        private static string ResolveRingPath()
+        {
+            // XDG_RUNTIME_DIR is the right home on Steam Deck / Linux —
+            // it's a per-user tmpfs that survives the process and is
+            // cleaned up at logout. Fall back to /tmp on macOS / when
+            // XDG_RUNTIME_DIR isn't set (Mono returns "" not null there).
+            var xdg = Environment.GetEnvironmentVariable("XDG_RUNTIME_DIR");
+            if (!string.IsNullOrEmpty(xdg) && Directory.Exists(xdg))
+            {
+                return Path.Combine(xdg, "kerbcam.ring");
+            }
+            return "/tmp/kerbcam.ring";
+        }
+
+        private void Awake()
+        {
+            Debug.Log("[Kerbcam] KerbcamCore.Awake — initialising");
+
+            _settings = KerbcamSettings.Load();
+
+            try
+            {
+                // yangrc's [RuntimeInitializeOnLoadMethod] hook never
+                // fires for mod DLLs (KSP loads them post-init), so the
+                // updater MonoBehaviour that pumps OpenGLAsyncReadbackRequest
+                // never auto-attaches. Spawn it ourselves on a dedicated
+                // DontDestroyOnLoad GameObject.
+                if (AsyncReadbackUpdater.instance == null)
+                {
+                    var updaterGo = new GameObject("Kerbcam_AsyncReadbackUpdater");
+                    UnityEngine.Object.DontDestroyOnLoad(updaterGo);
+                    updaterGo.AddComponent<AsyncReadbackUpdater>();
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError($"[Kerbcam] failed to spawn AsyncReadbackUpdater: {ex}");
+            }
+
+            try
+            {
+                _ring = MmapFrameRing.Create(RingPath, RingSlots, _settings.Width, _settings.Height);
+                Debug.Log($"[Kerbcam] ring opened at {RingPath} ({RingSlots} × {_settings.Width}×{_settings.Height} RGBA)");
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError($"[Kerbcam] failed to open mmap ring at {RingPath}: {ex}");
+                enabled = false;
+                return;
+            }
+
+            GameEvents.onVesselChange.Add(OnVesselChange);
+            RebuildCameraList(FlightGlobals.ActiveVessel);
+
+            TryStartSidecar();
+        }
+
+        // Spawn the bundled sidecar binary if one is shipped alongside the
+        // plugin. Missing or non-executable binary is logged at warn but
+        // doesn't fail Awake — the operator can still launch the sidecar
+        // manually from another shell, which is how kerbcam was originally
+        // built and remains the dev workflow.
+        private void TryStartSidecar()
+        {
+            try
+            {
+                if (_settings != null && !_settings.AutoSpawnSidecar)
+                {
+                    Debug.Log("[Kerbcam] AutoSpawnSidecar=false; sidecar must be launched manually");
+                    return;
+                }
+
+                if (_sidecar != null && !_sidecar.HasExited)
+                {
+                    // Flight scene re-entered while a previous sidecar is
+                    // still running — leave it alone.
+                    return;
+                }
+
+                var binPath = ResolveSidecarBinary();
+                if (binPath == null)
+                {
+                    Debug.LogWarning("[Kerbcam] no bundled sidecar binary found; launch ~/personal/kerbcam/sidecar manually if you need streaming");
+                    return;
+                }
+
+                // CLI flags forwarded from settings.cfg. The sidecar
+                // accepts every value we care about as a long-form arg,
+                // so there's no config file to keep in sync on the
+                // sidecar side.
+                var args =
+                    $"--shm-path \"{RingPath}\" " +
+                    $"--http-bind {_settings.HttpBind} " +
+                    $"--max-width {_settings.Width} " +
+                    $"--max-height {_settings.Height}";
+
+                var psi = new ProcessStartInfo
+                {
+                    FileName = binPath,
+                    Arguments = args,
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    CreateNoWindow = true,
+                };
+
+                _sidecar = new Process { StartInfo = psi, EnableRaisingEvents = true };
+                _sidecar.OutputDataReceived += (sender, e) =>
+                {
+                    if (!string.IsNullOrEmpty(e.Data)) Debug.Log($"[Kerbcam.sidecar] {e.Data}");
+                };
+                _sidecar.ErrorDataReceived += (sender, e) =>
+                {
+                    if (!string.IsNullOrEmpty(e.Data)) Debug.Log($"[Kerbcam.sidecar] {e.Data}");
+                };
+                _sidecar.Exited += (sender, e) =>
+                {
+                    Debug.LogWarning($"[Kerbcam] sidecar exited (code {_sidecar.ExitCode})");
+                };
+
+                _sidecar.Start();
+                _sidecar.BeginOutputReadLine();
+                _sidecar.BeginErrorReadLine();
+                Debug.Log($"[Kerbcam] sidecar started pid={_sidecar.Id} from {binPath}");
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError($"[Kerbcam] failed to start sidecar: {ex}");
+                _sidecar = null;
+            }
+        }
+
+        private static string ResolveSidecarBinary()
+        {
+            // Bundled location: GameData/Kerbcam/sidecar/kerbcam-sidecar
+            // KSPUtil.ApplicationRootPath is the KSP install root.
+            var bundled = Path.Combine(
+                KSPUtil.ApplicationRootPath,
+                "GameData", "Kerbcam", "sidecar", "kerbcam-sidecar");
+            if (File.Exists(bundled)) return bundled;
+            return null;
+        }
+
+        private void StopSidecar()
+        {
+            if (_sidecar == null) return;
+            try
+            {
+                if (!_sidecar.HasExited)
+                {
+                    _sidecar.Kill();
+                    _sidecar.WaitForExit(2000);
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"[Kerbcam] sidecar stop threw: {ex.Message}");
+            }
+            finally
+            {
+                _sidecar.Dispose();
+                _sidecar = null;
+            }
+        }
+
+        private void OnVesselChange(Vessel v)
+        {
+            Debug.Log($"[Kerbcam] vessel change: {(v != null ? v.vesselName : "<null>")}");
+            RebuildCameraList(v);
+        }
+
+        private void RebuildCameraList(Vessel vessel)
+        {
+            foreach (var cam in _cameras) cam.Dispose();
+            _cameras.Clear();
+
+            if (vessel == null) return;
+
+            foreach (var part in vessel.parts)
+            {
+                var hullcam = part.FindModuleImplementing<MuMechModuleHullCamera>();
+                if (hullcam == null) continue;
+                try
+                {
+                    _cameras.Add(new KerbcamCamera(_nextCameraId++, hullcam, _ring));
+                }
+                catch (Exception ex)
+                {
+                    Debug.LogError($"[Kerbcam] failed to attach to {part.name}: {ex}");
+                }
+            }
+            Debug.Log($"[Kerbcam] tracking {_cameras.Count} Hullcam VDS camera(s)");
+        }
+
+        // LateUpdate so the Unity render cameras have finished compositing
+        // the scene into our RenderTextures before we kick the readback.
+        private void LateUpdate()
+        {
+            if (_ring == null) return;
+            for (int i = 0; i < _cameras.Count; i++)
+            {
+                _cameras[i].Refresh();
+            }
+        }
+
+        private void OnDestroy()
+        {
+            GameEvents.onVesselChange.Remove(OnVesselChange);
+            foreach (var cam in _cameras) cam.Dispose();
+            _cameras.Clear();
+            StopSidecar();
+            _ring?.Dispose();
+            _ring = null;
+        }
+    }
+}
