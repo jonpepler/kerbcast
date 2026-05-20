@@ -16,8 +16,9 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Weak};
+use std::time::Instant;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock};
 use tracing::{info, warn};
 use webrtc::track::track_local::track_local_static_sample::TrackLocalStaticSample;
@@ -26,12 +27,36 @@ use crate::encoder::EncoderBackend;
 use crate::shared_mem::{MmapFrameRing, MmapRingConfig};
 
 /// Public shape returned by `GET /cameras` — what a browser sees before
-/// it picks a subscription set.
+/// it picks a subscription set. Operator-readable fields (`part_title`,
+/// `camera_name`, `vessel_name`) come from the plugin's `<id>.info.json`
+/// manifest; falling back to defaults if the manifest's missing or
+/// unreadable.
 #[derive(Debug, Clone, Serialize)]
 pub struct CameraInfo {
     pub flight_id: u32,
     pub max_width: u32,
     pub max_height: u32,
+    pub part_name: String,
+    pub part_title: String,
+    pub camera_name: String,
+    pub vessel_name: String,
+}
+
+/// Manifest the plugin writes alongside the ring file. Static for the
+/// camera's lifetime — vessel renames mid-flight aren't reflected
+/// until the next vessel change.
+#[derive(Debug, Clone, Deserialize)]
+struct InfoManifest {
+    #[allow(dead_code)] // echo-only — we already know the flight_id from the filename
+    flight_id: u32,
+    #[serde(default)]
+    part_name: String,
+    #[serde(default)]
+    part_title: String,
+    #[serde(default)]
+    camera_name: String,
+    #[serde(default)]
+    vessel_name: String,
 }
 
 pub struct CameraState {
@@ -39,9 +64,19 @@ pub struct CameraState {
     pub ring: MmapFrameRing,
     pub max_width: u32,
     pub max_height: u32,
+    pub part_name: String,
+    pub part_title: String,
+    pub camera_name: String,
+    pub vessel_name: String,
     /// Lazy: created on first encoded frame so the encoder sees the
     /// actual frame dimensions, not the ring's max.
     pub encoder: Mutex<Option<Box<dyn EncoderBackend>>>,
+    /// Last wall-clock instant we *encoded* (and emitted NALs to) a frame.
+    /// The consume loop uses this to pace encodes against the configured
+    /// `fps`, instead of running once per ring write at LateUpdate's
+    /// native cadence (40-60 Hz on the Deck) and tagging samples with
+    /// duration=1/fps that the receiver can't reconcile.
+    pub last_encoded_at: Mutex<Option<Instant>>,
     pub last_sequence: AtomicU64,
     /// Count of peer-tracks currently subscribed. Encoder runs only when > 0.
     pub subscribers: AtomicUsize,
@@ -122,10 +157,13 @@ impl CameraRegistry {
             }
             match MmapFrameRing::open(path, self.ring_cfg) {
                 Ok(ring) => {
+                    let manifest = read_manifest(&self.shm_dir, *id).await;
                     info!(
                         flight_id = id,
                         path = %path.display(),
                         max_dims = format!("{}x{}", self.ring_cfg.max_width, self.ring_cfg.max_height),
+                        part_title = %manifest.part_title,
+                        vessel = %manifest.vessel_name,
                         "camera ring attached",
                     );
                     cameras.insert(
@@ -135,7 +173,12 @@ impl CameraRegistry {
                             ring,
                             max_width: self.ring_cfg.max_width,
                             max_height: self.ring_cfg.max_height,
+                            part_name: manifest.part_name,
+                            part_title: manifest.part_title,
+                            camera_name: manifest.camera_name,
+                            vessel_name: manifest.vessel_name,
                             encoder: Mutex::new(None),
+                            last_encoded_at: Mutex::new(None),
                             last_sequence: AtomicU64::new(0),
                             subscribers: AtomicUsize::new(0),
                             tracks: RwLock::new(Vec::new()),
@@ -170,6 +213,10 @@ impl CameraRegistry {
                 flight_id: s.flight_id,
                 max_width: s.max_width,
                 max_height: s.max_height,
+                part_name: s.part_name.clone(),
+                part_title: s.part_title.clone(),
+                camera_name: s.camera_name.clone(),
+                vessel_name: s.vessel_name.clone(),
             })
             .collect();
         // Stable ordering for tests + UX (a refresh shouldn't shuffle).
@@ -181,9 +228,54 @@ impl CameraRegistry {
         self.cameras.read().await.get(&flight_id).cloned()
     }
 
+    /// Write a control file the plugin polls each LateUpdate. Currently
+    /// carries the requested layer mask; future iterations can grow this
+    /// (per-camera resolution, zoom, pan/tilt). Atomic rename so the
+    /// plugin never sees a half-written file.
+    pub async fn write_control(&self, flight_id: u32, layers: &[String]) -> std::io::Result<()> {
+        let dest = self.shm_dir.join(format!("{flight_id}.control.json"));
+        let tmp = self.shm_dir.join(format!("{flight_id}.control.json.tmp"));
+        let body = serde_json::to_string_pretty(&serde_json::json!({
+            "layers": layers,
+        }))?;
+        tokio::fs::write(&tmp, body).await?;
+        tokio::fs::rename(&tmp, &dest).await?;
+        Ok(())
+    }
+
     /// Snapshot of all camera Arcs — used by the consume loop to iterate
     /// without holding the registry's RwLock while encoding.
     pub async fn snapshot(&self) -> Vec<Arc<CameraState>> {
         self.cameras.read().await.values().cloned().collect()
+    }
+}
+
+/// Read the plugin's `<flight_id>.info.json` next to the ring file.
+/// Returns a manifest with empty fields if missing or unparseable —
+/// callers fall back to "(no label)" displays. Logging the parse
+/// error makes a malformed manifest discoverable without crashing.
+async fn read_manifest(shm_dir: &std::path::Path, flight_id: u32) -> InfoManifest {
+    let path = shm_dir.join(format!("{flight_id}.info.json"));
+    let empty = InfoManifest {
+        flight_id,
+        part_name: String::new(),
+        part_title: String::new(),
+        camera_name: String::new(),
+        vessel_name: String::new(),
+    };
+    let bytes = match tokio::fs::read(&path).await {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return empty,
+        Err(e) => {
+            warn!(flight_id, path = %path.display(), error = %e, "info manifest read failed");
+            return empty;
+        }
+    };
+    match serde_json::from_slice::<InfoManifest>(&bytes) {
+        Ok(m) => m,
+        Err(e) => {
+            warn!(flight_id, path = %path.display(), error = %e, "info manifest parse failed");
+            empty
+        }
     }
 }

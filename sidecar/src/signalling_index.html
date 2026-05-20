@@ -4,39 +4,146 @@
 <meta charset="utf-8" />
 <title>kerbcam</title>
 <style>
-  body { font-family: -apple-system, system-ui, sans-serif; max-width: 760px; margin: 2rem auto; padding: 0 1rem; }
+  :root { font-family: -apple-system, system-ui, sans-serif; }
+  body { max-width: 1100px; margin: 1.5rem auto; padding: 0 1rem; color: #222; }
+  h1 { margin-top: 0; }
   button { padding: 0.5rem 1rem; }
-  video { width: 100%; max-width: 640px; background: #111; margin-top: 0.5rem; }
-  pre { background: #f4f4f4; padding: 0.5rem; overflow-x: auto; font-size: 12px; }
   .row { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
-  .camera-line { font-family: ui-monospace, monospace; font-size: 13px; color: #444; }
+  .status { color: #666; }
+  table.cameras { width: 100%; border-collapse: collapse; font-size: 14px; margin-top: 0.5rem; }
+  table.cameras th, table.cameras td { padding: 6px 8px; border-bottom: 1px solid #e5e5e5; text-align: left; vertical-align: middle; }
+  table.cameras th { background: #fafafa; font-weight: 600; }
+  table.cameras tr.subscribed { background: #f0fff4; }
+  table.cameras .layer { width: 80px; text-align: center; }
+  table.cameras .name { font-weight: 500; }
+  table.cameras .vessel { color: #666; font-size: 12px; }
+  table.cameras .id { color: #999; font-family: ui-monospace, monospace; font-size: 11px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 1rem; margin-top: 1rem; }
+  .grid figure { margin: 0; padding: 0; background: #111; border-radius: 4px; overflow: hidden; }
+  .grid figcaption { background: rgba(0,0,0,0.7); color: #fff; padding: 4px 8px; font-size: 12px; display: flex; justify-content: space-between; }
+  .grid video { display: block; width: 100%; background: #000; }
+  pre.stats { background: #f4f4f4; padding: 0.5rem; overflow-x: auto; font-size: 11px; margin: 0.5rem 0 0; }
+  .empty { color: #999; font-style: italic; }
 </style>
 </head>
 <body>
 <h1>kerbcam</h1>
-<p>Lists the cameras the sidecar has discovered, connects to the first one, and shows its stream.</p>
+<p>Lists cameras the sidecar has discovered. Tick which ones to stream, then Connect. Per-camera layer checkboxes toggle the near / scaled / galaxy render layers live (no reconnect needed).</p>
 
 <div class="row">
   <button id="refreshBtn">Refresh cameras</button>
-  <button id="connectBtn" disabled>Connect to first camera</button>
-  <span id="status" style="color:#666">idle</span>
+  <button id="connectBtn" disabled>Connect</button>
+  <button id="disconnectBtn" disabled>Disconnect</button>
+  <span id="status" class="status">idle</span>
 </div>
 
 <h3>Detected cameras</h3>
-<pre id="cameras" class="camera-line">none yet (click Refresh)</pre>
+<table class="cameras">
+  <thead>
+    <tr>
+      <th style="width:60px">Stream</th>
+      <th>Camera</th>
+      <th class="layer">Near</th>
+      <th class="layer">Scaled</th>
+      <th class="layer">Galaxy</th>
+    </tr>
+  </thead>
+  <tbody id="cameraTable">
+    <tr><td colspan="5" class="empty">none yet — click Refresh</td></tr>
+  </tbody>
+</table>
 
-<video id="video" autoplay playsinline controls></video>
-
-<h3>Stats</h3>
-<pre id="stats">no stats yet</pre>
+<h3>Streams</h3>
+<div id="grid" class="grid"></div>
 
 <script>
 const $ = (id) => document.getElementById(id);
 const setStatus = (text, color = "#666") => { $("status").textContent = text; $("status").style.color = color; };
 
+const layerKinds = ["NEAR", "SCALED", "GALAXY"];
+
 let pc = null;
 let statsTimer = null;
-let discovered = [];
+let discovered = []; // [{flight_id, part_title, vessel_name, max_width, max_height}]
+let included = new Set(); // flight_ids the operator wants to subscribe to
+let layerState = new Map(); // flight_id -> Set<layer>
+let trackByFlightId = new Map(); // flight_id -> MediaStreamTrack
+
+function setLayerLocal(flightId, layer, on) {
+  const set = layerState.get(flightId) ?? new Set(layerKinds);
+  if (on) set.add(layer); else set.delete(layer);
+  layerState.set(flightId, set);
+}
+
+async function pushLayers(flightId) {
+  const set = layerState.get(flightId) ?? new Set(layerKinds);
+  const layers = layerKinds.filter((l) => set.has(l));
+  try {
+    const res = await fetch(`/cameras/${flightId}/layers`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ layers }),
+    });
+    if (!res.ok) {
+      setStatus(`layer update failed for ${flightId}: ${res.status}`, "red");
+    }
+  } catch (e) {
+    setStatus(`layer update error: ${e.message}`, "red");
+  }
+}
+
+function renderTable() {
+  const tbody = $("cameraTable");
+  if (discovered.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="5" class="empty">none yet — is KSP running with Hullcam parts?</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = "";
+  for (const cam of discovered) {
+    const tr = document.createElement("tr");
+    if (included.has(cam.flight_id)) tr.classList.add("subscribed");
+
+    const incTd = document.createElement("td");
+    const incCb = document.createElement("input");
+    incCb.type = "checkbox";
+    incCb.checked = included.has(cam.flight_id);
+    incCb.addEventListener("change", () => {
+      if (incCb.checked) included.add(cam.flight_id); else included.delete(cam.flight_id);
+      tr.classList.toggle("subscribed", incCb.checked);
+      $("connectBtn").disabled = included.size === 0 || pc !== null;
+    });
+    incTd.appendChild(incCb);
+    tr.appendChild(incTd);
+
+    const nameTd = document.createElement("td");
+    nameTd.innerHTML = `
+      <div class="name">${escapeHtml(cam.camera_name || cam.part_title || cam.part_name || "(no label)")}</div>
+      <div class="vessel">${escapeHtml(cam.vessel_name || "")} · ${cam.max_width}×${cam.max_height}</div>
+      <div class="id">flight_id ${cam.flight_id}</div>`;
+    tr.appendChild(nameTd);
+
+    const currentLayers = layerState.get(cam.flight_id) ?? new Set(layerKinds);
+    for (const layer of layerKinds) {
+      const td = document.createElement("td");
+      td.className = "layer";
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = currentLayers.has(layer);
+      cb.addEventListener("change", () => {
+        setLayerLocal(cam.flight_id, layer, cb.checked);
+        pushLayers(cam.flight_id);
+      });
+      td.appendChild(cb);
+      tr.appendChild(td);
+    }
+
+    tbody.appendChild(tr);
+  }
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
+}
 
 async function refreshCameras() {
   try {
@@ -44,46 +151,91 @@ async function refreshCameras() {
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const { cameras } = await res.json();
     discovered = cameras || [];
-    if (discovered.length === 0) {
-      $("cameras").textContent = "(no cameras attached — is KSP running with Hullcam parts?)";
-      $("connectBtn").disabled = true;
-    } else {
-      $("cameras").textContent = discovered
-        .map((c) => `flight_id=${c.flight_id}  ${c.max_width}x${c.max_height}`)
-        .join("\n");
-      $("connectBtn").disabled = false;
+
+    // Initialise included + layerState for new cameras.
+    for (const cam of discovered) {
+      if (!layerState.has(cam.flight_id)) {
+        layerState.set(cam.flight_id, new Set(layerKinds));
+      }
+      // Default: stream all newly-detected cameras
+      if (included.size === 0 || pc === null) included.add(cam.flight_id);
     }
+    // Drop included entries for cameras that vanished.
+    for (const id of [...included]) {
+      if (!discovered.find((c) => c.flight_id === id)) included.delete(id);
+    }
+    renderTable();
+    $("connectBtn").disabled = pc !== null || included.size === 0;
   } catch (e) {
-    $("cameras").textContent = `error fetching /cameras: ${e.message}`;
+    const tbody = $("cameraTable");
+    tbody.innerHTML = `<tr><td colspan="5" class="empty">error fetching /cameras: ${escapeHtml(e.message)}</td></tr>`;
   }
 }
 
+function disconnect() {
+  if (pc) { pc.close(); pc = null; }
+  if (statsTimer) { clearInterval(statsTimer); statsTimer = null; }
+  trackByFlightId.clear();
+  $("grid").innerHTML = "";
+  $("connectBtn").disabled = included.size === 0;
+  $("disconnectBtn").disabled = true;
+  setStatus("disconnected");
+}
+
 $("refreshBtn").addEventListener("click", refreshCameras);
+$("disconnectBtn").addEventListener("click", disconnect);
 refreshCameras();
 
 $("connectBtn").addEventListener("click", async () => {
-  if (discovered.length === 0) return;
-  const targetId = discovered[0].flight_id;
-  setStatus(`creating peer connection (cam ${targetId})`);
+  if (included.size === 0) return;
+  const selected = [...included];
+  setStatus(`creating peer connection for ${selected.length} camera(s)`);
 
   pc = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] });
-  pc.addTransceiver("video", { direction: "recvonly" });
 
+  // Add one recvonly transceiver per camera we want to receive. The order
+  // here matches the order we send in the offer body, which the sidecar
+  // uses to assign tracks → m-sections.
+  for (const _ of selected) pc.addTransceiver("video", { direction: "recvonly" });
+
+  let trackIdx = 0;
   pc.ontrack = (ev) => {
-    setStatus(`track received (${ev.track.id})`);
-    if (ev.streams && ev.streams[0]) {
-      $("video").srcObject = ev.streams[0];
-    } else {
-      const ms = new MediaStream();
-      ms.addTrack(ev.track);
-      $("video").srcObject = ms;
-    }
+    // Tracks arrive in the order we requested. Map by index → flight_id.
+    const flightId = selected[trackIdx++];
+    const cam = discovered.find((c) => c.flight_id === flightId);
+
+    const fig = document.createElement("figure");
+    const cap = document.createElement("figcaption");
+    cap.innerHTML = `<span>${escapeHtml(cam?.camera_name || cam?.part_title || cam?.part_name || "?" )}</span><span>flight ${flightId}</span>`;
+    const v = document.createElement("video");
+    v.autoplay = true;
+    v.playsInline = true;
+    v.controls = true;
+    v.muted = true;
+    const ms = new MediaStream();
+    ms.addTrack(ev.track);
+    v.srcObject = ms;
+    fig.appendChild(v);
+    fig.appendChild(cap);
+    const stats = document.createElement("pre");
+    stats.className = "stats";
+    stats.id = `stats-${flightId}`;
+    stats.textContent = "stats pending…";
+    fig.appendChild(stats);
+    $("grid").appendChild(fig);
+
+    trackByFlightId.set(flightId, ev.track);
   };
 
   pc.oniceconnectionstatechange = () => setStatus(`ICE: ${pc.iceConnectionState}`);
-  pc.onconnectionstatechange = () => setStatus(`PC: ${pc.connectionState}`,
-    pc.connectionState === "connected" ? "green" :
-    pc.connectionState === "failed" ? "red" : "#666");
+  pc.onconnectionstatechange = () => {
+    setStatus(`PC: ${pc.connectionState}`,
+      pc.connectionState === "connected" ? "green" :
+      pc.connectionState === "failed" ? "red" : "#666");
+    if (["failed", "closed", "disconnected"].includes(pc.connectionState)) {
+      disconnect();
+    }
+  };
 
   const offer = await pc.createOffer();
   await pc.setLocalDescription(offer);
@@ -94,31 +246,42 @@ $("connectBtn").addEventListener("click", async () => {
     pc.addEventListener("icegatheringstatechange", check);
   });
 
-  setStatus("posting offer to sidecar");
+  setStatus(`posting offer (${selected.length} cameras)`);
   const res = await fetch("/offer", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ sdp: pc.localDescription.sdp, cameras: [targetId] }),
+    body: JSON.stringify({ sdp: pc.localDescription.sdp, cameras: selected }),
   });
   if (!res.ok) {
     setStatus(`offer failed: ${res.status}`, "red");
+    disconnect();
     return;
   }
   const { sdp: answerSdp, cameras: subscribed } = await res.json();
   await pc.setRemoteDescription({ type: "answer", sdp: answerSdp });
-  setStatus(`answer applied, subscribed to ${subscribed?.join(",") || "?"}`, "green");
+  setStatus(`subscribed to ${subscribed.length}: ${subscribed.join(", ")}`, "green");
+  $("connectBtn").disabled = true;
+  $("disconnectBtn").disabled = false;
 
   if (statsTimer) clearInterval(statsTimer);
   statsTimer = setInterval(async () => {
     if (!pc) return;
-    const stats = await pc.getStats(null);
-    const lines = [];
-    stats.forEach((report) => {
+    const allStats = await pc.getStats(null);
+    const byTrackId = new Map();
+    allStats.forEach((report) => {
       if (report.type === "inbound-rtp" && report.kind === "video") {
-        lines.push(`inbound-rtp video: packets=${report.packetsReceived} bytes=${report.bytesReceived} framesReceived=${report.framesReceived ?? "?"} framesDecoded=${report.framesDecoded ?? "?"} jitter=${report.jitter?.toFixed(4) ?? "?"}`);
+        const trackInfo = allStats.get(report.trackId);
+        const ssrcInfo = trackInfo ?? report;
+        byTrackId.set(report.trackIdentifier ?? report.ssrc, report);
       }
     });
-    $("stats").textContent = lines.length ? lines.join("\n") : "waiting for inbound video stats";
+    for (const [flightId, track] of trackByFlightId.entries()) {
+      const el = document.getElementById(`stats-${flightId}`);
+      if (!el) continue;
+      const r = byTrackId.get(track.id);
+      if (!r) { el.textContent = "no inbound-rtp yet"; continue; }
+      el.textContent = `pkts=${r.packetsReceived} bytes=${r.bytesReceived} recv=${r.framesReceived ?? "?"} dec=${r.framesDecoded ?? "?"} jitter=${r.jitter?.toFixed(3) ?? "?"}`;
+    }
   }, 1000);
 });
 </script>

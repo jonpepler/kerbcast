@@ -221,6 +221,25 @@ async fn encode_and_fan_out(
     bitrate_bps: u32,
     frame_duration: Duration,
 ) {
+    // Throttle against configured fps. The plugin writes into the ring at
+    // LateUpdate's cadence (40–60 Hz on the Deck), but the encoder is
+    // configured for `fps` and each emitted sample carries duration=1/fps —
+    // tagging samples wall-clock-too-fast makes the receiver drop about
+    // half of them (`framesReceived` ≫ `framesDecoded`). Skipping encodes
+    // until enough wall time has elapsed since the last one keeps the
+    // encoder running at its configured rate and the receiver's playback
+    // clock honest.
+    {
+        let mut last_at = cam.last_encoded_at.lock().await;
+        let now = Instant::now();
+        if let Some(prev) = *last_at {
+            if now.duration_since(prev) < frame_duration {
+                return;
+            }
+        }
+        *last_at = Some(now);
+    }
+
     let frame = match cam.ring.latest() {
         Ok(Some(f)) => f,
         Ok(None) => return,

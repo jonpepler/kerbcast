@@ -59,6 +59,10 @@
       <HintPath>$(KspManaged)/UnityEngine.ImageConversionModule.dll</HintPath>
       <Private>False</Private>
     </Reference>
+    <Reference Include="UnityEngine.UIModule">
+      <HintPath>$(KspManaged)/UnityEngine.UIModule.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
     <Reference Include="Assembly-CSharp">
       <HintPath>$(KspManaged)/Assembly-CSharp.dll</HintPath>
       <Private>False</Private>

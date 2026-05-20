@@ -1,18 +1,21 @@
-//! HTTP signalling endpoint. Two endpoints + a test page:
+//! HTTP signalling endpoint. Three endpoints + a test page:
 //!
 //! - `GET /cameras` returns a JSON list of currently-attached cameras
-//!   (`[{ flight_id, max_width, max_height }, ...]`); the browser polls
-//!   this to populate its picker.
+//!   (with `part_title`, `vessel_name`, etc); the browser polls this
+//!   to populate its picker.
 //! - `POST /offer` takes `{ sdp, cameras: [flight_id, ...] }`, creates a
 //!   `KerbcamPeer` with one track per selected camera, answers the SDP,
 //!   and returns the answer. Unknown camera IDs are dropped with a
 //!   warning rather than failing the whole request.
-//! - `GET /` serves the bundled test page that does the picker + connect
-//!   + render flow.
+//! - `POST /cameras/{flight_id}/layers` takes
+//!   `{ layers: ["NEAR", "SCALED", "GALAXY"] }`. Writes the requested
+//!   layer mask to `<flight_id>.control.json`; the plugin polls that
+//!   file each tick and enables / disables its Unity Cameras to match.
+//! - `GET /` serves the bundled test page.
 
 use std::sync::Arc;
 
-use axum::extract::State;
+use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
@@ -61,11 +64,25 @@ pub struct CamerasResponse {
     pub cameras: Vec<CameraInfo>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct LayersRequest {
+    /// Subset of {"NEAR", "SCALED", "GALAXY"}. Unknown strings are
+    /// dropped with a warning rather than failing the whole request.
+    pub layers: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct LayersResponse {
+    pub flight_id: u32,
+    pub layers: Vec<String>,
+}
+
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/", get(serve_index))
         .route("/health", get(health))
         .route("/cameras", get(cameras))
+        .route("/cameras/{flight_id}/layers", post(set_layers))
         .route("/offer", post(offer))
         .layer(
             CorsLayer::new()
@@ -91,6 +108,54 @@ async fn serve_index() -> impl IntoResponse {
 async fn cameras(State(state): State<AppState>) -> impl IntoResponse {
     let list = state.registry.list().await;
     (StatusCode::OK, Json(CamerasResponse { cameras: list })).into_response()
+}
+
+async fn set_layers(
+    State(state): State<AppState>,
+    Path(flight_id): Path<u32>,
+    Json(req): Json<LayersRequest>,
+) -> impl IntoResponse {
+    if state.registry.get(flight_id).await.is_none() {
+        return (
+            StatusCode::NOT_FOUND,
+            format!("no camera with flight_id={flight_id}"),
+        )
+            .into_response();
+    }
+
+    // Canonicalise to known layer names; drop unknowns so a typo in the
+    // request doesn't propagate to the plugin's control file.
+    let allowed = ["NEAR", "SCALED", "GALAXY"];
+    let mut accepted: Vec<String> = Vec::new();
+    for raw in &req.layers {
+        let up = raw.to_uppercase();
+        if allowed.contains(&up.as_str()) {
+            if !accepted.iter().any(|a| a == &up) {
+                accepted.push(up);
+            }
+        } else {
+            warn!(flight_id, layer = %raw, "unknown layer requested, dropped");
+        }
+    }
+
+    if let Err(e) = state.registry.write_control(flight_id, &accepted).await {
+        warn!(flight_id, error = %e, "control file write failed");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("control file write failed: {e}"),
+        )
+            .into_response();
+    }
+
+    info!(flight_id, layers = ?accepted, "layer mask updated");
+    (
+        StatusCode::OK,
+        Json(LayersResponse {
+            flight_id,
+            layers: accepted,
+        }),
+    )
+        .into_response()
 }
 
 async fn offer(State(state): State<AppState>, Json(req): Json<OfferRequest>) -> impl IntoResponse {
