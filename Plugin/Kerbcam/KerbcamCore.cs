@@ -37,6 +37,20 @@ namespace Kerbcam
         private readonly List<KerbcamCamera> _cameras = new List<KerbcamCamera>();
         private Process _sidecar;
 
+        // Rolling 60-sample FPS window for adaptive layer shedding.
+        // ~1s at 60fps, ~2s at 30fps — long enough to ignore single-frame
+        // hitches, short enough to react to sustained slow-downs.
+        private const int FpsSamples = 60;
+        private readonly float[] _fpsWindow = new float[FpsSamples];
+        private int _fpsIdx;
+        private int _fpsCount; // up to FpsSamples; growing-average until full
+        private float _fpsAvg;
+        private int _shedLevel;
+        private const float ShedGalaxyBelowFps = 22f;
+        private const float RestoreGalaxyAboveFps = 27f;
+        private const float ShedScaledBelowFps = 12f;
+        private const float RestoreScaledAboveFps = 17f;
+
         private static string ResolveRingDir()
         {
             // XDG_RUNTIME_DIR is the right home on Steam Deck / Linux —
@@ -223,8 +237,15 @@ namespace Kerbcam
                 if (hullcam == null) continue;
                 try
                 {
+                    var partName = part.partInfo?.name ?? string.Empty;
+                    var initialLayers = _settings.GetInitialLayers(partName);
                     _cameras.Add(new KerbcamCamera(
-                        hullcam, RingDir, RingSlots, _settings.Width, _settings.Height));
+                        hullcam,
+                        RingDir,
+                        RingSlots,
+                        _settings.Width,
+                        _settings.Height,
+                        initialLayers));
                 }
                 catch (Exception ex)
                 {
@@ -238,10 +259,57 @@ namespace Kerbcam
         // the scene into our RenderTextures before we kick the readback.
         private void LateUpdate()
         {
+            UpdateFpsAverage();
+            ApplyAdaptiveShedding();
+
             for (int i = 0; i < _cameras.Count; i++)
             {
                 _cameras[i].Refresh();
             }
+        }
+
+        private void UpdateFpsAverage()
+        {
+            float dt = Time.unscaledDeltaTime;
+            if (dt < 0.0001f) return;
+            _fpsWindow[_fpsIdx] = 1f / dt;
+            _fpsIdx = (_fpsIdx + 1) % FpsSamples;
+            if (_fpsCount < FpsSamples) _fpsCount++;
+
+            float sum = 0f;
+            for (int i = 0; i < _fpsCount; i++) sum += _fpsWindow[i];
+            _fpsAvg = sum / _fpsCount;
+        }
+
+        // Per-tick: decide whether to escalate / de-escalate the shed
+        // level given the rolling fps average. Hysteresis between shed
+        // and restore thresholds prevents flapping. Skips entirely until
+        // the window has filled — early frames after a scene load are
+        // noisy and would trigger spurious sheds.
+        private void ApplyAdaptiveShedding()
+        {
+            if (_fpsCount < FpsSamples) return;
+
+            int desired = _shedLevel;
+            switch (_shedLevel)
+            {
+                case 0:
+                    if (_fpsAvg < ShedGalaxyBelowFps) desired = 1;
+                    break;
+                case 1:
+                    if (_fpsAvg < ShedScaledBelowFps) desired = 2;
+                    else if (_fpsAvg > RestoreGalaxyAboveFps) desired = 0;
+                    break;
+                case 2:
+                    if (_fpsAvg > RestoreScaledAboveFps) desired = 1;
+                    break;
+            }
+
+            if (desired == _shedLevel) return;
+
+            _shedLevel = desired;
+            Debug.Log($"[Kerbcam] adaptive shed level={_shedLevel} (avg fps={_fpsAvg:F1})");
+            foreach (var cam in _cameras) cam.ApplyAutoShed(_shedLevel);
         }
 
         private void OnDestroy()

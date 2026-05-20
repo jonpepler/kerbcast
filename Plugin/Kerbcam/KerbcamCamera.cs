@@ -51,18 +51,33 @@ namespace Kerbcam
         private int _controlCheckCountdown;
 
         private CameraLayers _layers = CameraLayers.All;
+        /// <summary>
+        /// Ceiling for the effective layer mask. Adaptive shedding can
+        /// reduce <c>_layers</c> below this, but never expand past it.
+        /// Set on construction (from settings.cfg) and on operator
+        /// control-file updates.
+        /// </summary>
+        private CameraLayers _operatorLayers = CameraLayers.All;
 
         private UniversalAsyncGPUReadbackRequest _pendingRequest;
         private bool _readbackInFlight;
         private double _pendingCaptureTsMs;
         private int _consecutiveErrors;
 
-        public KerbcamCamera(MuMechModuleHullCamera hullcam, string ringDir, int slotCount, int width, int height)
+        public KerbcamCamera(
+            MuMechModuleHullCamera hullcam,
+            string ringDir,
+            int slotCount,
+            int width,
+            int height,
+            CameraLayers initialLayers)
         {
             Hullcam = hullcam;
             FlightId = hullcam.part.flightID;
             Width = width;
             Height = height;
+            _operatorLayers = initialLayers;
+            _layers = initialLayers;
 
             _ringPath = Path.Combine(ringDir, $"{FlightId}.ring");
             _infoPath = Path.Combine(ringDir, $"{FlightId}.info.json");
@@ -169,15 +184,37 @@ namespace Kerbcam
             return Camera.allCameras.FirstOrDefault(c => c.name == name);
         }
 
-        public CameraLayers Layers
+        public CameraLayers Layers => _layers;
+        public CameraLayers OperatorLayers => _operatorLayers;
+
+        /// <summary>
+        /// Apply an operator-driven layer change. Updates the ceiling AND
+        /// the effective mask, and clears any in-effect adaptive shedding
+        /// (it'll re-apply on the next tick if fps is still below the
+        /// shed threshold).
+        /// </summary>
+        public void SetOperatorLayers(CameraLayers ops)
         {
-            get => _layers;
-            set
-            {
-                if (_layers == value) return;
-                _layers = value;
-                ApplyLayers();
-            }
+            if (_operatorLayers == ops && _layers == ops) return;
+            _operatorLayers = ops;
+            _layers = ops;
+            ApplyLayers();
+        }
+
+        /// <summary>
+        /// Apply an adaptive-shed level driven by KSP framerate. Subtracts
+        /// (from cheapest first) layers from the operator-set ceiling.
+        /// Level 0 = no shed, 1 = drop galaxy, 2 = drop galaxy + scaled.
+        /// Near is never auto-shed — it's the camera's reason to exist.
+        /// </summary>
+        public void ApplyAutoShed(int level)
+        {
+            var target = _operatorLayers;
+            if (level >= 1) target &= ~CameraLayers.Galaxy;
+            if (level >= 2) target &= ~CameraLayers.Scaled;
+            if (_layers == target) return;
+            _layers = target;
+            ApplyLayers();
         }
 
         private void ApplyLayers()
@@ -205,8 +242,8 @@ namespace Kerbcam
                 var layers = ParseLayersJson(raw);
                 if (layers.HasValue)
                 {
-                    Layers = layers.Value;
-                    Debug.Log($"[Kerbcam] cam={FlightId} layers updated → {Layers}");
+                    SetOperatorLayers(layers.Value);
+                    Debug.Log($"[Kerbcam] cam={FlightId} operator layers → {_operatorLayers}");
                 }
             }
             catch (Exception ex)

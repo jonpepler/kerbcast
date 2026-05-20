@@ -3,12 +3,12 @@
 // `Settings { ... }` node parsed via KSP's ConfigNode API. All fields
 // are optional; missing ones fall back to the defaults below.
 //
-// Fields:
+// Top-level fields:
 //   BindAddress       — host the sidecar's HTTP signalling endpoint
-//                       binds to. 127.0.0.1 = localhost only (default,
-//                       safe). 0.0.0.0 = any interface (needed if you
-//                       want a browser on another LAN device to hit
-//                       the sidecar directly).
+//                       binds to. 127.0.0.1 = localhost only (safe).
+//                       0.0.0.0 = any interface (needed for LAN
+//                       streaming to gonogo / a browser on another
+//                       machine).
 //   Port              — sidecar HTTP signalling port (default 8088).
 //   Width / Height    — capture dimensions per Hullcam (default 768).
 //                       Larger = more pixels to push through openh264
@@ -17,7 +17,20 @@
 //                       bundled sidecar binary on Awake. Set to false
 //                       during sidecar development so `cargo run`
 //                       owns the process.
+//
+// Per-camera override nodes (zero or more `Camera { ... }` blocks):
+//   PartName          — internal KSP part name (e.g. "navCam1"). Match
+//                       case-sensitive.
+//   Layers            — comma-separated subset of NEAR, SCALED, GALAXY.
+//                       Sets the initial layer mask for the camera on
+//                       attach; operator can still override at runtime
+//                       via POST /cameras/{id}/layers.
+//
+// Per-camera Width / Height overrides aren't supported yet — the
+// sidecar still opens all rings at the global max dims. Plumbing
+// variable dims through MmapRingConfig is a follow-up.
 
+using System.Collections.Generic;
 using System.IO;
 using UnityEngine;
 
@@ -32,6 +45,25 @@ namespace Kerbcam
         public bool AutoSpawnSidecar { get; private set; } = true;
 
         public string HttpBind => $"{BindAddress}:{Port}";
+
+        // Per-PartName initial layer mask (e.g. "navCam1" → NEAR only).
+        // Cameras whose PartName isn't here default to CameraLayers.All.
+        private readonly Dictionary<string, CameraLayers> _initialLayers =
+            new Dictionary<string, CameraLayers>();
+
+        /// <summary>
+        /// Initial layer mask for a part. Falls back to All if no override
+        /// applies. Operator can still change layers at runtime via the
+        /// sidecar's /layers endpoint — this only sets the value on attach.
+        /// </summary>
+        public CameraLayers GetInitialLayers(string partName)
+        {
+            if (!string.IsNullOrEmpty(partName) && _initialLayers.TryGetValue(partName, out var layers))
+            {
+                return layers;
+            }
+            return CameraLayers.All;
+        }
 
         public static KerbcamSettings Load()
         {
@@ -59,8 +91,45 @@ namespace Kerbcam
             ApplyInt(node, "Height", v => settings.Height = v);
             ApplyBool(node, "AutoSpawnSidecar", v => settings.AutoSpawnSidecar = v);
 
-            Debug.Log($"[Kerbcam] settings loaded: bind={settings.HttpBind} dims={settings.Width}x{settings.Height} autoSpawn={settings.AutoSpawnSidecar}");
+            foreach (var camNode in node.GetNodes("Camera"))
+            {
+                var partName = camNode.GetValue("PartName")?.Trim();
+                if (string.IsNullOrEmpty(partName))
+                {
+                    Debug.LogWarning("[Kerbcam] settings.cfg: Camera node missing PartName, skipping");
+                    continue;
+                }
+                var layersRaw = camNode.GetValue("Layers");
+                if (!string.IsNullOrEmpty(layersRaw))
+                {
+                    settings._initialLayers[partName] = ParseLayers(layersRaw);
+                }
+            }
+
+            var camCount = settings._initialLayers.Count;
+            Debug.Log($"[Kerbcam] settings loaded: bind={settings.HttpBind} dims={settings.Width}x{settings.Height} autoSpawn={settings.AutoSpawnSidecar} cameraOverrides={camCount}");
             return settings;
+        }
+
+        private static CameraLayers ParseLayers(string raw)
+        {
+            var mask = CameraLayers.None;
+            foreach (var tok in raw.Split(','))
+            {
+                var t = tok.Trim();
+                if (t.Equals("NEAR", System.StringComparison.OrdinalIgnoreCase)) mask |= CameraLayers.Near;
+                else if (t.Equals("SCALED", System.StringComparison.OrdinalIgnoreCase)) mask |= CameraLayers.Scaled;
+                else if (t.Equals("GALAXY", System.StringComparison.OrdinalIgnoreCase)) mask |= CameraLayers.Galaxy;
+                else if (t.Equals("ALL", System.StringComparison.OrdinalIgnoreCase)) mask |= CameraLayers.All;
+                else if (!string.IsNullOrEmpty(t))
+                {
+                    Debug.LogWarning($"[Kerbcam] settings.cfg: unknown layer '{t}', skipping");
+                }
+            }
+            // An empty / all-invalid Layers list would be CameraLayers.None
+            // and mean "render nothing for this camera" — almost certainly
+            // not what the operator meant. Fall back to All.
+            return mask == CameraLayers.None ? CameraLayers.All : mask;
         }
 
         private static void ApplyString(ConfigNode node, string key, System.Action<string> set)
