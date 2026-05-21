@@ -316,7 +316,10 @@ namespace Kerbcam
                     sb.Append($"      \"operatorWidth\": {cam.OperatorWidth},\n");
                     sb.Append($"      \"operatorHeight\": {cam.OperatorHeight},\n");
                     sb.Append($"      \"layers\": {LayersToJson(cam.Layers)},\n");
-                    sb.Append($"      \"operatorLayers\": {LayersToJson(cam.OperatorLayers)}\n");
+                    sb.Append($"      \"operatorLayers\": {LayersToJson(cam.OperatorLayers)},\n");
+                    sb.Append($"      \"fov\": {cam.Fov.ToString(System.Globalization.CultureInfo.InvariantCulture)},\n");
+                    sb.Append($"      \"panYaw\": {cam.PanYaw.ToString(System.Globalization.CultureInfo.InvariantCulture)},\n");
+                    sb.Append($"      \"panPitch\": {cam.PanPitch.ToString(System.Globalization.CultureInfo.InvariantCulture)}\n");
                     sb.Append(i == _cameras.Count - 1 ? "    }\n" : "    },\n");
                 }
                 sb.Append("  ]\n");

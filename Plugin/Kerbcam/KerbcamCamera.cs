@@ -43,6 +43,29 @@ namespace Kerbcam
         public int OperatorWidth { get; private set; }
         public int OperatorHeight { get; private set; }
 
+        /// <summary>True iff the part is a `MuMechModuleHullCameraZoom`
+        /// — the zoom-capable Hullcam VDS subclass. 19 of 21 stock
+        /// Hullcam parts are zoom-capable; the base
+        /// `MuMechModuleHullCamera` (Basic Hull Camera Deluxe) is the
+        /// only fixed-FoV exception.</summary>
+        public bool SupportsZoom { get; }
+        public float FovMin { get; }
+        public float FovMax { get; }
+        public float Fov { get; private set; }
+
+        /// <summary>Pan/tilt capability is reserved for the planned
+        /// kerbcam-side mod extension that adds steerable mounts to
+        /// specific Hullcam parts. False on every shipping part today;
+        /// the protocol carries the fields so clients are ready for
+        /// when this flips true per part.</summary>
+        public bool SupportsPan => false;
+        public float PanYawMin => 0f;
+        public float PanYawMax => 0f;
+        public float PanPitchMin => 0f;
+        public float PanPitchMax => 0f;
+        public float PanYaw { get; private set; }
+        public float PanPitch { get; private set; }
+
         private Camera _nearCam;
         private Camera _scaledCam;
         private Camera _galaxyCam;
@@ -90,6 +113,25 @@ namespace Kerbcam
             RenderHeight = renderHeight;
             _operatorLayers = initialLayers;
             _layers = initialLayers;
+
+            // Zoom capability: the zoom subclass `MuMechModuleHullCameraZoom`
+            // carries cameraFoVMin / cameraFoVMax fields the base module
+            // doesn't. `is` check + cast lets us reflect zoom support
+            // without taking a hard reference to the subclass type for
+            // parts where it's not present.
+            var zoomable = hullcam as MuMechModuleHullCameraZoom;
+            SupportsZoom = zoomable != null;
+            if (zoomable != null)
+            {
+                FovMin = zoomable.cameraFoVMin;
+                FovMax = zoomable.cameraFoVMax;
+            }
+            else
+            {
+                FovMin = hullcam.cameraFoV;
+                FovMax = hullcam.cameraFoV;
+            }
+            Fov = hullcam.cameraFoV;
 
             _ringPath = Path.Combine(ringDir, $"{FlightId}.ring");
             _infoPath = Path.Combine(ringDir, $"{FlightId}.info.json");
@@ -266,6 +308,24 @@ namespace Kerbcam
         }
 
         /// <summary>
+        /// Apply an operator-driven FoV change. Updates the Hullcam
+        /// module (so its right-click GUI stays in sync) and every
+        /// active Unity Camera in our layered triple. Silently no-ops
+        /// for parts where `SupportsZoom == false`.
+        /// </summary>
+        public void SetFov(float fov)
+        {
+            if (!SupportsZoom) return;
+            float clamped = Mathf.Clamp(fov, FovMin, FovMax);
+            if (Mathf.Abs(clamped - Fov) < 0.01f) return;
+            Fov = clamped;
+            Hullcam.cameraFoV = clamped;
+            if (_nearCam != null) _nearCam.fieldOfView = clamped;
+            if (_scaledCam != null) _scaledCam.fieldOfView = clamped;
+            if (_galaxyCam != null) _galaxyCam.fieldOfView = clamped;
+        }
+
+        /// <summary>
         /// Cascade table: (resolution multiplier, layers to drop). Lower
         /// levels are gentler on perception. Resolution reduction wins
         /// over layer dropping because it preserves scene completeness
@@ -317,11 +377,11 @@ namespace Kerbcam
             if (_galaxyCam != null) _galaxyCam.enabled = (_layers & CameraLayers.Galaxy) != 0;
         }
 
-        // Sidecar→plugin control channel. The sidecar's
-        // POST /cameras/{flight_id}/layers handler writes the requested
-        // layer mask to <FlightId>.control.json (atomic rename, so we
-        // never see a half-written file). We only re-parse when the
-        // file's mtime moves — cheap stat-based check.
+        // Sidecar→plugin control channel. The sidecar's data-channel
+        // handlers (SetLayers / SetRenderSize / SetFov / SetPan) write
+        // the full operator-requested state into <FlightId>.control.json
+        // via atomic rename. The plugin only re-parses when the file's
+        // mtime moves — cheap stat-based check.
         private void PollControlFile()
         {
             try
@@ -338,6 +398,15 @@ namespace Kerbcam
                     SetOperatorLayers(layers.Value);
                     Debug.Log($"[Kerbcam] cam={FlightId} operator layers → {_operatorLayers}");
                 }
+                var fov = ParseFloatField(raw, "fov");
+                if (fov.HasValue && SupportsZoom)
+                {
+                    SetFov(fov.Value);
+                }
+                // Pan parsing is wired but ignored on shipping parts
+                // (`SupportsPan == false` short-circuits in setters).
+                // The plumbing exists so the future extended mod can
+                // flip the capability flag without protocol churn.
             }
             catch (Exception ex)
             {
@@ -345,10 +414,10 @@ namespace Kerbcam
             }
         }
 
-        // Minimal JSON parser tailored to the control file's shape:
-        //   { "layers": ["NEAR", "SCALED", "GALAXY"] }
-        // Returns null on parse failure (caller leaves Layers unchanged).
-        // Hand-rolled because pulling in Newtonsoft.Json for one tiny
+        // Minimal JSON parsers tailored to the control file's shape:
+        //   { "layers": [...], "width": N, "height": N, "fov": F, ... }
+        // Return null on parse failure (caller leaves field unchanged).
+        // Hand-rolled because pulling Newtonsoft.Json in for one tiny
         // file with a fixed schema isn't worth the dependency.
         private static CameraLayers? ParseLayersJson(string body)
         {
@@ -372,6 +441,25 @@ namespace Kerbcam
             return mask;
         }
 
+        private static float? ParseFloatField(string body, string key)
+        {
+            int keyIdx = body.IndexOf($"\"{key}\"", StringComparison.Ordinal);
+            if (keyIdx < 0) return null;
+            int colon = body.IndexOf(':', keyIdx);
+            if (colon < 0) return null;
+            int end = colon + 1;
+            while (end < body.Length && (body[end] == ' ' || body[end] == '\t' || body[end] == '\n' || body[end] == '\r')) end++;
+            int start = end;
+            while (end < body.Length && (char.IsDigit(body[end]) || body[end] == '.' || body[end] == '-' || body[end] == 'e' || body[end] == 'E' || body[end] == '+')) end++;
+            if (end == start) return null;
+            var raw = body.Substring(start, end - start);
+            if (float.TryParse(raw, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float v))
+            {
+                return v;
+            }
+            return null;
+        }
+
         // Static-per-life-of-camera metadata the sidecar serves via
         // GET /cameras. The plugin owns this file; the sidecar reads it
         // when it discovers the matching ring. Vessel name is technically
@@ -391,7 +479,16 @@ namespace Kerbcam
                     + $"  \"part_name\": \"{EscapeJson(partName)}\",\n"
                     + $"  \"part_title\": \"{EscapeJson(partTitle)}\",\n"
                     + $"  \"camera_name\": \"{EscapeJson(cameraName)}\",\n"
-                    + $"  \"vessel_name\": \"{EscapeJson(vesselName)}\"\n"
+                    + $"  \"vessel_name\": \"{EscapeJson(vesselName)}\",\n"
+                    + $"  \"supports_zoom\": {(SupportsZoom ? "true" : "false")},\n"
+                    + $"  \"fov\": {Fov.ToString(System.Globalization.CultureInfo.InvariantCulture)},\n"
+                    + $"  \"fov_min\": {FovMin.ToString(System.Globalization.CultureInfo.InvariantCulture)},\n"
+                    + $"  \"fov_max\": {FovMax.ToString(System.Globalization.CultureInfo.InvariantCulture)},\n"
+                    + $"  \"supports_pan\": {(SupportsPan ? "true" : "false")},\n"
+                    + $"  \"pan_yaw_min\": {PanYawMin.ToString(System.Globalization.CultureInfo.InvariantCulture)},\n"
+                    + $"  \"pan_yaw_max\": {PanYawMax.ToString(System.Globalization.CultureInfo.InvariantCulture)},\n"
+                    + $"  \"pan_pitch_min\": {PanPitchMin.ToString(System.Globalization.CultureInfo.InvariantCulture)},\n"
+                    + $"  \"pan_pitch_max\": {PanPitchMax.ToString(System.Globalization.CultureInfo.InvariantCulture)}\n"
                     + "}\n";
                 File.WriteAllText(_infoPath, json);
             }

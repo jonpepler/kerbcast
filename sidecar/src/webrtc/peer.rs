@@ -40,7 +40,8 @@ use webrtc::track::track_local::TrackLocal;
 use crate::cameras::CameraRegistry;
 use crate::protocol::{
     CameraSnapshotPayload, CameraState, CameraStateChangedPayload, ClientMessage, ErrorPayload,
-    FlightIdPayload, HelloPayload, Layer, ServerMessage, SetLayersPayload, SetRenderSizePayload,
+    FlightIdPayload, HelloPayload, Layer, ServerMessage, SetFovPayload, SetLayersPayload,
+    SetPanPayload, SetRenderSizePayload,
 };
 
 const CONTROL_CHANNEL_LABEL: &str = "kerbcam-control";
@@ -287,6 +288,16 @@ async fn handle_client_message(
         }) => {
             apply_render_size_change(&registry, &dc, flight_id, width, height).await;
         }
+        ClientMessage::SetFov(SetFovPayload { flight_id, fov }) => {
+            apply_fov_change(&registry, &dc, flight_id, fov).await;
+        }
+        ClientMessage::SetPan(SetPanPayload {
+            flight_id,
+            yaw,
+            pitch,
+        }) => {
+            apply_pan_change(&registry, &dc, flight_id, yaw, pitch).await;
+        }
         ClientMessage::RequestKeyframe(FlightIdPayload { flight_id }) => {
             // The encoder backends expose `request_keyframe()`; we call
             // it through the per-camera encoder lock if it's currently
@@ -399,8 +410,132 @@ async fn apply_render_size_change(
     push_camera_state(registry, dc, flight_id).await;
 }
 
+async fn apply_fov_change(
+    registry: &Arc<CameraRegistry>,
+    dc: &Arc<RTCDataChannel>,
+    flight_id: u32,
+    fov: f32,
+) {
+    let cam = match registry.get(flight_id).await {
+        Some(c) => c,
+        None => {
+            send_server_message(
+                dc,
+                &ServerMessage::Error(ErrorPayload {
+                    message: format!("no camera with flight_id={flight_id}"),
+                }),
+            )
+            .await;
+            return;
+        }
+    };
+    if !cam.supports_zoom {
+        send_server_message(
+            dc,
+            &ServerMessage::Error(ErrorPayload {
+                message: format!("camera {flight_id} does not support zoom"),
+            }),
+        )
+        .await;
+        return;
+    }
+    // Clamp to the part's declared FoV range so the plugin doesn't get
+    // a value the Hullcam module would reject.
+    let clamped = fov.clamp(cam.fov_min, cam.fov_max);
+
+    let snapshot = {
+        let mut ctrl = cam.control.lock().await;
+        ctrl.fov = Some(clamped);
+        ctrl.clone()
+    };
+
+    if let Err(e) = registry.flush_control(flight_id, &snapshot).await {
+        warn!(flight_id, error = %e, "control file flush failed");
+        send_server_message(
+            dc,
+            &ServerMessage::Error(ErrorPayload {
+                message: format!("control file flush failed: {e}"),
+            }),
+        )
+        .await;
+        return;
+    }
+
+    info!(flight_id, fov = clamped, "data-channel set-fov applied");
+    push_camera_state(registry, dc, flight_id).await;
+}
+
+async fn apply_pan_change(
+    registry: &Arc<CameraRegistry>,
+    dc: &Arc<RTCDataChannel>,
+    flight_id: u32,
+    yaw: f32,
+    pitch: f32,
+) {
+    let cam = match registry.get(flight_id).await {
+        Some(c) => c,
+        None => {
+            send_server_message(
+                dc,
+                &ServerMessage::Error(ErrorPayload {
+                    message: format!("no camera with flight_id={flight_id}"),
+                }),
+            )
+            .await;
+            return;
+        }
+    };
+    if !cam.supports_pan {
+        send_server_message(
+            dc,
+            &ServerMessage::Error(ErrorPayload {
+                message: format!(
+                    "camera {flight_id} does not support pan/tilt (yet — \
+                     planned mod extension)"
+                ),
+            }),
+        )
+        .await;
+        return;
+    }
+    let yaw_clamped = yaw.clamp(cam.pan_yaw_min, cam.pan_yaw_max);
+    let pitch_clamped = pitch.clamp(cam.pan_pitch_min, cam.pan_pitch_max);
+
+    let snapshot = {
+        let mut ctrl = cam.control.lock().await;
+        ctrl.pan_yaw = Some(yaw_clamped);
+        ctrl.pan_pitch = Some(pitch_clamped);
+        ctrl.clone()
+    };
+
+    if let Err(e) = registry.flush_control(flight_id, &snapshot).await {
+        warn!(flight_id, error = %e, "control file flush failed");
+        send_server_message(
+            dc,
+            &ServerMessage::Error(ErrorPayload {
+                message: format!("control file flush failed: {e}"),
+            }),
+        )
+        .await;
+        return;
+    }
+
+    info!(
+        flight_id,
+        yaw = yaw_clamped,
+        pitch = pitch_clamped,
+        "data-channel set-pan applied"
+    );
+    push_camera_state(registry, dc, flight_id).await;
+}
+
 async fn send_camera_snapshot(registry: &Arc<CameraRegistry>, dc: &Arc<RTCDataChannel>) {
     let cams = registry.list().await;
+    // Initial snapshot: optimistic defaults until the plugin's status
+    // file pushes the real effective state. Operator == effective for
+    // both layers and dims at this point; subsequent
+    // `camera-state-changed` messages from the status poller correct
+    // these once adaptive shedding kicks in.
     let cameras: Vec<CameraState> = cams
         .into_iter()
         .map(|c| CameraState {
@@ -409,16 +544,23 @@ async fn send_camera_snapshot(registry: &Arc<CameraRegistry>, dc: &Arc<RTCDataCh
             part_title: c.part_title,
             camera_name: c.camera_name,
             vessel_name: c.vessel_name,
-            // We don't yet have plugin-side status reporting, so the
-            // sidecar mirrors operator state for both effective and
-            // operator views. Once the plugin writes back a status file,
-            // these split.
             layers: vec![Layer::Near, Layer::Scaled, Layer::Galaxy],
             operator_layers: vec![Layer::Near, Layer::Scaled, Layer::Galaxy],
             render_width: c.max_width,
             render_height: c.max_height,
             operator_width: c.max_width,
             operator_height: c.max_height,
+            supports_zoom: c.supports_zoom,
+            fov: c.fov,
+            fov_min: c.fov_min,
+            fov_max: c.fov_max,
+            supports_pan: c.supports_pan,
+            pan_yaw: 0.0,
+            pan_pitch: 0.0,
+            pan_yaw_min: c.pan_yaw_min,
+            pan_yaw_max: c.pan_yaw_max,
+            pan_pitch_min: c.pan_pitch_min,
+            pan_pitch_max: c.pan_pitch_max,
         })
         .collect();
     send_server_message(
@@ -445,6 +587,9 @@ async fn push_camera_state(
     };
     let w = ctrl.width.unwrap_or(cam.max_width);
     let h = ctrl.height.unwrap_or(cam.max_height);
+    let fov = ctrl.fov.unwrap_or(cam.fov_default);
+    let pan_yaw = ctrl.pan_yaw.unwrap_or(0.0);
+    let pan_pitch = ctrl.pan_pitch.unwrap_or(0.0);
     let state = CameraState {
         flight_id,
         part_name: cam.part_name.clone(),
@@ -457,6 +602,17 @@ async fn push_camera_state(
         render_height: h,
         operator_width: w,
         operator_height: h,
+        supports_zoom: cam.supports_zoom,
+        fov,
+        fov_min: cam.fov_min,
+        fov_max: cam.fov_max,
+        supports_pan: cam.supports_pan,
+        pan_yaw,
+        pan_pitch,
+        pan_yaw_min: cam.pan_yaw_min,
+        pan_yaw_max: cam.pan_yaw_max,
+        pan_pitch_min: cam.pan_pitch_min,
+        pan_pitch_max: cam.pan_pitch_max,
     };
     send_server_message(
         dc,

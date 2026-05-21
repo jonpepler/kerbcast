@@ -24,9 +24,7 @@ use webrtc::media::Sample;
 
 use kerbcam_sidecar::cameras::{CameraRegistry, CameraState};
 use kerbcam_sidecar::encoder::{select_backend, EncodeConfig, EncoderChoice, RawFrame};
-use kerbcam_sidecar::protocol::{
-    AdaptiveShedPayload, CameraStateChangedPayload, ServerMessage,
-};
+use kerbcam_sidecar::protocol::{AdaptiveShedPayload, CameraStateChangedPayload, ServerMessage};
 use kerbcam_sidecar::shared_mem::MmapRingConfig;
 use kerbcam_sidecar::signalling::{router, AppState};
 use kerbcam_sidecar::webrtc::KerbcamPeer;

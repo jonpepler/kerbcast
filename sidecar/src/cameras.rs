@@ -52,6 +52,12 @@ struct PerCameraStatus {
     layers: Vec<Layer>,
     #[serde(default)]
     operator_layers: Vec<Layer>,
+    #[serde(default)]
+    fov: f32,
+    #[serde(default)]
+    pan_yaw: f32,
+    #[serde(default)]
+    pan_pitch: f32,
 }
 
 /// Diff result from a status poll. Empty vec / None when nothing
@@ -64,8 +70,9 @@ pub struct StatusDelta {
 
 /// In-memory mirror of the plugin's `<flight_id>.control.json` file.
 /// The data-channel message handlers mutate this struct and the
-/// registry's `write_control` flushes the full state to disk, so two
-/// independent setters compose cleanly.
+/// registry's `flush_control` flushes the full state to disk, so
+/// independent setters (SetLayers, SetRenderSize, SetFov) compose
+/// cleanly without clobbering each other.
 #[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ControlState {
@@ -78,14 +85,27 @@ pub struct ControlState {
     pub width: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub height: Option<u32>,
+    /// Operator-requested camera FoV in degrees. None = "leave Hullcam's
+    /// default alone". Ignored for parts where `supports_zoom == false`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fov: Option<f32>,
+    /// Operator-requested pan/tilt in degrees. None = "neutral / rest".
+    /// Ignored for parts where `supports_pan == false` (every shipping
+    /// part today; reserved for the planned mod extension).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pan_yaw: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pan_pitch: Option<f32>,
 }
 
 /// Public shape returned by `GET /cameras` — what a browser sees before
 /// it picks a subscription set. Operator-readable fields (`part_title`,
 /// `camera_name`, `vessel_name`) come from the plugin's `<id>.info.json`
 /// manifest; falling back to defaults if the manifest's missing or
-/// unreadable.
+/// unreadable. Capability fields tell clients which controls to render
+/// per camera (zoom slider / pan stick).
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CameraInfo {
     pub flight_id: u32,
     pub max_width: u32,
@@ -94,11 +114,23 @@ pub struct CameraInfo {
     pub part_title: String,
     pub camera_name: String,
     pub vessel_name: String,
+    pub supports_zoom: bool,
+    pub fov: f32,
+    pub fov_min: f32,
+    pub fov_max: f32,
+    pub supports_pan: bool,
+    pub pan_yaw_min: f32,
+    pub pan_yaw_max: f32,
+    pub pan_pitch_min: f32,
+    pub pan_pitch_max: f32,
 }
 
 /// Manifest the plugin writes alongside the ring file. Static for the
 /// camera's lifetime — vessel renames mid-flight aren't reflected
-/// until the next vessel change.
+/// until the next vessel change. Capability fields are read from the
+/// Hullcam module on the plugin side: `supportsZoom = true` iff the
+/// part is `MuMechModuleHullCameraZoom`; `supportsPan = true` only once
+/// the planned mod extension adds steerable mounts.
 #[derive(Debug, Clone, Deserialize)]
 struct InfoManifest {
     #[allow(dead_code)] // echo-only — we already know the flight_id from the filename
@@ -111,6 +143,24 @@ struct InfoManifest {
     camera_name: String,
     #[serde(default)]
     vessel_name: String,
+    #[serde(default)]
+    supports_zoom: bool,
+    #[serde(default)]
+    fov: f32,
+    #[serde(default)]
+    fov_min: f32,
+    #[serde(default)]
+    fov_max: f32,
+    #[serde(default)]
+    supports_pan: bool,
+    #[serde(default)]
+    pan_yaw_min: f32,
+    #[serde(default)]
+    pan_yaw_max: f32,
+    #[serde(default)]
+    pan_pitch_min: f32,
+    #[serde(default)]
+    pan_pitch_max: f32,
 }
 
 pub struct CameraState {
@@ -122,6 +172,15 @@ pub struct CameraState {
     pub part_title: String,
     pub camera_name: String,
     pub vessel_name: String,
+    pub supports_zoom: bool,
+    pub fov_default: f32,
+    pub fov_min: f32,
+    pub fov_max: f32,
+    pub supports_pan: bool,
+    pub pan_yaw_min: f32,
+    pub pan_yaw_max: f32,
+    pub pan_pitch_min: f32,
+    pub pan_pitch_max: f32,
     /// Sidecar-side mirror of the plugin's control file. Mutated by
     /// data-channel messages (SetLayers / SetRenderSize); the registry's
     /// `write_control` flushes the full struct to disk on each change so
@@ -248,6 +307,15 @@ impl CameraRegistry {
                             part_title: manifest.part_title,
                             camera_name: manifest.camera_name,
                             vessel_name: manifest.vessel_name,
+                            supports_zoom: manifest.supports_zoom,
+                            fov_default: manifest.fov,
+                            fov_min: manifest.fov_min,
+                            fov_max: manifest.fov_max,
+                            supports_pan: manifest.supports_pan,
+                            pan_yaw_min: manifest.pan_yaw_min,
+                            pan_yaw_max: manifest.pan_yaw_max,
+                            pan_pitch_min: manifest.pan_pitch_min,
+                            pan_pitch_max: manifest.pan_pitch_max,
                             encoder: Mutex::new(None),
                             encoder_width: AtomicU32::new(0),
                             encoder_height: AtomicU32::new(0),
@@ -291,6 +359,15 @@ impl CameraRegistry {
                 part_title: s.part_title.clone(),
                 camera_name: s.camera_name.clone(),
                 vessel_name: s.vessel_name.clone(),
+                supports_zoom: s.supports_zoom,
+                fov: s.fov_default,
+                fov_min: s.fov_min,
+                fov_max: s.fov_max,
+                supports_pan: s.supports_pan,
+                pan_yaw_min: s.pan_yaw_min,
+                pan_yaw_max: s.pan_yaw_max,
+                pan_pitch_min: s.pan_pitch_min,
+                pan_pitch_max: s.pan_pitch_max,
             })
             .collect();
         // Stable ordering for tests + UX (a refresh shouldn't shuffle).
@@ -356,6 +433,9 @@ impl CameraRegistry {
                         || p.operator_height != cam_status.operator_height
                         || p.layers != cam_status.layers
                         || p.operator_layers != cam_status.operator_layers
+                        || (p.fov - cam_status.fov).abs() > 0.01
+                        || (p.pan_yaw - cam_status.pan_yaw).abs() > 0.01
+                        || (p.pan_pitch - cam_status.pan_pitch).abs() > 0.01
                 }
             };
             if !changed {
@@ -376,6 +456,17 @@ impl CameraRegistry {
                 render_height: cam_status.render_height,
                 operator_width: cam_status.operator_width,
                 operator_height: cam_status.operator_height,
+                supports_zoom: cam.supports_zoom,
+                fov: cam_status.fov,
+                fov_min: cam.fov_min,
+                fov_max: cam.fov_max,
+                supports_pan: cam.supports_pan,
+                pan_yaw: cam_status.pan_yaw,
+                pan_pitch: cam_status.pan_pitch,
+                pan_yaw_min: cam.pan_yaw_min,
+                pan_yaw_max: cam.pan_yaw_max,
+                pan_pitch_min: cam.pan_pitch_min,
+                pan_pitch_max: cam.pan_pitch_max,
             });
         }
 
@@ -416,6 +507,15 @@ async fn read_manifest(shm_dir: &std::path::Path, flight_id: u32) -> InfoManifes
         part_title: String::new(),
         camera_name: String::new(),
         vessel_name: String::new(),
+        supports_zoom: false,
+        fov: 0.0,
+        fov_min: 0.0,
+        fov_max: 0.0,
+        supports_pan: false,
+        pan_yaw_min: 0.0,
+        pan_yaw_max: 0.0,
+        pan_pitch_min: 0.0,
+        pan_pitch_max: 0.0,
     };
     let bytes = match tokio::fs::read(&path).await {
         Ok(b) => b,

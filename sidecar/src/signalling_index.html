@@ -17,6 +17,10 @@
   table.cameras th { background: #fafafa; font-weight: 600; }
   table.cameras tr.subscribed { background: #f0fff4; }
   table.cameras .layer { width: 80px; text-align: center; }
+  table.cameras .zoom { width: 220px; }
+  table.cameras .zoom input[type=range] { width: 140px; vertical-align: middle; }
+  table.cameras .zoom .value { display: inline-block; min-width: 50px; font-family: ui-monospace, monospace; font-size: 11px; color: #666; }
+  table.cameras .zoom.disabled { color: #ccc; }
   table.cameras .name { font-weight: 500; }
   table.cameras .vessel { color: #666; font-size: 12px; }
   table.cameras .id { color: #999; font-family: ui-monospace, monospace; font-size: 11px; }
@@ -49,10 +53,11 @@
       <th class="layer">Near</th>
       <th class="layer">Scaled</th>
       <th class="layer">Galaxy</th>
+      <th class="zoom">FoV</th>
     </tr>
   </thead>
   <tbody id="cameraTable">
-    <tr><td colspan="5" class="empty">none yet — click Refresh</td></tr>
+    <tr><td colspan="6" class="empty">none yet — click Refresh</td></tr>
   </tbody>
 </table>
 
@@ -72,9 +77,10 @@ const LAYER_KINDS = ["NEAR", "SCALED", "GALAXY"];
 let pc = null;
 let dc = null;
 let statsTimer = null;
-let discovered = []; // CameraState[] from /cameras (HTTP, pre-offer)
+let discovered = []; // CameraInfo[] from /cameras (HTTP, pre-offer) — camelCase keys
 let included = new Set(); // flight_ids selected for streaming
 let layerState = new Map(); // flight_id -> Set<layer>
+let fovState = new Map(); // flight_id -> current fov
 let trackByFlightId = new Map();
 
 function sendControl(message) {
@@ -95,6 +101,7 @@ function handleServerMessage(msg) {
       const cams = msg.type === "camera-snapshot" ? msg.content.cameras : [msg.content.state];
       for (const cs of cams) {
         layerState.set(cs.flightId, new Set(cs.operatorLayers));
+        fovState.set(cs.flightId, cs.fov);
       }
       renderTable();
       break;
@@ -114,21 +121,21 @@ function handleServerMessage(msg) {
 function renderTable() {
   const tbody = $("cameraTable");
   if (discovered.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="5" class="empty">none yet — is KSP running with Hullcam parts?</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="6" class="empty">none yet — is KSP running with Hullcam parts?</td></tr>`;
     return;
   }
   tbody.innerHTML = "";
   for (const cam of discovered) {
     const tr = document.createElement("tr");
-    if (included.has(cam.flight_id)) tr.classList.add("subscribed");
+    if (included.has(cam.flightId)) tr.classList.add("subscribed");
 
     const incTd = document.createElement("td");
     const incCb = document.createElement("input");
     incCb.type = "checkbox";
-    incCb.checked = included.has(cam.flight_id);
+    incCb.checked = included.has(cam.flightId);
     incCb.disabled = pc !== null;
     incCb.addEventListener("change", () => {
-      if (incCb.checked) included.add(cam.flight_id); else included.delete(cam.flight_id);
+      if (incCb.checked) included.add(cam.flightId); else included.delete(cam.flightId);
       tr.classList.toggle("subscribed", incCb.checked);
       $("connectBtn").disabled = included.size === 0 || pc !== null;
     });
@@ -137,12 +144,12 @@ function renderTable() {
 
     const nameTd = document.createElement("td");
     nameTd.innerHTML = `
-      <div class="name">${escapeHtml(cam.camera_name || cam.part_title || cam.part_name || "(no label)")}</div>
-      <div class="vessel">${escapeHtml(cam.vessel_name || "")} · ${cam.max_width}×${cam.max_height}</div>
-      <div class="id">flight_id ${cam.flight_id}</div>`;
+      <div class="name">${escapeHtml(cam.cameraName || cam.partTitle || cam.partName || "(no label)")}</div>
+      <div class="vessel">${escapeHtml(cam.vesselName || "")} · ${cam.maxWidth}×${cam.maxHeight}</div>
+      <div class="id">flight_id ${cam.flightId}</div>`;
     tr.appendChild(nameTd);
 
-    const currentLayers = layerState.get(cam.flight_id) ?? new Set(LAYER_KINDS);
+    const currentLayers = layerState.get(cam.flightId) ?? new Set(LAYER_KINDS);
     for (const layer of LAYER_KINDS) {
       const td = document.createElement("td");
       td.className = "layer";
@@ -153,15 +160,50 @@ function renderTable() {
       cb.addEventListener("change", () => {
         const next = new Set(currentLayers);
         if (cb.checked) next.add(layer); else next.delete(layer);
-        layerState.set(cam.flight_id, next);
+        layerState.set(cam.flightId, next);
         sendControl({
           type: "set-layers",
-          content: { flightId: cam.flight_id, layers: [...next] },
+          content: { flightId: cam.flightId, layers: [...next] },
         });
       });
       td.appendChild(cb);
       tr.appendChild(td);
     }
+
+    // FoV slider — rendered for every camera but disabled for fixed
+    // (non-zoom) parts so the operator can see at a glance which parts
+    // have which capabilities.
+    const fovTd = document.createElement("td");
+    fovTd.className = cam.supportsZoom ? "zoom" : "zoom disabled";
+    if (cam.supportsZoom) {
+      const currentFov = fovState.get(cam.flightId) ?? cam.fov;
+      const slider = document.createElement("input");
+      slider.type = "range";
+      slider.min = cam.fovMin;
+      slider.max = cam.fovMax;
+      slider.step = (cam.fovMax - cam.fovMin) < 5 ? 0.01 : 1;
+      slider.value = currentFov;
+      slider.disabled = !dc || dc.readyState !== "open";
+      const valueLabel = document.createElement("span");
+      valueLabel.className = "value";
+      valueLabel.textContent = `${Number(currentFov).toFixed(1)}°`;
+      slider.addEventListener("input", () => {
+        valueLabel.textContent = `${Number(slider.value).toFixed(1)}°`;
+      });
+      slider.addEventListener("change", () => {
+        const fov = parseFloat(slider.value);
+        fovState.set(cam.flightId, fov);
+        sendControl({
+          type: "set-fov",
+          content: { flightId: cam.flightId, fov },
+        });
+      });
+      fovTd.appendChild(slider);
+      fovTd.appendChild(valueLabel);
+    } else {
+      fovTd.textContent = `${Number(cam.fov).toFixed(1)}° (fixed)`;
+    }
+    tr.appendChild(fovTd);
 
     tbody.appendChild(tr);
   }
@@ -178,16 +220,16 @@ async function refreshCameras() {
     const { cameras } = await res.json();
     discovered = cameras || [];
     for (const cam of discovered) {
-      if (!layerState.has(cam.flight_id)) layerState.set(cam.flight_id, new Set(LAYER_KINDS));
-      if (pc === null) included.add(cam.flight_id);
+      if (!layerState.has(cam.flightId)) layerState.set(cam.flightId, new Set(LAYER_KINDS));
+      if (pc === null) included.add(cam.flightId);
     }
     for (const id of [...included]) {
-      if (!discovered.find((c) => c.flight_id === id)) included.delete(id);
+      if (!discovered.find((c) => c.flightId === id)) included.delete(id);
     }
     renderTable();
     $("connectBtn").disabled = pc !== null || included.size === 0;
   } catch (e) {
-    $("cameraTable").innerHTML = `<tr><td colspan="5" class="empty">error fetching /cameras: ${escapeHtml(e.message)}</td></tr>`;
+    $("cameraTable").innerHTML = `<tr><td colspan="6" class="empty">error fetching /cameras: ${escapeHtml(e.message)}</td></tr>`;
   }
 }
 
@@ -241,11 +283,11 @@ $("connectBtn").addEventListener("click", async () => {
   let trackIdx = 0;
   pc.ontrack = (ev) => {
     const flightId = selected[trackIdx++];
-    const cam = discovered.find((c) => c.flight_id === flightId);
+    const cam = discovered.find((c) => c.flightId === flightId);
 
     const fig = document.createElement("figure");
     const cap = document.createElement("figcaption");
-    cap.innerHTML = `<span>${escapeHtml(cam?.camera_name || cam?.part_title || cam?.part_name || "?")}</span><span>flight ${flightId}</span>`;
+    cap.innerHTML = `<span>${escapeHtml(cam?.cameraName || cam?.partTitle || cam?.partName || "?")}</span><span>flight ${flightId}</span>`;
     const v = document.createElement("video");
     v.autoplay = true; v.playsInline = true; v.controls = true; v.muted = true;
     const ms = new MediaStream();

@@ -23,6 +23,11 @@ export enum Layer {
  * Per-camera snapshot pushed by the sidecar on every state change
  * (operator API call, adaptive shed, vessel change). Same shape served
  * by `GET /cameras` so client UIs can treat the two interchangeably.
+ * 
+ * Capability fields (`supports_zoom`, `supports_pan`) let clients
+ * render controls only for features each part actually offers — a
+ * fixed-FoV camera shouldn't get a zoom slider, a non-steerable one
+ * shouldn't get a pan stick.
  */
 export interface CameraState {
 	flightId: number;
@@ -51,6 +56,34 @@ export interface CameraState {
 	 */
 	operatorWidth: number;
 	operatorHeight: number;
+	/**
+	 * Whether the part's Hullcam module supports runtime FoV changes
+	 * (i.e. it's a `MuMechModuleHullCameraZoom`, not the fixed base
+	 * `MuMechModuleHullCamera`). 19 of 21 stock parts do.
+	 */
+	supportsZoom: boolean;
+	/** Current effective FoV in degrees. */
+	fov: number;
+	/**
+	 * FoV bounds the operator can choose between. Wider than the
+	 * camera's "default" — these come from the Hullcam part config.
+	 * Equal to `fov` when `supports_zoom == false`.
+	 */
+	fovMin: number;
+	fovMax: number;
+	/**
+	 * Whether the part supports pan/tilt (kerbcam-side mod extension —
+	 * no stock Hullcam parts are steerable, but the extended mod adds
+	 * pan to specific parts). False on every shipping part today;
+	 * clients should hide pan controls until this flips true.
+	 */
+	supportsPan: boolean;
+	panYaw: number;
+	panPitch: number;
+	panYawMin: number;
+	panYawMax: number;
+	panPitchMin: number;
+	panPitchMax: number;
 }
 
 export interface CameraSnapshotPayload {
@@ -74,9 +107,20 @@ export interface HelloPayload {
 	encoderBackend: string;
 }
 
+export interface SetFovPayload {
+	flightId: number;
+	fov: number;
+}
+
 export interface SetLayersPayload {
 	flightId: number;
 	layers: Layer[];
+}
+
+export interface SetPanPayload {
+	flightId: number;
+	yaw: number;
+	pitch: number;
 }
 
 export interface SetRenderSizePayload {
@@ -103,6 +147,21 @@ export type ClientMessage =
 	 * only (H.264 chroma); server caps at the ring's allocated max.
 	 */
 	| { type: "set-render-size", content: SetRenderSizePayload }
+	/**
+	 * Set the camera's field-of-view (degrees). Silently ignored for
+	 * parts whose Hullcam module is the fixed base (`supportsZoom ==
+	 * false`); clients are expected to clamp to `fovMin / fovMax`
+	 * from the camera's `CameraState` before sending.
+	 */
+	| { type: "set-fov", content: SetFovPayload }
+	/**
+	 * Pan/tilt the camera (yaw and pitch, both degrees from the
+	 * part's resting forward). No stock Hullcam parts support this
+	 * yet — the message is ignored until the planned mod extension
+	 * adds steerable mounts to specific parts. Clients should hide
+	 * pan controls until `supportsPan == true` for the camera.
+	 */
+	| { type: "set-pan", content: SetPanPayload }
 	/**
 	 * Request an IDR (keyframe) on the next encode tick. Browsers send
 	 * this when they've dropped enough frames to be unable to decode

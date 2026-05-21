@@ -42,6 +42,11 @@ pub enum Layer {
 /// Per-camera snapshot pushed by the sidecar on every state change
 /// (operator API call, adaptive shed, vessel change). Same shape served
 /// by `GET /cameras` so client UIs can treat the two interchangeably.
+///
+/// Capability fields (`supports_zoom`, `supports_pan`) let clients
+/// render controls only for features each part actually offers — a
+/// fixed-FoV camera shouldn't get a zoom slider, a non-steerable one
+/// shouldn't get a pan stick.
 #[typeshare]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -66,6 +71,28 @@ pub struct CameraState {
     /// reduce below.
     pub operator_width: u32,
     pub operator_height: u32,
+    /// Whether the part's Hullcam module supports runtime FoV changes
+    /// (i.e. it's a `MuMechModuleHullCameraZoom`, not the fixed base
+    /// `MuMechModuleHullCamera`). 19 of 21 stock parts do.
+    pub supports_zoom: bool,
+    /// Current effective FoV in degrees.
+    pub fov: f32,
+    /// FoV bounds the operator can choose between. Wider than the
+    /// camera's "default" — these come from the Hullcam part config.
+    /// Equal to `fov` when `supports_zoom == false`.
+    pub fov_min: f32,
+    pub fov_max: f32,
+    /// Whether the part supports pan/tilt (kerbcam-side mod extension —
+    /// no stock Hullcam parts are steerable, but the extended mod adds
+    /// pan to specific parts). False on every shipping part today;
+    /// clients should hide pan controls until this flips true.
+    pub supports_pan: bool,
+    pub pan_yaw: f32,
+    pub pan_pitch: f32,
+    pub pan_yaw_min: f32,
+    pub pan_yaw_max: f32,
+    pub pan_pitch_min: f32,
+    pub pan_pitch_max: f32,
 }
 
 // Wrapper structs for the algebraic-enum content payloads. typeshare's
@@ -88,6 +115,23 @@ pub struct SetRenderSizePayload {
     pub flight_id: u32,
     pub width: u32,
     pub height: u32,
+}
+
+#[typeshare]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetFovPayload {
+    pub flight_id: u32,
+    pub fov: f32,
+}
+
+#[typeshare]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetPanPayload {
+    pub flight_id: u32,
+    pub yaw: f32,
+    pub pitch: f32,
 }
 
 #[typeshare]
@@ -150,6 +194,17 @@ pub enum ClientMessage {
     /// Override the operator render size for one camera. Even pixels
     /// only (H.264 chroma); server caps at the ring's allocated max.
     SetRenderSize(SetRenderSizePayload),
+    /// Set the camera's field-of-view (degrees). Silently ignored for
+    /// parts whose Hullcam module is the fixed base (`supportsZoom ==
+    /// false`); clients are expected to clamp to `fovMin / fovMax`
+    /// from the camera's `CameraState` before sending.
+    SetFov(SetFovPayload),
+    /// Pan/tilt the camera (yaw and pitch, both degrees from the
+    /// part's resting forward). No stock Hullcam parts support this
+    /// yet — the message is ignored until the planned mod extension
+    /// adds steerable mounts to specific parts. Clients should hide
+    /// pan controls until `supportsPan == true` for the camera.
+    SetPan(SetPanPayload),
     /// Request an IDR (keyframe) on the next encode tick. Browsers send
     /// this when they've dropped enough frames to be unable to decode
     /// the current P-frame chain. Sidecar forwards to the camera's
@@ -223,6 +278,17 @@ mod tests {
                 render_height: 384,
                 operator_width: 768,
                 operator_height: 768,
+                supports_zoom: true,
+                fov: 60.0,
+                fov_min: 30.0,
+                fov_max: 100.0,
+                supports_pan: false,
+                pan_yaw: 0.0,
+                pan_pitch: 0.0,
+                pan_yaw_min: 0.0,
+                pan_yaw_max: 0.0,
+                pan_pitch_min: 0.0,
+                pan_pitch_max: 0.0,
             }],
         });
         let s = serde_json::to_string(&snap).unwrap();
@@ -231,6 +297,30 @@ mod tests {
         assert!(s.contains("\"vesselName\":\"Perf Test 1\""));
         assert!(s.contains("\"operatorWidth\":768"));
         assert!(s.contains("\"renderWidth\":384"));
+        assert!(s.contains("\"supportsZoom\":true"));
+        assert!(s.contains("\"supportsPan\":false"));
+        assert!(s.contains("\"fovMin\":30"));
+        assert!(s.contains("\"fovMax\":100"));
+    }
+
+    #[test]
+    fn set_fov_roundtrips() {
+        let msg = ClientMessage::SetFov(SetFovPayload {
+            flight_id: 42,
+            fov: 35.5,
+        });
+        let s = serde_json::to_string(&msg).unwrap();
+        assert!(s.contains("\"type\":\"set-fov\""));
+        assert!(s.contains("\"flightId\":42"));
+        assert!(s.contains("\"fov\":35.5"));
+        let back: ClientMessage = serde_json::from_str(&s).unwrap();
+        match back {
+            ClientMessage::SetFov(p) => {
+                assert_eq!(p.flight_id, 42);
+                assert!((p.fov - 35.5).abs() < f32::EPSILON);
+            }
+            _ => panic!("wrong variant"),
+        }
     }
 
     #[test]
