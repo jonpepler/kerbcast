@@ -18,6 +18,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Diagnostics;
 using System.IO;
 using HullcamVDS;
@@ -248,26 +249,31 @@ namespace Kerbcam
 
             foreach (var part in vessel.parts)
             {
-                var hullcam = part.FindModuleImplementing<MuMechModuleHullCamera>();
-                if (hullcam == null) continue;
-                try
+                // A part can carry multiple Hullcam modules — the booster
+                // segment ships with both Fwd and Aft camera modules on a
+                // single part. FindModuleImplementing returns only the
+                // first match, so iterate every module of the type.
+                foreach (var hullcam in part.Modules.OfType<MuMechModuleHullCamera>())
                 {
-                    var partName = part.partInfo?.name ?? string.Empty;
-                    var initialLayers = _settings.GetInitialLayers(partName);
-                    var (renderW, renderH) = _settings.GetRenderSize(partName);
-                    _cameras.Add(new KerbcamCamera(
-                        hullcam,
-                        RingDir,
-                        RingSlots,
-                        _settings.Width,
-                        _settings.Height,
-                        renderW,
-                        renderH,
-                        initialLayers));
-                }
-                catch (Exception ex)
-                {
-                    Debug.LogError($"[Kerbcam] failed to attach to {part.name}: {ex}");
+                    try
+                    {
+                        var partName = part.partInfo?.name ?? string.Empty;
+                        var initialLayers = _settings.GetInitialLayers(partName);
+                        var (renderW, renderH) = _settings.GetRenderSize(partName);
+                        _cameras.Add(new KerbcamCamera(
+                            hullcam,
+                            RingDir,
+                            RingSlots,
+                            _settings.Width,
+                            _settings.Height,
+                            renderW,
+                            renderH,
+                            initialLayers));
+                    }
+                    catch (Exception ex)
+                    {
+                        Debug.LogError($"[Kerbcam] failed to attach to {part.name}: {ex}");
+                    }
                 }
             }
             Debug.Log($"[Kerbcam] tracking {_cameras.Count} Hullcam VDS camera(s)");
@@ -278,7 +284,10 @@ namespace Kerbcam
         private void LateUpdate()
         {
             UpdateFpsAverage();
-            ApplyAdaptiveShedding();
+            // Shedding can be disabled via settings.cfg's EnableAdaptiveShed
+            // for perf-comparison runs where we want raw per-camera cost
+            // without the cascade kicking in.
+            if (_settings.EnableAdaptiveShed) ApplyAdaptiveShedding();
 
             for (int i = 0; i < _cameras.Count; i++)
             {
