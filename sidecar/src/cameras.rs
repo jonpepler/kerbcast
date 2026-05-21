@@ -81,6 +81,14 @@ pub struct StatusDelta {
 #[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ControlState {
+    /// Whether at least one peer is subscribed to this camera. Drives
+    /// the plugin's subscriber-aware capture skip: when `false` the
+    /// plugin disables the per-camera layer renders and short-circuits
+    /// Refresh(), so unsubscribed cameras cost nothing on the KSP
+    /// side. Always emitted (no `skip_serializing_if`) so the field
+    /// is unambiguously present in the JSON — the plugin treats
+    /// "field missing" as `false` for safety.
+    pub subscribed: bool,
     /// Operator-requested layer mask. Empty = "fall back to settings.cfg
     /// initial mask on the plugin side"; populated = explicit override.
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -699,6 +707,29 @@ impl CameraRegistry {
         tokio::fs::write(&tmp, body).await?;
         tokio::fs::rename(&tmp, &dest).await?;
         Ok(())
+    }
+
+    /// Update the `subscribed` flag in the cam's ControlState and flush
+    /// the whole struct to `<flight_id>.control.json`. Called from the
+    /// peer subscribe path (true on add_track) and the consume loop's
+    /// dead-track pruner (false on last-release). The plugin polls
+    /// control.json by mtime, so the next tick after this flush is
+    /// when the camera wakes / sleeps.
+    pub async fn set_subscribed(&self, flight_id: u32, subscribed: bool) {
+        let Some(cam) = self.get(flight_id).await else {
+            return;
+        };
+        let snapshot = {
+            let mut ctrl = cam.control.lock().await;
+            if ctrl.subscribed == subscribed {
+                return; // no transition, no flush
+            }
+            ctrl.subscribed = subscribed;
+            ctrl.clone()
+        };
+        if let Err(e) = self.flush_control(flight_id, &snapshot).await {
+            warn!(flight_id, error = %e, "set_subscribed flush failed");
+        }
     }
 
     /// Snapshot of all camera Arcs — used by the consume loop to iterate

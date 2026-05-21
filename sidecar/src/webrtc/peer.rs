@@ -151,6 +151,11 @@ impl KerbcamPeer {
             });
 
             cam.add_track(track.clone()).await;
+            // Plugin's subscriber-aware capture skip uses the
+            // ControlState's `subscribed` flag — flip it true now so
+            // the plugin wakes the camera on its next 1Hz control
+            // poll. (No-op if already true from a prior peer.)
+            registry.set_subscribed(flight_id, true).await;
             owned_tracks.push(track);
             subscribed.push(flight_id);
         }

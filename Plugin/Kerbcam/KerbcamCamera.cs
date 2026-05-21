@@ -87,6 +87,17 @@ namespace Kerbcam
         /// control-file updates.
         /// </summary>
         private CameraLayers _operatorLayers = CameraLayers.All;
+        /// <summary>
+        /// Subscriber-aware capture gate. False (the default on attach
+        /// until the sidecar writes a control.json with subscribed=true)
+        /// means the per-layer Unity Camera components are disabled and
+        /// Refresh() short-circuits — no GPU readback, no ring write,
+        /// no encoder work downstream. Flipped by the sidecar when a
+        /// peer-track is added / the last one drops, surfaced via the
+        /// same control.json poll that carries layer / fov / render-size
+        /// changes.
+        /// </summary>
+        private bool _subscribed;
 
         private UniversalAsyncGPUReadbackRequest _pendingRequest;
         private bool _readbackInFlight;
@@ -373,9 +384,14 @@ namespace Kerbcam
 
         private void ApplyLayers()
         {
-            if (_nearCam != null) _nearCam.enabled = (_layers & CameraLayers.Near) != 0;
-            if (_scaledCam != null) _scaledCam.enabled = (_layers & CameraLayers.Scaled) != 0;
-            if (_galaxyCam != null) _galaxyCam.enabled = (_layers & CameraLayers.Galaxy) != 0;
+            // _subscribed gates the per-layer Camera.enabled state so an
+            // unsubscribed camera doesn't render at all — that's where
+            // the dominant per-frame cost lives (6 cams × 3 layers = 18
+            // scene renders per Unity frame at full attach).
+            bool active = _subscribed;
+            if (_nearCam != null) _nearCam.enabled = active && (_layers & CameraLayers.Near) != 0;
+            if (_scaledCam != null) _scaledCam.enabled = active && (_layers & CameraLayers.Scaled) != 0;
+            if (_galaxyCam != null) _galaxyCam.enabled = active && (_layers & CameraLayers.Galaxy) != 0;
         }
 
         // Sidecar→plugin control channel. The sidecar's data-channel
@@ -393,6 +409,18 @@ namespace Kerbcam
                 _lastControlMtime = mtime;
 
                 var raw = File.ReadAllText(_controlPath);
+                // Subscriber flag drives the per-layer Camera.enabled
+                // state via ApplyLayers. Default (field missing) is
+                // false — safer to leave a cam asleep than to render
+                // for nothing because the sidecar shipped an older
+                // ControlState shape.
+                var subscribed = ParseBoolField(raw, "subscribed") ?? false;
+                if (subscribed != _subscribed)
+                {
+                    _subscribed = subscribed;
+                    Debug.Log($"[Kerbcam] cam={FlightId} subscribed → {_subscribed}");
+                    ApplyLayers();
+                }
                 var layers = ParseLayersJson(raw);
                 if (layers.HasValue)
                 {
@@ -440,6 +468,22 @@ namespace Kerbcam
                 else if (trimmed.Equals("GALAXY", StringComparison.OrdinalIgnoreCase)) mask |= CameraLayers.Galaxy;
             }
             return mask;
+        }
+
+        // Tiny bool reader for the control file. Returns null when the
+        // field is missing or unparseable; caller decides the default.
+        private static bool? ParseBoolField(string body, string key)
+        {
+            int keyIdx = body.IndexOf($"\"{key}\"", StringComparison.Ordinal);
+            if (keyIdx < 0) return null;
+            int colon = body.IndexOf(':', keyIdx);
+            if (colon < 0) return null;
+            int end = colon + 1;
+            while (end < body.Length && (body[end] == ' ' || body[end] == '\t' || body[end] == '\n' || body[end] == '\r')) end++;
+            // serde_json emits lowercase true / false.
+            if (end + 4 <= body.Length && body.Substring(end, 4) == "true") return true;
+            if (end + 5 <= body.Length && body.Substring(end, 5) == "false") return false;
+            return null;
         }
 
         private static float? ParseFloatField(string body, string key)
@@ -530,6 +574,22 @@ namespace Kerbcam
             {
                 _controlCheckCountdown = 60;
                 PollControlFile();
+            }
+
+            // Subscriber-aware skip: when no peer is subscribed, the
+            // sidecar has flushed `subscribed=false` to control.json and
+            // ApplyLayers has disabled the Unity Camera components. Bail
+            // before issuing a readback so we don't pump GPU→CPU bytes
+            // that nothing will consume. Pending in-flight readbacks
+            // (subscribe→unsubscribe race) still drain on the next path.
+            if (!_subscribed)
+            {
+                if (_readbackInFlight && _pendingRequest.done)
+                {
+                    ProcessReadback(_pendingRequest);
+                    _readbackInFlight = false;
+                }
+                return;
             }
 
             // Poll: drain a completed readback before issuing a new one.
