@@ -17,12 +17,17 @@
 #           client-sdk/typescript/package.json \
 #           client-sdk/typescript/CHANGELOG.md
 #   git commit -m "release: vX.Y.Z"
-#   git tag -a vX.Y.Z -m "vX.Y.Z"
+#   git tag -s vX.Y.Z -m "vX.Y.Z"
 #   git push origin main --follow-tags
 #
-# CI on the tag publishes @jonpepler/kerbcam-protocol to GitHub
-# Packages. The sidecar binary's `--version` reflects the same
-# string via env!("CARGO_PKG_VERSION").
+# `git tag -s` GPG-signs the tag with user.signingkey. Commits sign
+# via commit.gpgsign=true; the script asks for `-s` explicitly so a
+# fresh-clone contributor signs tags even without tag.gpgsign set in
+# their config.
+#
+# CI on the tag publishes @jonpepler/kerbcam to GitHub Packages. The
+# sidecar binary's `--version` reflects the same string via
+# env!("CARGO_PKG_VERSION").
 
 set -euo pipefail
 
@@ -98,5 +103,5 @@ echo "next:"
 echo "  vim $CHANGELOG  # describe the changes"
 echo "  git add sidecar/Cargo.toml sidecar/Cargo.lock client-sdk/typescript/package.json client-sdk/typescript/CHANGELOG.md"
 echo "  git commit -m \"release: v$NEW\""
-echo "  git tag -a v$NEW -m \"v$NEW\""
+echo "  git tag -s v$NEW -m \"v$NEW\""
 echo "  git push origin main --follow-tags"

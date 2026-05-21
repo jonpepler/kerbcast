@@ -28,7 +28,7 @@ git add sidecar/Cargo.toml sidecar/Cargo.lock \
         client-sdk/typescript/package.json \
         client-sdk/typescript/CHANGELOG.md
 git commit -m "release: v0.1.1"
-git tag -a v0.1.1 -m "v0.1.1"
+git tag -s v0.1.1 -m "v0.1.1"
 git push origin main --follow-tags
 ```
 
