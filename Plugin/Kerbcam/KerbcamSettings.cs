@@ -17,6 +17,12 @@
 //                       bundled sidecar binary on Awake. Set to false
 //                       during sidecar development so `cargo run`
 //                       owns the process.
+//   EnableAdaptiveShed — whether the plugin steps the per-camera
+//                       resolution / layer-mask cascade down when KSP
+//                       fps drops below the ShedBelow thresholds.
+//                       Default true; set false for perf-comparison
+//                       runs where you want the raw camera cost
+//                       without the cascade masking it.
 //
 // Per-camera override nodes (zero or more `Camera { ... }` blocks):
 //   PartName          — internal KSP part name (e.g. "navCam1"). Match
@@ -43,6 +49,7 @@ namespace Kerbcam
         public int Width { get; private set; } = 768;
         public int Height { get; private set; } = 768;
         public bool AutoSpawnSidecar { get; private set; } = true;
+        public bool EnableAdaptiveShed { get; private set; } = true;
 
         public string HttpBind => $"{BindAddress}:{Port}";
 
@@ -107,6 +114,7 @@ namespace Kerbcam
             ApplyInt(node, "Width", v => settings.Width = v);
             ApplyInt(node, "Height", v => settings.Height = v);
             ApplyBool(node, "AutoSpawnSidecar", v => settings.AutoSpawnSidecar = v);
+            ApplyBool(node, "EnableAdaptiveShed", v => settings.EnableAdaptiveShed = v);
 
             foreach (var camNode in node.GetNodes("Camera"))
             {

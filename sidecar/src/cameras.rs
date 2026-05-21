@@ -31,7 +31,12 @@ use crate::shared_mem::{MmapFrameRing, MmapRingConfig};
 /// half of the IPC. The plugin rewrites this file at ~1Hz with the
 /// current effective state for every tracked camera plus the global
 /// KSP framerate and adaptive shed level.
-#[derive(Debug, Clone, Deserialize)]
+///
+/// `Serialize` is derived too so `GET /dumpLogs` can replay buffered
+/// snapshots straight back to the harness as JSONL. `PartialEq` powers
+/// the dedup that keeps the buffer small (the consume loop polls at
+/// ~62Hz; the plugin writes at ~1Hz).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct GlobalStatusFile {
     ksp_fps: f32,
@@ -40,7 +45,7 @@ struct GlobalStatusFile {
     cameras: Vec<PerCameraStatus>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PerCameraStatus {
     flight_id: u32,
@@ -319,6 +324,92 @@ pub struct CameraRegistry {
     ring_cfg: MmapRingConfig,
     pub cameras: RwLock<HashMap<u32, Arc<CameraState>>>,
     last_status: Mutex<Option<GlobalStatusFile>>,
+    /// Capped ring of every distinct `global.status.json` snapshot seen
+    /// since the last `reset_run_logs()`. Powers the harness's
+    /// `GET /dumpLogs` endpoint so perf runs can replay the full
+    /// kspFps / shedLevel / per-camera-render-size timeline without
+    /// polling during the measurement window.
+    ///
+    /// We dedupe on whole-struct equality so re-reads between plugin
+    /// writes (the consume loop polls faster than the plugin writes)
+    /// don't produce duplicate entries. Cap is generous (12k = ~3.5h
+    /// at 1Hz) so a full test never overflows; in practice the harness
+    /// resets before each run.
+    status_log: Mutex<Vec<StatusLogEntry>>,
+    /// `Instant` anchor for `StatusLogEntry::t_ms`. Set at registry
+    /// construction so timestamps are relative to sidecar startup —
+    /// not wall-clock, immune to NTP slews mid-run.
+    epoch: Instant,
+}
+
+const STATUS_LOG_CAP: usize = 12_288;
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StatusLogEntry {
+    /// Monotonic sidecar timestamp (millis since the sidecar's first
+    /// status read). Stable across the test window even if wall-clock
+    /// shifts; doesn't try to encode KSP mission time.
+    pub t_ms: u64,
+    pub status: GlobalStatusFileExport,
+}
+
+/// Public re-export of the on-disk status shape so external consumers
+/// (the harness) can deserialize each `/dumpLogs` entry without
+/// depending on internal field privacy. Same shape as the on-disk
+/// `global.status.json`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GlobalStatusFileExport {
+    pub ksp_fps: f32,
+    pub shed_level: u32,
+    #[serde(default)]
+    pub cameras: Vec<PerCameraStatusExport>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PerCameraStatusExport {
+    pub flight_id: u32,
+    pub render_width: u32,
+    pub render_height: u32,
+    pub operator_width: u32,
+    pub operator_height: u32,
+    #[serde(default)]
+    pub layers: Vec<Layer>,
+    #[serde(default)]
+    pub operator_layers: Vec<Layer>,
+    #[serde(default)]
+    pub fov: f32,
+    #[serde(default)]
+    pub pan_yaw: f32,
+    #[serde(default)]
+    pub pan_pitch: f32,
+}
+
+impl From<&GlobalStatusFile> for GlobalStatusFileExport {
+    fn from(s: &GlobalStatusFile) -> Self {
+        Self {
+            ksp_fps: s.ksp_fps,
+            shed_level: s.shed_level,
+            cameras: s
+                .cameras
+                .iter()
+                .map(|c| PerCameraStatusExport {
+                    flight_id: c.flight_id,
+                    render_width: c.render_width,
+                    render_height: c.render_height,
+                    operator_width: c.operator_width,
+                    operator_height: c.operator_height,
+                    layers: c.layers.clone(),
+                    operator_layers: c.operator_layers.clone(),
+                    fov: c.fov,
+                    pan_yaw: c.pan_yaw,
+                    pan_pitch: c.pan_pitch,
+                })
+                .collect(),
+        }
+    }
 }
 
 impl CameraRegistry {
@@ -328,7 +419,23 @@ impl CameraRegistry {
             ring_cfg,
             cameras: RwLock::new(HashMap::new()),
             last_status: Mutex::new(None),
+            status_log: Mutex::new(Vec::new()),
+            epoch: Instant::now(),
         }
+    }
+
+    /// Clear the run-logs ring. The harness fires `POST /dumpLogs/reset`
+    /// at the start of each run so it gets a clean window unaffected by
+    /// pre-run sidecar warmup.
+    pub async fn reset_run_logs(&self) {
+        self.status_log.lock().await.clear();
+    }
+
+    /// Snapshot of every buffered status entry since the last reset.
+    /// The harness fires `GET /dumpLogs` after `[BASELINE-DONE]` and
+    /// writes the result alongside the Telemachus / kOS log slices.
+    pub async fn dump_run_logs(&self) -> Vec<StatusLogEntry> {
+        self.status_log.lock().await.clone()
     }
 
     /// Walk `shm_dir`, attach any new `<flight_id>.ring` files, drop any
@@ -559,6 +666,21 @@ impl CameraRegistry {
                 target_bitrate_bps: cam.target_bitrate_bps.load(Ordering::Acquire),
                 degrade_level: cam.current_degrade(),
             });
+        }
+
+        // Push the snapshot to the run-log ring iff it's actually new
+        // (the consume loop polls way faster than the plugin writes).
+        // Capped at STATUS_LOG_CAP entries; oldest evicted when full.
+        if last.as_ref() != Some(&parsed) {
+            let entry = StatusLogEntry {
+                t_ms: self.epoch.elapsed().as_millis() as u64,
+                status: GlobalStatusFileExport::from(&parsed),
+            };
+            let mut log = self.status_log.lock().await;
+            if log.len() >= STATUS_LOG_CAP {
+                log.remove(0);
+            }
+            log.push(entry);
         }
 
         *last = Some(parsed);

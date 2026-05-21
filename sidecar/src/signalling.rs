@@ -28,7 +28,7 @@ use tokio::sync::RwLock;
 use tower_http::cors::{Any, CorsLayer};
 use tracing::{info, warn};
 
-use crate::cameras::{CameraInfo, CameraRegistry};
+use crate::cameras::{CameraInfo, CameraRegistry, StatusLogEntry};
 use crate::encoder::EncoderChoice;
 use crate::webrtc::KerbcamPeer;
 
@@ -67,12 +67,19 @@ pub struct CamerasResponse {
     pub cameras: Vec<CameraInfo>,
 }
 
+#[derive(Debug, Serialize)]
+pub struct DumpLogsResponse {
+    pub entries: Vec<StatusLogEntry>,
+}
+
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/", get(serve_index))
         .route("/health", get(health))
         .route("/cameras", get(cameras))
         .route("/offer", post(offer))
+        .route("/dumpLogs", get(dump_logs))
+        .route("/dumpLogs/reset", post(reset_logs))
         .layer(
             CorsLayer::new()
                 .allow_origin(Any)
@@ -97,6 +104,23 @@ async fn serve_index() -> impl IntoResponse {
 async fn cameras(State(state): State<AppState>) -> impl IntoResponse {
     let list = state.registry.list().await;
     (StatusCode::OK, Json(CamerasResponse { cameras: list })).into_response()
+}
+
+/// Returns every `global.status.json` snapshot the sidecar has seen
+/// since the last `POST /dumpLogs/reset` (or since startup). The
+/// harness fires this after `[BASELINE-DONE]` to capture the full
+/// kspFps / shedLevel / per-camera timeline without polling during
+/// the measurement window. Dedup-by-equality keeps the buffer small.
+async fn dump_logs(State(state): State<AppState>) -> impl IntoResponse {
+    let entries = state.registry.dump_run_logs().await;
+    (StatusCode::OK, Json(DumpLogsResponse { entries })).into_response()
+}
+
+/// Clears the in-memory status-log ring. The harness fires this
+/// immediately before AG1 so each run gets a clean window.
+async fn reset_logs(State(state): State<AppState>) -> impl IntoResponse {
+    state.registry.reset_run_logs().await;
+    (StatusCode::OK, "ok\n")
 }
 
 async fn offer(State(state): State<AppState>, Json(req): Json<OfferRequest>) -> impl IntoResponse {
