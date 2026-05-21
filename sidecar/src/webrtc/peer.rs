@@ -33,9 +33,12 @@ use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::peer_connection::RTCPeerConnection;
+use webrtc::rtcp::payload_feedbacks::receiver_estimated_maximum_bitrate::ReceiverEstimatedMaximumBitrate;
 use webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability;
 use webrtc::track::track_local::track_local_static_sample::TrackLocalStaticSample;
 use webrtc::track::track_local::TrackLocal;
+
+use crate::cameras::CameraState as InternalCameraState;
 
 use crate::cameras::CameraRegistry;
 use crate::protocol::{
@@ -112,13 +115,28 @@ impl KerbcamPeer {
                 .add_track(track.clone() as Arc<dyn TrackLocal + Send + Sync>)
                 .await?;
 
-            // webrtc-rs requires us to drain the RTCP feedback stream from
-            // each sender, otherwise NACK / PLI / REMB break silently.
-            // Spawned per track; loop exits when the sender closes.
+            // RTCP feedback stream from the receiver. webrtc-rs requires
+            // us to drain it (NACK / PLI break silently otherwise) — we
+            // additionally parse REMB packets to drive per-camera bitrate
+            // adaptation. The browser sends REMB ~1Hz with its current
+            // bandwidth estimate; the consume loop uses the min across
+            // active subscribers to retarget the encoder.
+            //
+            // SSRC discovery: the sender's get_parameters() returns the
+            // encoding's SSRC, which the REMB packet's `ssrcs` field
+            // matches. We capture it once on attach and use it to wipe
+            // our estimate from the camera's map when the loop exits
+            // (peer dropped or sender closed).
+            let cam_for_drain = cam.clone();
+            let track_ssrc = rtp_sender
+                .get_parameters()
+                .await
+                .encodings
+                .first()
+                .map(|e| e.ssrc)
+                .unwrap_or(0);
             tokio::spawn(async move {
-                let mut rtcp_buf = vec![0u8; 1500];
-                while rtp_sender.read(&mut rtcp_buf).await.is_ok() {}
-                debug!("RTCP drain loop exited");
+                drain_rtcp(rtp_sender, cam_for_drain, track_ssrc).await;
             });
 
             cam.add_track(track.clone()).await;
@@ -639,5 +657,56 @@ fn make_even(v: u32) -> u32 {
         v
     } else {
         v.saturating_sub(1)
+    }
+}
+
+/// Per-track RTCP drain. Mostly serves to keep webrtc-rs's internal
+/// pipelines flowing (NACK / PLI break silently if we don't drain) —
+/// but also parses REMB packets and pushes the receiver's bandwidth
+/// estimate into the camera's per-SSRC estimate map. The consume loop
+/// reads the camera's `target_bitrate_bps` (min across active
+/// subscribers) and retargets the encoder when it diverges
+/// significantly from the encoder's current bitrate.
+///
+/// Loop exits on read error (sender closed → peer connection torn
+/// down) at which point we wipe our estimate from the camera's map so
+/// stale numbers don't pin the encoder at an obsolete target.
+async fn drain_rtcp(
+    sender: Arc<webrtc::rtp_transceiver::rtp_sender::RTCRtpSender>,
+    cam: Arc<InternalCameraState>,
+    track_ssrc: u32,
+) {
+    use std::any::Any;
+    loop {
+        match sender.read_rtcp().await {
+            Ok((packets, _attrs)) => {
+                for packet in packets {
+                    let any: &dyn Any = packet.as_any();
+                    if let Some(remb) = any.downcast_ref::<ReceiverEstimatedMaximumBitrate>() {
+                        // REMB carries a max-bitrate estimate the
+                        // receiver thinks the path can sustain. We log
+                        // at debug — info would flood at the ~1Hz REMB
+                        // cadence × N peers.
+                        let bps = remb.bitrate as u32;
+                        debug!(
+                            flight_id = cam.flight_id,
+                            ssrc = track_ssrc,
+                            bps,
+                            "REMB received",
+                        );
+                        cam.record_bandwidth_estimate(track_ssrc, bps).await;
+                    }
+                }
+            }
+            Err(_) => {
+                debug!(
+                    flight_id = cam.flight_id,
+                    ssrc = track_ssrc,
+                    "RTCP drain loop exited"
+                );
+                cam.forget_estimate(track_ssrc).await;
+                break;
+            }
+        }
     }
 }

@@ -221,6 +221,14 @@ async fn consume_loop(
     }
 }
 
+fn diverges_more_than(current: u32, target: u32, threshold_pct: f32) -> bool {
+    if current == 0 {
+        return target > 0;
+    }
+    let delta = (current as f32 - target as f32).abs();
+    delta / current as f32 > threshold_pct
+}
+
 /// Push a status delta (adaptive-shed level changes + per-camera state
 /// changes) to every connected peer's data channel. Best-effort: peers
 /// whose data channels haven't opened yet (or have closed) silently
@@ -301,24 +309,48 @@ async fn encode_and_fan_out(
 
     // Lazy encoder init — first encoded frame per camera. Done under
     // the camera's encoder lock so concurrent ticks can't double-init.
-    // If the frame dimensions have changed since last encode (plugin's
-    // adaptive downscale path), close the existing encoder and reinit
-    // at the new size; the next encoded frame produces SPS/PPS at the
-    // new dims and the browser decoder picks them up automatically.
+    //
+    // Close + reinit on two triggers:
+    //
+    //   * Frame dimensions changed (plugin's adaptive downscale path).
+    //   * REMB target bitrate diverged significantly (>30%) from the
+    //     encoder's current bitrate. Smaller deltas are absorbed by
+    //     the encoder's own rate control; reiniting on every REMB
+    //     tick would flap the keyframe schedule.
     let mut encoder_guard = cam.encoder.lock().await;
     let cur_w = cam.encoder_width.load(Ordering::Acquire);
     let cur_h = cam.encoder_height.load(Ordering::Acquire);
+    let cur_bps = cam.encoder_bitrate.load(Ordering::Acquire);
+    let target_bps_raw = cam.target_bitrate_bps.load(Ordering::Acquire);
+    // Fall back to the CLI default until the first REMB packet arrives.
+    let effective_bps = if target_bps_raw == 0 {
+        bitrate_bps
+    } else {
+        target_bps_raw
+    };
     let dims_changed = encoder_guard.is_some() && (cur_w != frame.width || cur_h != frame.height);
-    if dims_changed {
+    let bitrate_changed =
+        encoder_guard.is_some() && cur_bps > 0 && diverges_more_than(cur_bps, effective_bps, 0.30);
+    if dims_changed || bitrate_changed {
         if let Some(mut backend) = encoder_guard.take() {
             backend.close();
         }
-        info!(
-            flight_id = cam.flight_id,
-            from = format!("{cur_w}x{cur_h}"),
-            to = format!("{}x{}", frame.width, frame.height),
-            "resolution change, encoder reinit",
-        );
+        if dims_changed {
+            info!(
+                flight_id = cam.flight_id,
+                from = format!("{cur_w}x{cur_h}"),
+                to = format!("{}x{}", frame.width, frame.height),
+                "resolution change, encoder reinit",
+            );
+        }
+        if bitrate_changed {
+            info!(
+                flight_id = cam.flight_id,
+                from_bps = cur_bps,
+                to_bps = effective_bps,
+                "REMB bitrate change, encoder reinit",
+            );
+        }
     }
     if encoder_guard.is_none() {
         let mut backend = select_backend(encoder_choice);
@@ -326,7 +358,7 @@ async fn encode_and_fan_out(
             width: frame.width,
             height: frame.height,
             fps,
-            bitrate_bps,
+            bitrate_bps: effective_bps,
         }) {
             warn!(flight_id = cam.flight_id, error = %e, "encoder init failed");
             return;
@@ -335,10 +367,12 @@ async fn encode_and_fan_out(
             flight_id = cam.flight_id,
             width = frame.width,
             height = frame.height,
+            bitrate_bps = effective_bps,
             "per-camera encoder initialised",
         );
         cam.encoder_width.store(frame.width, Ordering::Release);
         cam.encoder_height.store(frame.height, Ordering::Release);
+        cam.encoder_bitrate.store(effective_bps, Ordering::Release);
         *encoder_guard = Some(backend);
     }
     let encoder = encoder_guard.as_mut().unwrap();

@@ -198,6 +198,20 @@ pub struct CameraState {
     /// Both 0 when no encoder is running.
     pub encoder_width: AtomicU32,
     pub encoder_height: AtomicU32,
+    /// Bitrate the current encoder session was initialised with.
+    /// 0 = no encoder running yet. The consume loop compares against
+    /// `target_bitrate_bps` and reinitialises the encoder when they
+    /// diverge significantly (REMB-driven adaptation).
+    pub encoder_bitrate: AtomicU32,
+    /// Most-recent target bitrate, computed as the min across active
+    /// subscribers' REMB estimates (so the slowest receiver doesn't
+    /// drop the whole stream). 0 = no REMB received yet; consume loop
+    /// falls back to the CLI default.
+    pub target_bitrate_bps: AtomicU32,
+    /// Per-SSRC REMB estimates from active subscribers. Updated by
+    /// the peer's RTCP drain loop; consume loop reads + takes the min
+    /// to produce `target_bitrate_bps`.
+    pub bandwidth_estimates: Mutex<std::collections::HashMap<u32, u32>>,
     /// Last wall-clock instant we *encoded* (and emitted NALs to) a frame.
     /// The consume loop uses this to pace encodes against the configured
     /// `fps`, instead of running once per ring write at LateUpdate's
@@ -228,6 +242,28 @@ impl CameraState {
     /// consume loop on the next tick.
     pub fn release(&self, n: usize) {
         self.subscribers.fetch_sub(n, Ordering::AcqRel);
+    }
+
+    /// Record a REMB bandwidth estimate from a subscriber. Identified
+    /// by the receiving track's SSRC so per-peer estimates stay
+    /// distinct. Recomputes `target_bitrate_bps` as the min across all
+    /// known estimates so the encoder targets the slowest receiver.
+    pub async fn record_bandwidth_estimate(&self, ssrc: u32, bps: u32) {
+        let mut estimates = self.bandwidth_estimates.lock().await;
+        estimates.insert(ssrc, bps);
+        let min = estimates.values().copied().min().unwrap_or(0);
+        self.target_bitrate_bps.store(min, Ordering::Release);
+    }
+
+    /// Forget estimates for an SSRC whose track has gone away (peer
+    /// dropped). The consume loop will recompute the min on the next
+    /// REMB packet; until then the stored target stays stale but the
+    /// remaining peers' estimates dominate quickly.
+    pub async fn forget_estimate(&self, ssrc: u32) {
+        let mut estimates = self.bandwidth_estimates.lock().await;
+        estimates.remove(&ssrc);
+        let min = estimates.values().copied().min().unwrap_or(0);
+        self.target_bitrate_bps.store(min, Ordering::Release);
     }
 }
 
@@ -319,6 +355,9 @@ impl CameraRegistry {
                             encoder: Mutex::new(None),
                             encoder_width: AtomicU32::new(0),
                             encoder_height: AtomicU32::new(0),
+                            encoder_bitrate: AtomicU32::new(0),
+                            target_bitrate_bps: AtomicU32::new(0),
+                            bandwidth_estimates: Mutex::new(std::collections::HashMap::new()),
                             last_encoded_at: Mutex::new(None),
                             last_sequence: AtomicU64::new(0),
                             subscribers: AtomicUsize::new(0),
