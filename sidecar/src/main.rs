@@ -245,14 +245,6 @@ async fn consume_loop(
     }
 }
 
-fn diverges_more_than(current: u32, target: u32, threshold_pct: f32) -> bool {
-    if current == 0 {
-        return target > 0;
-    }
-    let delta = (current as f32 - target as f32).abs();
-    delta / current as f32 > threshold_pct
-}
-
 /// Push a status delta (adaptive-shed level changes + per-camera state
 /// changes) to every connected peer's data channel. Best-effort: peers
 /// whose data channels haven't opened yet (or have closed) silently
@@ -354,17 +346,29 @@ async fn encode_and_fan_out(
     // Lazy encoder init — first encoded frame per camera. Done under
     // the camera's encoder lock so concurrent ticks can't double-init.
     //
-    // Close + reinit on two triggers:
+    // Close + reinit ONLY on frame dimension changes (plugin's adaptive
+    // downscale path) — that genuinely requires a new encoder session
+    // because openh264 picks up dims from the first YUV buffer it sees.
     //
-    //   * Frame dimensions changed (plugin's adaptive downscale path).
-    //   * REMB target bitrate diverged significantly (>30%) from the
-    //     encoder's current bitrate. Smaller deltas are absorbed by
-    //     the encoder's own rate control; reiniting on every REMB
-    //     tick would flap the keyframe schedule.
+    // We used to also reinit when REMB-driven target bitrate diverged
+    // >30% from the encoder's current bitrate. That turned out to be a
+    // catastrophic death spiral: every reinit emits a fresh IDR + new
+    // SPS/PPS, decoder loses its reference chain, fires PLI, encoder
+    // produces another IDR, REMB sees bursts and drops bitrate further,
+    // which trips another reinit. Receivers ended up at ~0.2 fps
+    // visible with `pliCount > 1000` and `bytesReceived` collapsed to
+    // a few kbps out of a 1.5Mbps budget.
+    //
+    // Until we plumb a live-update path through the EncoderBackend
+    // trait (openh264 0.9 exposes SBitrateInfo via raw_api.set_option
+    // but no safe wrapper; libva supports live bitrate natively), we
+    // simply ignore REMB feedback on the encode side and let the
+    // initial bitrate stand. The wire bitrate stays predictable, the
+    // decoder stays in sync, and the LAN can comfortably carry
+    // 6 × 1.5Mbps anyway.
     let mut encoder_guard = cam.encoder.lock().await;
     let cur_w = cam.encoder_width.load(Ordering::Acquire);
     let cur_h = cam.encoder_height.load(Ordering::Acquire);
-    let cur_bps = cam.encoder_bitrate.load(Ordering::Acquire);
     let target_bps_raw = cam.target_bitrate_bps.load(Ordering::Acquire);
     // Fall back to the CLI default until the first REMB packet arrives.
     let effective_bps_pre_degrade = if target_bps_raw == 0 {
@@ -375,7 +379,8 @@ async fn encode_and_fan_out(
     // Apply degrade as a multiplicative bitrate squeeze. degrade=1.0
     // lands the encoder around 30% of the otherwise-target — enough
     // to produce visible macroblocking. Floor at 64kbps so we never
-    // try to init the encoder at an absurdly low rate.
+    // try to init the encoder at an absurdly low rate. Only takes
+    // effect at first init (no live-update yet).
     let effective_bps = if degrade > 0.001 {
         let factor = 1.0 - 0.7 * degrade.clamp(0.0, 1.0);
         ((effective_bps_pre_degrade as f32) * factor).max(64_000.0) as u32
@@ -383,28 +388,16 @@ async fn encode_and_fan_out(
         effective_bps_pre_degrade
     };
     let dims_changed = encoder_guard.is_some() && (cur_w != frame.width || cur_h != frame.height);
-    let bitrate_changed =
-        encoder_guard.is_some() && cur_bps > 0 && diverges_more_than(cur_bps, effective_bps, 0.30);
-    if dims_changed || bitrate_changed {
+    if dims_changed {
         if let Some(mut backend) = encoder_guard.take() {
             backend.close();
         }
-        if dims_changed {
-            info!(
-                flight_id = cam.flight_id,
-                from = format!("{cur_w}x{cur_h}"),
-                to = format!("{}x{}", frame.width, frame.height),
-                "resolution change, encoder reinit",
-            );
-        }
-        if bitrate_changed {
-            info!(
-                flight_id = cam.flight_id,
-                from_bps = cur_bps,
-                to_bps = effective_bps,
-                "REMB bitrate change, encoder reinit",
-            );
-        }
+        info!(
+            flight_id = cam.flight_id,
+            from = format!("{cur_w}x{cur_h}"),
+            to = format!("{}x{}", frame.width, frame.height),
+            "resolution change, encoder reinit",
+        );
     }
     if encoder_guard.is_none() {
         let mut backend = select_backend(encoder_choice);
