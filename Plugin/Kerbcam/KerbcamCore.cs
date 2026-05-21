@@ -240,6 +240,30 @@ namespace Kerbcam
             RebuildCameraList(v);
         }
 
+        // Derive a unique FlightId per Hullcam module on a part. Module 0
+        // (and parts with a single module — the common case) keep the bare
+        // part.flightID for wire compatibility. Additional modules get a
+        // hash of (baseId, cameraName) — deterministic across loads, and
+        // a 32-bit space with at most a handful of cameras per vessel
+        // makes collisions vanishingly unlikely. We use the Knuth golden-
+        // ratio multiplier (2654435761) so consecutive modules don't
+        // produce neighbouring hashes that could clash with another
+        // part's flightID (which KSP assigns sequentially).
+        private static uint SyntheticFlightId(uint baseId, int moduleIdx, string cameraName)
+        {
+            if (moduleIdx == 0) return baseId;
+            unchecked
+            {
+                uint h = baseId;
+                h = h * 2654435761u + (uint)moduleIdx;
+                if (!string.IsNullOrEmpty(cameraName))
+                {
+                    foreach (var ch in cameraName) h = h * 2654435761u + ch;
+                }
+                return h;
+            }
+        }
+
         private void RebuildCameraList(Vessel vessel)
         {
             foreach (var cam in _cameras) cam.Dispose();
@@ -253,6 +277,7 @@ namespace Kerbcam
                 // segment ships with both Fwd and Aft camera modules on a
                 // single part. FindModuleImplementing returns only the
                 // first match, so iterate every module of the type.
+                int moduleIdx = 0;
                 foreach (var hullcam in part.Modules.OfType<MuMechModuleHullCamera>())
                 {
                     try
@@ -260,8 +285,18 @@ namespace Kerbcam
                         var partName = part.partInfo?.name ?? string.Empty;
                         var initialLayers = _settings.GetInitialLayers(partName);
                         var (renderW, renderH) = _settings.GetRenderSize(partName);
+                        // Camera identity is per-module, not per-part — but
+                        // the ring + info + control file names are keyed on
+                        // FlightId, so two modules on the same part used to
+                        // collide and silently drop the second camera.
+                        // Module 0 keeps part.flightID for wire compat with
+                        // single-cam parts (the common case). Modules 1+
+                        // get a deterministic hash of (flightID, cameraName)
+                        // so they're stable across loads.
+                        uint flightId = SyntheticFlightId(part.flightID, moduleIdx, hullcam.cameraName);
                         _cameras.Add(new KerbcamCamera(
                             hullcam,
+                            flightId,
                             RingDir,
                             RingSlots,
                             _settings.Width,
@@ -274,6 +309,7 @@ namespace Kerbcam
                     {
                         Debug.LogError($"[Kerbcam] failed to attach to {part.name}: {ex}");
                     }
+                    moduleIdx++;
                 }
             }
             Debug.Log($"[Kerbcam] tracking {_cameras.Count} Hullcam VDS camera(s)");

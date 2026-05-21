@@ -95,6 +95,7 @@ namespace Kerbcam
 
         public KerbcamCamera(
             MuMechModuleHullCamera hullcam,
+            uint flightId,
             string ringDir,
             int slotCount,
             int maxWidth,
@@ -104,7 +105,7 @@ namespace Kerbcam
             CameraLayers initialLayers)
         {
             Hullcam = hullcam;
-            FlightId = hullcam.part.flightID;
+            FlightId = flightId;
             MaxWidth = maxWidth;
             MaxHeight = maxHeight;
             OperatorWidth = renderWidth;
