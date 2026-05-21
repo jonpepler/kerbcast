@@ -54,10 +54,12 @@
       <th class="layer">Scaled</th>
       <th class="layer">Galaxy</th>
       <th class="zoom">FoV</th>
+      <th class="zoom">Render size</th>
+      <th class="zoom">Bitrate</th>
     </tr>
   </thead>
   <tbody id="cameraTable">
-    <tr><td colspan="6" class="empty">none yet — click Refresh</td></tr>
+    <tr><td colspan="8" class="empty">none yet — click Refresh</td></tr>
   </tbody>
 </table>
 
@@ -79,8 +81,11 @@ let dc = null;
 let statsTimer = null;
 let discovered = []; // CameraInfo[] from /cameras (HTTP, pre-offer) — camelCase keys
 let included = new Set(); // flight_ids selected for streaming
-let layerState = new Map(); // flight_id -> Set<layer>
+let operatorLayers = new Map(); // flight_id -> Set<layer> (operator-requested)
+let effectiveLayers = new Map(); // flight_id -> Set<layer> (actually rendered)
 let fovState = new Map(); // flight_id -> current fov
+let renderSizeState = new Map(); // flight_id -> { width, height }
+let bitrateState = new Map(); // flight_id -> { encoderBitrateBps, targetBitrateBps }
 let trackByFlightId = new Map();
 
 function sendControl(message) {
@@ -100,8 +105,14 @@ function handleServerMessage(msg) {
     case "camera-state-changed": {
       const cams = msg.type === "camera-snapshot" ? msg.content.cameras : [msg.content.state];
       for (const cs of cams) {
-        layerState.set(cs.flightId, new Set(cs.operatorLayers));
+        operatorLayers.set(cs.flightId, new Set(cs.operatorLayers));
+        effectiveLayers.set(cs.flightId, new Set(cs.layers));
         fovState.set(cs.flightId, cs.fov);
+        renderSizeState.set(cs.flightId, { width: cs.renderWidth, height: cs.renderHeight });
+        bitrateState.set(cs.flightId, {
+          encoderBitrateBps: cs.encoderBitrateBps,
+          targetBitrateBps: cs.targetBitrateBps,
+        });
       }
       renderTable();
       break;
@@ -121,7 +132,7 @@ function handleServerMessage(msg) {
 function renderTable() {
   const tbody = $("cameraTable");
   if (discovered.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="6" class="empty">none yet — is KSP running with Hullcam parts?</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="8" class="empty">none yet — is KSP running with Hullcam parts?</td></tr>`;
     return;
   }
   tbody.innerHTML = "";
@@ -149,24 +160,37 @@ function renderTable() {
       <div class="id">flight_id ${cam.flightId}</div>`;
     tr.appendChild(nameTd);
 
-    const currentLayers = layerState.get(cam.flightId) ?? new Set(LAYER_KINDS);
+    // Layer checkboxes: checked = operator-requested.
+    // Strikethrough/dim when the layer is requested but adaptive shed
+    // has dropped it below the ceiling. Lets the operator see "I want
+    // galaxy but KSP fps is too low so it's been auto-shed".
+    const opLayers = operatorLayers.get(cam.flightId) ?? new Set(LAYER_KINDS);
+    const effLayers = effectiveLayers.get(cam.flightId) ?? opLayers;
     for (const layer of LAYER_KINDS) {
       const td = document.createElement("td");
       td.className = "layer";
       const cb = document.createElement("input");
       cb.type = "checkbox";
-      cb.checked = currentLayers.has(layer);
+      cb.checked = opLayers.has(layer);
       cb.disabled = !dc || dc.readyState !== "open";
       cb.addEventListener("change", () => {
-        const next = new Set(currentLayers);
+        const next = new Set(opLayers);
         if (cb.checked) next.add(layer); else next.delete(layer);
-        layerState.set(cam.flightId, next);
+        operatorLayers.set(cam.flightId, next);
         sendControl({
           type: "set-layers",
           content: { flightId: cam.flightId, layers: [...next] },
         });
       });
       td.appendChild(cb);
+      if (opLayers.has(layer) && !effLayers.has(layer)) {
+        const tag = document.createElement("span");
+        tag.textContent = " auto-shed";
+        tag.style.color = "#b80";
+        tag.style.fontSize = "10px";
+        tag.style.marginLeft = "4px";
+        td.appendChild(tag);
+      }
       tr.appendChild(td);
     }
 
@@ -205,6 +229,55 @@ function renderTable() {
     }
     tr.appendChild(fovTd);
 
+    // Render-size slider: same per-axis size (square only for v0.4 —
+    // the protocol supports non-square but the UI doesn't bother).
+    // Capped at the ring's allocated max so the slider can't exceed
+    // the sidecar's validation bounds. Two presets shown as labelled
+    // ticks via the `list` attribute aren't worth the markup; just a
+    // continuous slider with the current value next to it.
+    const rsTd = document.createElement("td");
+    rsTd.className = "zoom";
+    const rs = renderSizeState.get(cam.flightId) ?? { width: cam.maxWidth, height: cam.maxHeight };
+    const rsSlider = document.createElement("input");
+    rsSlider.type = "range";
+    rsSlider.min = 128;
+    rsSlider.max = cam.maxWidth;
+    rsSlider.step = 32; // even; openh264 requires it
+    rsSlider.value = rs.width;
+    rsSlider.disabled = !dc || dc.readyState !== "open";
+    const rsValue = document.createElement("span");
+    rsValue.className = "value";
+    rsValue.textContent = `${rs.width}²`;
+    rsSlider.addEventListener("input", () => {
+      rsValue.textContent = `${rsSlider.value}²`;
+    });
+    rsSlider.addEventListener("change", () => {
+      const v = parseInt(rsSlider.value, 10);
+      const target = v - (v & 1); // even
+      renderSizeState.set(cam.flightId, { width: target, height: target });
+      sendControl({
+        type: "set-render-size",
+        content: { flightId: cam.flightId, width: target, height: target },
+      });
+    });
+    rsTd.appendChild(rsSlider);
+    rsTd.appendChild(rsValue);
+    tr.appendChild(rsTd);
+
+    // Bitrate readout — encoder current vs target. Diverges briefly
+    // between a REMB packet arriving and the consume loop's next
+    // reinit threshold check. Both zero before the first encoded
+    // frame (no subscribers yet).
+    const brTd = document.createElement("td");
+    brTd.className = "zoom";
+    const br = bitrateState.get(cam.flightId) ?? { encoderBitrateBps: 0, targetBitrateBps: 0 };
+    const kbps = (bps) => (bps > 0 ? `${Math.round(bps / 1000)} kbps` : "—");
+    const showTarget = br.targetBitrateBps > 0 && Math.abs(br.targetBitrateBps - br.encoderBitrateBps) / Math.max(br.encoderBitrateBps, 1) > 0.05;
+    brTd.innerHTML = `<span class="value">${kbps(br.encoderBitrateBps)}${
+      showTarget ? ` <span style="color:#b80">→ ${kbps(br.targetBitrateBps)}</span>` : ""
+    }</span>`;
+    tr.appendChild(brTd);
+
     tbody.appendChild(tr);
   }
 }
@@ -220,7 +293,11 @@ async function refreshCameras() {
     const { cameras } = await res.json();
     discovered = cameras || [];
     for (const cam of discovered) {
-      if (!layerState.has(cam.flightId)) layerState.set(cam.flightId, new Set(LAYER_KINDS));
+      if (!operatorLayers.has(cam.flightId)) operatorLayers.set(cam.flightId, new Set(LAYER_KINDS));
+      if (!effectiveLayers.has(cam.flightId)) effectiveLayers.set(cam.flightId, new Set(LAYER_KINDS));
+      if (!fovState.has(cam.flightId)) fovState.set(cam.flightId, cam.fov);
+      if (!renderSizeState.has(cam.flightId)) renderSizeState.set(cam.flightId, { width: cam.maxWidth, height: cam.maxHeight });
+      if (!bitrateState.has(cam.flightId)) bitrateState.set(cam.flightId, { encoderBitrateBps: cam.encoderBitrateBps, targetBitrateBps: cam.targetBitrateBps });
       if (pc === null) included.add(cam.flightId);
     }
     for (const id of [...included]) {
@@ -229,7 +306,7 @@ async function refreshCameras() {
     renderTable();
     $("connectBtn").disabled = pc !== null || included.size === 0;
   } catch (e) {
-    $("cameraTable").innerHTML = `<tr><td colspan="6" class="empty">error fetching /cameras: ${escapeHtml(e.message)}</td></tr>`;
+    $("cameraTable").innerHTML = `<tr><td colspan="8" class="empty">error fetching /cameras: ${escapeHtml(e.message)}</td></tr>`;
   }
 }
 

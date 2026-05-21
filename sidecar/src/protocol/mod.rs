@@ -93,6 +93,17 @@ pub struct CameraState {
     pub pan_yaw_max: f32,
     pub pan_pitch_min: f32,
     pub pan_pitch_max: f32,
+    /// Current encoder bitrate target in bits per second. Equals
+    /// `target_bitrate_bps` after the consume loop applies receiver
+    /// feedback; the two diverge briefly between a REMB arriving and
+    /// the consume loop's next tick. Zero when no encoder is running
+    /// yet (no subscribers).
+    pub encoder_bitrate_bps: u32,
+    /// Bandwidth target derived from receivers' REMB feedback (min
+    /// across active subscribers). Drives the encoder when
+    /// significantly diverged. Zero until the first REMB packet
+    /// arrives — encoder falls back to the sidecar's CLI default.
+    pub target_bitrate_bps: u32,
 }
 
 // Wrapper structs for the algebraic-enum content payloads. typeshare's
@@ -289,6 +300,8 @@ mod tests {
                 pan_yaw_max: 0.0,
                 pan_pitch_min: 0.0,
                 pan_pitch_max: 0.0,
+                encoder_bitrate_bps: 1_500_000,
+                target_bitrate_bps: 1_200_000,
             }],
         });
         let s = serde_json::to_string(&snap).unwrap();

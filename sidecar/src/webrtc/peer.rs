@@ -579,6 +579,8 @@ async fn send_camera_snapshot(registry: &Arc<CameraRegistry>, dc: &Arc<RTCDataCh
             pan_yaw_max: c.pan_yaw_max,
             pan_pitch_min: c.pan_pitch_min,
             pan_pitch_max: c.pan_pitch_max,
+            encoder_bitrate_bps: c.encoder_bitrate_bps,
+            target_bitrate_bps: c.target_bitrate_bps,
         })
         .collect();
     send_server_message(
@@ -631,6 +633,8 @@ async fn push_camera_state(
         pan_yaw_max: cam.pan_yaw_max,
         pan_pitch_min: cam.pan_pitch_min,
         pan_pitch_max: cam.pan_pitch_max,
+        encoder_bitrate_bps: cam.encoder_bitrate.load(Ordering::Acquire),
+        target_bitrate_bps: cam.target_bitrate_bps.load(Ordering::Acquire),
     };
     send_server_message(
         dc,

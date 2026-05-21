@@ -123,6 +123,8 @@ pub struct CameraInfo {
     pub pan_yaw_max: f32,
     pub pan_pitch_min: f32,
     pub pan_pitch_max: f32,
+    pub encoder_bitrate_bps: u32,
+    pub target_bitrate_bps: u32,
 }
 
 /// Manifest the plugin writes alongside the ring file. Static for the
@@ -407,6 +409,8 @@ impl CameraRegistry {
                 pan_yaw_max: s.pan_yaw_max,
                 pan_pitch_min: s.pan_pitch_min,
                 pan_pitch_max: s.pan_pitch_max,
+                encoder_bitrate_bps: s.encoder_bitrate.load(Ordering::Acquire),
+                target_bitrate_bps: s.target_bitrate_bps.load(Ordering::Acquire),
             })
             .collect();
         // Stable ordering for tests + UX (a refresh shouldn't shuffle).
@@ -506,6 +510,8 @@ impl CameraRegistry {
                 pan_yaw_max: cam.pan_yaw_max,
                 pan_pitch_min: cam.pan_pitch_min,
                 pan_pitch_max: cam.pan_pitch_max,
+                encoder_bitrate_bps: cam.encoder_bitrate.load(Ordering::Acquire),
+                target_bitrate_bps: cam.target_bitrate_bps.load(Ordering::Acquire),
             });
         }
 

@@ -84,6 +84,21 @@ export interface CameraState {
 	panYawMax: number;
 	panPitchMin: number;
 	panPitchMax: number;
+	/**
+	 * Current encoder bitrate target in bits per second. Equals
+	 * `target_bitrate_bps` after the consume loop applies receiver
+	 * feedback; the two diverge briefly between a REMB arriving and
+	 * the consume loop's next tick. Zero when no encoder is running
+	 * yet (no subscribers).
+	 */
+	encoderBitrateBps: number;
+	/**
+	 * Bandwidth target derived from receivers' REMB feedback (min
+	 * across active subscribers). Drives the encoder when
+	 * significantly diverged. Zero until the first REMB packet
+	 * arrives — encoder falls back to the sidecar's CLI default.
+	 */
+	targetBitrateBps: number;
 }
 
 export interface CameraSnapshotPayload {
