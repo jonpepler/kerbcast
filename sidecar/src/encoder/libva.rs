@@ -183,8 +183,7 @@ mod imp {
                 return ffmpeg::ffi::AVPixelFormat::AV_PIX_FMT_NONE;
             }
             if (*cfg).methods & HW_FRAMES_CTX != 0
-                && (*cfg).device_type
-                    == ffmpeg::ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_VAAPI
+                && (*cfg).device_type == ffmpeg::ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_VAAPI
             {
                 return (*cfg).pix_fmt;
             }
@@ -267,8 +266,7 @@ mod imp {
                 // avcodec_get_hw_config returns the value from the installed
                 // libavcodec, which is always correct.
                 let codec_name = std::ffi::CString::new("h264_vaapi").unwrap();
-                let codec_ptr =
-                    ffmpeg::ffi::avcodec_find_encoder_by_name(codec_name.as_ptr());
+                let codec_ptr = ffmpeg::ffi::avcodec_find_encoder_by_name(codec_name.as_ptr());
                 if codec_ptr.is_null() {
                     self.close();
                     return Err(EncodeError::Runtime(
