@@ -68,7 +68,13 @@ typeshare = "1"
 #
 # Linux-only: macOS dev iteration must not pull in libavcodec system libs.
 # CI installs libavcodec-dev + libva-dev + libclang-dev before cargo build.
-ffmpeg-next = { version = "8", default-features = false, features = ["codec"] }
+# `codec` alone fails to compile because ffmpeg-next's codec module imports
+# unconditional symbols from its `format` module (AVIOInterruptCB,
+# av_read_frame, av_write_frame, etc — surfaced as 9 unresolved imports in
+# CI). Adding `format` resolves the chain. We don't strictly need `format`
+# at runtime (we're encode-only, no muxing), but ffmpeg-next 8.x doesn't
+# offer a feature gate that splits the codec module from format intra-crate.
+ffmpeg-next = { version = "8", default-features = false, features = ["codec", "format"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util"] }
