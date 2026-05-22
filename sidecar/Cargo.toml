@@ -60,15 +60,9 @@ base64 = "0.22"
 # isn't a runtime dep; only the marker attribute crate is.
 typeshare = "1"
 
-[target.'cfg(target_os = "linux")'.dependencies]
-# Tier-1 hardware H.264 encode on Linux/Steam Deck via VA-API. ffmpeg-next
-# wraps libavcodec and re-exports ffmpeg-sys-next as `ffmpeg::ffi::*`, which
-# we need for the VAAPI hwdevice/hwframe context plumbing (the high-level
-# wrapper doesn't cover hwaccel surfaces).
-#
-# Linux-only: macOS dev iteration must not pull in libavcodec system libs.
-# CI installs libavcodec-dev + libva-dev + libclang-dev before cargo build.
-ffmpeg-next = { version = "8", default-features = false, features = ["codec"] }
+# Transport deps still deferred:
+#   ffmpeg-next            — for the tier-1 libva hardware encode backend on
+#                            Steam Deck (currently a stub)
 
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util"] }
