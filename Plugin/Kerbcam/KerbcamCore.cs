@@ -184,6 +184,31 @@ namespace Kerbcam
                     CreateNoWindow = true,
                 };
 
+                // Self-contained sidecar deployment: CI bundles the ffmpeg
+                // shared libs (libavutil/libavcodec/etc) the binary links
+                // against into a sibling lib/ directory, because SteamOS
+                // doesn't ship those .so files. Prepend lib/ to
+                // LD_LIBRARY_PATH so the dynamic linker finds the bundled
+                // copies before falling back to the system path (for libva
+                // + its GPU-driver shims, which we intentionally do NOT
+                // bundle — those have to match the host's Mesa stack).
+                //
+                // Gated on Directory.Exists so the dev workflow (manual
+                // sidecar launch, no bundled lib dir) and macOS dev (which
+                // never hits this code path because binPath doesn't resolve
+                // there either) stay harmless.
+                //
+                // EnvironmentVariables is the cross-platform setter on
+                // .NET48/Mono despite the MSDN page tagging it Windows-only.
+                var libDir = Path.Combine(Path.GetDirectoryName(binPath) ?? string.Empty, "lib");
+                if (Directory.Exists(libDir))
+                {
+                    var existing = Environment.GetEnvironmentVariable("LD_LIBRARY_PATH");
+                    psi.EnvironmentVariables["LD_LIBRARY_PATH"] =
+                        string.IsNullOrEmpty(existing) ? libDir : libDir + ":" + existing;
+                    Debug.Log($"[Kerbcam] LD_LIBRARY_PATH prepend: {libDir}");
+                }
+
                 _sidecar = new Process { StartInfo = psi, EnableRaisingEvents = true };
                 _sidecar.OutputDataReceived += (sender, e) =>
                 {
