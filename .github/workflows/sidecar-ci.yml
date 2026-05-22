@@ -41,6 +41,30 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      # System deps for the tier-1 libva backend via ffmpeg-next.
+      # - libavcodec/util/format/swscale/avfilter-dev: pkg-config probes
+      #   the libav* shared libs at build time. libavcodec-dev is the
+      #   load-bearing one for h264_vaapi; the others are pulled in by
+      #   ffmpeg-next's default codec module surface.
+      # - libva-dev: required for h264_vaapi to actually register as a
+      #   codec in the libavcodec build; without it the build still
+      #   succeeds but the codec is missing at runtime.
+      # - libclang-dev + pkg-config: bindgen / pkg-config used by
+      #   ffmpeg-sys-next's build script.
+      - name: Install ffmpeg + VA-API system libs
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config \
+            clang \
+            libclang-dev \
+            libavcodec-dev \
+            libavutil-dev \
+            libavformat-dev \
+            libavfilter-dev \
+            libswscale-dev \
+            libva-dev
+
       - name: Install stable Rust + components
         uses: dtolnay/rust-toolchain@stable
         with:

@@ -60,9 +60,21 @@ base64 = "0.22"
 # isn't a runtime dep; only the marker attribute crate is.
 typeshare = "1"
 
-# Transport deps still deferred:
-#   ffmpeg-next            — for the tier-1 libva hardware encode backend on
-#                            Steam Deck (currently a stub)
+[target.'cfg(target_os = "linux")'.dependencies]
+# Tier-1 hardware H.264 encode on Linux/Steam Deck via VA-API. ffmpeg-next
+# wraps libavcodec and re-exports ffmpeg-sys-next as `ffmpeg::ffi::*`, which
+# we need for the VAAPI hwdevice/hwframe context plumbing (the high-level
+# wrapper doesn't cover hwaccel surfaces).
+#
+# Linux-only: macOS dev iteration must not pull in libavcodec system libs.
+# CI installs libavcodec-dev + libva-dev + libclang-dev before cargo build.
+# `codec` alone fails to compile because ffmpeg-next's codec module imports
+# unconditional symbols from its `format` module (AVIOInterruptCB,
+# av_read_frame, av_write_frame, etc — surfaced as 9 unresolved imports in
+# CI). Adding `format` resolves the chain. We don't strictly need `format`
+# at runtime (we're encode-only, no muxing), but ffmpeg-next 8.x doesn't
+# offer a feature gate that splits the codec module from format intra-crate.
+ffmpeg-next = { version = "8", default-features = false, features = ["codec", "format"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util"] }
