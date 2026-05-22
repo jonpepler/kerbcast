@@ -185,8 +185,8 @@ mod imp {
                         "av_hwframe_ctx_alloc returned null".into(),
                     ));
                 }
-                let frames_ctx_data = (*self.hw_frames_ref).data
-                    as *mut ffmpeg::ffi::AVHWFramesContext;
+                let frames_ctx_data =
+                    (*self.hw_frames_ref).data as *mut ffmpeg::ffi::AVHWFramesContext;
                 (*frames_ctx_data).format = ffmpeg::ffi::AVPixelFormat::AV_PIX_FMT_VAAPI;
                 (*frames_ctx_data).sw_format = ffmpeg::ffi::AVPixelFormat::AV_PIX_FMT_NV12;
                 (*frames_ctx_data).width = cfg.width as i32;
@@ -376,8 +376,7 @@ mod imp {
                     ffmpeg::ffi::AVPictureType::AV_PICTURE_TYPE_NONE
                 };
 
-                let send_rc =
-                    ffmpeg::ffi::avcodec_send_frame(encoder.as_mut_ptr(), hw_frame_ptr);
+                let send_rc = ffmpeg::ffi::avcodec_send_frame(encoder.as_mut_ptr(), hw_frame_ptr);
                 // Release our reference to the hw frame regardless of
                 // send result — the encoder ref-bumps internally on success.
                 ffmpeg::ffi::av_frame_free(&mut hw_frame_ptr);
@@ -721,7 +720,10 @@ mod imp {
                     break;
                 }
             }
-            assert!(saw_idr, "no IDR (NAL type 5) emitted after request_keyframe");
+            assert!(
+                saw_idr,
+                "no IDR (NAL type 5) emitted after request_keyframe"
+            );
         }
 
         #[test]
