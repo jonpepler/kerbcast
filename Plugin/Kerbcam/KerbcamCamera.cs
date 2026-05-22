@@ -254,6 +254,15 @@ namespace Kerbcam
             _nearCam.fieldOfView = Hullcam.cameraFoV;
             _nearCam.nearClipPlane = Hullcam.cameraClip;
             _nearCam.targetTexture = _captureRt;
+            // HDR + MSAA explicit on every layer. CopyFrom only inherits
+            // whatever the source KSP camera was last left with, which in
+            // practice ships HDR off for the layered triple — atmospheric
+            // scattering on Kerbin's horizon has very wide dynamic range
+            // and clips ugly-dark without HDR (showed up as a "black hole
+            // horizon" in the first multi-camera streaming test). OCISLY's
+            // TrackingCamera enables these explicitly for the same reason.
+            _nearCam.allowHDR = true;
+            _nearCam.allowMSAA = true;
             nearGo.AddComponent<CanvasHack>();
 
             // Scaled layer — planet terrain + atmosphere at scaled-space scale.
@@ -271,6 +280,8 @@ namespace Kerbcam
             scaledGo.transform.localScale = Vector3.one;
             _scaledCam.fieldOfView = Hullcam.cameraFoV;
             _scaledCam.targetTexture = _captureRt;
+            _scaledCam.allowHDR = true;
+            _scaledCam.allowMSAA = true;
             var scaledRot = scaledGo.AddComponent<LayerCamRotator>();
             scaledRot.NearCamera = _nearCam;
             scaledRot.UseScaledSpace = true;
@@ -291,6 +302,8 @@ namespace Kerbcam
             galaxyGo.transform.localScale = Vector3.one;
             _galaxyCam.fieldOfView = Hullcam.cameraFoV;
             _galaxyCam.targetTexture = _captureRt;
+            _galaxyCam.allowHDR = true;
+            _galaxyCam.allowMSAA = true;
             var galaxyRot = galaxyGo.AddComponent<LayerCamRotator>();
             galaxyRot.NearCamera = _nearCam;
             galaxyRot.UseScaledSpace = false;
