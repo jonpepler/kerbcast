@@ -46,10 +46,11 @@ mod imp {
         /// Owned `AVBufferRef` for the hardware frames pool (NV12-backed
         /// VAAPI surfaces). Dropped in `close`.
         hw_frames_ref: *mut ffmpeg::ffi::AVBufferRef,
-        /// Opened H.264 VAAPI encoder. `open_as` returns the general
-        /// `encoder::Encoder` (not the `Video` pre-open struct used during
-        /// setup).
-        encoder: Option<ffmpeg::codec::encoder::Encoder>,
+        /// Opened H.264 VAAPI encoder. `open_as` returns
+        /// `encoder::Video` (the video-specific wrapper around
+        /// `Encoder`). Video derefs to Encoder so `as_mut_ptr()` works
+        /// transparently.
+        encoder: Option<ffmpeg::codec::encoder::Video>,
         /// Reusable CPU-side NV12 staging frame. Allocated once at init so
         /// the per-frame hot path doesn't churn AVFrames.
         sw_frame: Option<VideoFrame>,
