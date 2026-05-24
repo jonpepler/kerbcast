@@ -51,6 +51,16 @@ namespace Kerbcam
         public bool AutoSpawnSidecar { get; private set; } = true;
         public bool EnableAdaptiveShed { get; private set; } = true;
 
+        // Apply Hullcam VDS's per-part shader filters (NightVision green
+        // grain, MovieTime film effect, CRT/TV scanlines, etc — 9 modes
+        // total). Each cam reads its hullcam.cameraMode field at attach
+        // and instantiates the matching HullcamVDS.CameraFilter; the
+        // existing capture-RT → readback-RT blit becomes a
+        // RenderImageWithFilter call. Default true so kerbcam streams
+        // show the same visual effects as Hullcam's own in-game UI.
+        // Set false to skip the filter pass (pure unfiltered composite).
+        public static bool EnableHullcamEffects { get; private set; } = true;
+
         // Debug: when true, log additional per-camera diagnostics
         // useful for investigating render-mask / cullingMask issues
         // (atmospheric FX missing from streams, layer mismatches
@@ -137,6 +147,7 @@ namespace Kerbcam
             ApplyInt(node, "Height", v => settings.Height = v);
             ApplyBool(node, "AutoSpawnSidecar", v => settings.AutoSpawnSidecar = v);
             ApplyBool(node, "EnableAdaptiveShed", v => settings.EnableAdaptiveShed = v);
+            ApplyBool(node, "EnableHullcamEffects", v => EnableHullcamEffects = v);
             ApplyBool(node, "DebugCameraLogging", v => DebugCameraLogging = v);
             // Static slots so KerbcamGameParameters (constructed by
             // KSP before our plugin instance loads) can pick up the
