@@ -38,6 +38,24 @@ mod imp {
     use std::sync::OnceLock;
     use tracing::{debug, warn};
 
+    // C shim: access AVCodecContext::hw_frames_ctx / hw_device_ctx via
+    // compiled C so field offsets match the runtime libavcodec ABI exactly.
+    // Direct Rust struct field access uses bindgen-generated offsets that
+    // can diverge from the compiled library due to FF_API_* guard differences.
+    extern "C" {
+        fn kerbcam_avcodec_set_hw_frames_ctx(
+            ctx: *mut ffmpeg::ffi::AVCodecContext,
+            r: *mut ffmpeg::ffi::AVBufferRef,
+        );
+        fn kerbcam_avcodec_get_hw_frames_ctx(
+            ctx: *const ffmpeg::ffi::AVCodecContext,
+        ) -> *mut ffmpeg::ffi::AVBufferRef;
+        fn kerbcam_avcodec_set_hw_device_ctx(
+            ctx: *mut ffmpeg::ffi::AVCodecContext,
+            r: *mut ffmpeg::ffi::AVBufferRef,
+        );
+    }
+
     use super::super::{EncodeConfig, EncodeError, EncoderBackend, Nal, RawFrame};
 
     pub struct Libva {
@@ -190,24 +208,19 @@ mod imp {
         (*ctx).height = PROBE_H;
         (*ctx).pix_fmt = hw_pix_fmt;
         (*ctx).time_base = ffmpeg::ffi::AVRational { num: 1, den: 30 };
-        // Give the codec context its own ref to the frames pool.
-        // avcodec_free_context will release it.
+        // Use the C shim to set hw_frames_ctx — direct Rust field access
+        // uses bindgen-generated offsets that may not match the compiled
+        // runtime library (confirmed by diagnostic logging 2026-05-24).
         let bref = ffmpeg::ffi::av_buffer_ref(frames_ref);
-        warn!(
-            bref_is_null = bref.is_null(),
-            bref_ptr = bref as usize,
-            "VAAPI probe: av_buffer_ref(frames_ref)"
-        );
-        (*ctx).hw_frames_ctx = bref;
-        // Read-back: if bref was non-null but readback is null, the
-        // hw_frames_ctx field is at the wrong offset in the Rust struct
-        // (bindgen/runtime ABI mismatch). If bref was null, this is OOM.
-        let readback = (*ctx).hw_frames_ctx;
-        warn!(
-            readback_is_null = readback.is_null(),
-            readback_ptr = readback as usize,
-            "VAAPI probe: hw_frames_ctx read-back"
-        );
+        if bref.is_null() {
+            warn!("VAAPI probe: av_buffer_ref returned null");
+            ffmpeg::ffi::avcodec_free_context(&mut (ctx as *mut _));
+            let mut f = frames_ref;
+            ffmpeg::ffi::av_buffer_unref(&mut f);
+            ffmpeg::ffi::av_buffer_unref(&mut device_ref);
+            return false;
+        }
+        kerbcam_avcodec_set_hw_frames_ctx(ctx, bref);
 
         let open_rc = ffmpeg::ffi::avcodec_open2(ctx, codec, ptr::null_mut());
         if open_rc < 0 {
@@ -420,15 +433,21 @@ mod imp {
                 // reference, we keep our own hw_frames_ref live for the
                 // session in case we need to allocate fresh upload frames
                 // later (we do — every encode call).
+                //
+                // hw_frames_ctx is set via the C shim rather than direct
+                // Rust struct field access: the bindgen-generated offset
+                // diverges from the compiled runtime library due to FF_API_*
+                // guard differences (confirmed by diagnostic 2026-05-24).
                 let ctx_mut = encoder.as_mut_ptr();
                 (*ctx_mut).pix_fmt = hw_pix_fmt;
-                (*ctx_mut).hw_frames_ctx = ffmpeg::ffi::av_buffer_ref(self.hw_frames_ref);
-                if (*ctx_mut).hw_frames_ctx.is_null() {
+                let frames_bref = ffmpeg::ffi::av_buffer_ref(self.hw_frames_ref);
+                if frames_bref.is_null() {
                     self.close();
                     return Err(EncodeError::Runtime(
                         "av_buffer_ref(hw_frames_ref) returned null".into(),
                     ));
                 }
+                kerbcam_avcodec_set_hw_frames_ctx(ctx_mut, frames_bref);
 
                 let opened = match encoder.open_as(codec) {
                     Ok(o) => o,

@@ -76,5 +76,12 @@ typeshare = "1"
 # offer a feature gate that splits the codec module from format intra-crate.
 ffmpeg-next = { version = "8", default-features = false, features = ["codec", "format"] }
 
+[build-dependencies]
+# Used by build.rs to compile ffi_shim.c on Linux. The shim provides C-side
+# accessors for AVCodecContext fields whose offsets may differ between the
+# bindgen-generated Rust layout and the compiled runtime library.
+cc = "1"
+pkg-config = "0.3"
+
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util"] }
