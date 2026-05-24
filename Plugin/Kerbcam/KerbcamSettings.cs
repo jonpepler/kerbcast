@@ -72,15 +72,13 @@ namespace Kerbcam
         public static bool EnableTUFX { get; private set; } = true;
 
         // Name of the TUFX profile to attach to kerbcam's per-camera
-        // volumes. Default empty → volumes inherit TUFX's global scene
-        // selection (whatever the operator picked in TUFX's UI for
-        // Flight). Set to "kerbcam" to use the curated profile
+        // volumes. Default "kerbcam" → uses the curated profile
         // bundled at GameData/Kerbcam/TUFXProfiles/kerbcam.cfg (ACES
-        // tonemap, SMAA, modest bloom). Default kept empty until the
-        // curated profile is validated against TUFX defaults in
-        // flight — opt-in until we know it's actually better.
-        // No effect without TUFX installed.
-        public static string TUFXProfile { get; private set; } = "";
+        // tonemap, SMAA, modest bloom). Set to any other TUFX
+        // profile name to use that instead; set empty to skip the
+        // attach (volumes inherit TUFX's global scene selection,
+        // pre-bundling behaviour). No effect without TUFX installed.
+        public static string TUFXProfile { get; private set; } = "kerbcam";
 
         // Debug: when true, log additional per-camera diagnostics
         // useful for investigating render-mask / cullingMask issues
