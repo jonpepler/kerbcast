@@ -192,7 +192,22 @@ mod imp {
         (*ctx).time_base = ffmpeg::ffi::AVRational { num: 1, den: 30 };
         // Give the codec context its own ref to the frames pool.
         // avcodec_free_context will release it.
-        (*ctx).hw_frames_ctx = ffmpeg::ffi::av_buffer_ref(frames_ref);
+        let bref = ffmpeg::ffi::av_buffer_ref(frames_ref);
+        warn!(
+            bref_is_null = bref.is_null(),
+            bref_ptr = bref as usize,
+            "VAAPI probe: av_buffer_ref(frames_ref)"
+        );
+        (*ctx).hw_frames_ctx = bref;
+        // Read-back: if bref was non-null but readback is null, the
+        // hw_frames_ctx field is at the wrong offset in the Rust struct
+        // (bindgen/runtime ABI mismatch). If bref was null, this is OOM.
+        let readback = (*ctx).hw_frames_ctx;
+        warn!(
+            readback_is_null = readback.is_null(),
+            readback_ptr = readback as usize,
+            "VAAPI probe: hw_frames_ctx read-back"
+        );
 
         let open_rc = ffmpeg::ffi::avcodec_open2(ctx, codec, ptr::null_mut());
         if open_rc < 0 {
