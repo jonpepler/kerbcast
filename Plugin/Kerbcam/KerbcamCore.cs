@@ -10,11 +10,20 @@
 //               vendored yangrc updater never auto-attaches).
 //               Ensure the rings directory exists, then spawn sidecar
 //               pointed at that directory.
+//               Subscribe GameEvents.onPartDestroyed to detect Hullcam
+//               part destruction mid-flight.
 //   - GameEvents.onVesselChange: rebuild the camera list (which
 //               creates/destroys the matching ring files).
-//   - LateUpdate: refresh each tracked camera.
-//   - OnDestroy: tear down cameras (each disposes its own ring + deletes
-//               its ring file) and stop the sidecar.
+//   - GameEvents.onPartDestroyed: write lifecycle:"destroyed" tombstone
+//               to the camera's info.json, close the ring, then leave
+//               info.json for the sidecar to clean up.
+//   - LateUpdate: defensive null-check sweep before the main Refresh()
+//               loop catches cameras whose part/vessel went null without
+//               a matching onPartDestroyed event (mod interactions, etc).
+//               Also refreshes each tracked camera.
+//   - OnDestroy: unsubscribe onPartDestroyed, tear down cameras (each
+//               disposes its own ring + deletes its files) and stop the
+//               sidecar.
 
 using System;
 using System.Collections.Generic;
