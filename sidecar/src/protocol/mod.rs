@@ -45,17 +45,12 @@ pub enum Layer {
 /// Destroyed is a terminal state — the sidecar never transitions a camera
 /// back to Active after writing the tombstone.
 #[typeshare]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub enum CameraLifecycle {
+    #[default]
     Active,
     Destroyed,
-}
-
-impl Default for CameraLifecycle {
-    fn default() -> Self {
-        CameraLifecycle::Active
-    }
 }
 
 /// Per-camera snapshot pushed by the sidecar on every state change
