@@ -361,8 +361,10 @@ namespace Kerbcam
             }
         }
 
-        // LateUpdate so the Unity render cameras have finished compositing
-        // the scene into our RenderTextures before we kick the readback.
+        // LateUpdate drives explicit camera.Render() calls via each
+        // KerbcamCamera.Refresh(). Our offscreen cameras are permanently
+        // disabled (enabled=false) so they never fire during Unity's normal
+        // render pass — we own the render timing entirely.
         private void LateUpdate()
         {
             UpdateFpsAverage();

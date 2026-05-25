@@ -7,9 +7,18 @@
 // TrackingCamera): galaxy renders skybox + distant celestials, scaled
 // renders planet terrain/atmosphere at scale, near renders close parts +
 // atmosphere effects. All three target the same RenderTexture so one
-// readback captures the composite. Per-layer enable/disable lets the
-// operator (or future adaptive-shedding logic) drop the most expensive
-// layers under load — galaxy first, then scaled, never near.
+// readback captures the composite.
+//
+// Render path: all three cameras are permanently disabled (enabled=false)
+// so Unity's auto-render never fires them. Instead, Refresh() calls
+// camera.Render() explicitly each frame in galaxy → scaled → near order.
+// This prevents KSP's deferred "Composite Shadows" CommandBuffer from
+// running against the wrong framebuffer when our cameras render — that
+// buffer would otherwise null out sun diffuse on planet surfaces, leaving
+// them black while the atmospheric limb (a separate render path) stayed
+// bright. ScaledSunLightHelper strips and restores the buffer around the
+// Scaled layer's Render() call. Per-layer shedding is now expressed as
+// "skip camera.Render() this tick" rather than toggling enabled.
 
 using System;
 using System.IO;
@@ -386,6 +395,15 @@ namespace Kerbcam
                 TUFXIntegration.ApplyToCamera(_galaxyCam);
             }
 
+            // All three cameras are permanently disabled — Unity must not
+            // auto-render them. Refresh() drives explicit camera.Render()
+            // calls each tick; disabled cameras still participate in
+            // LayerCamRotator.OnPreRender (which fires on camera.Render())
+            // so transform tracking continues to work correctly.
+            _nearCam.enabled = false;
+            _scaledCam.enabled = false;
+            _galaxyCam.enabled = false;
+
             // Debug log of per-camera cullingMask + source-camera
             // cullingMask. Gated on settings.cfg DebugCameraLogging
             // (default off). Hook for the cam-stream-FX investigation
@@ -512,14 +530,12 @@ namespace Kerbcam
 
         private void ApplyLayers()
         {
-            // _subscribed gates the per-layer Camera.enabled state so an
-            // unsubscribed camera doesn't render at all — that's where
-            // the dominant per-frame cost lives (6 cams × 3 layers = 18
-            // scene renders per Unity frame at full attach).
-            bool active = _subscribed;
-            if (_nearCam != null) _nearCam.enabled = active && (_layers & CameraLayers.Near) != 0;
-            if (_scaledCam != null) _scaledCam.enabled = active && (_layers & CameraLayers.Scaled) != 0;
-            if (_galaxyCam != null) _galaxyCam.enabled = active && (_layers & CameraLayers.Galaxy) != 0;
+            // Cameras are permanently disabled (enabled=false) — Unity's
+            // auto-render is never used for our offscreen cameras. The
+            // layer mask (_layers) is already updated by the caller before
+            // ApplyLayers() is invoked; Refresh() consumes it to decide
+            // which camera.Render() calls to make this tick. Nothing
+            // additional needed here.
         }
 
         // Sidecar→plugin control channel. The sidecar's data-channel
@@ -704,12 +720,11 @@ namespace Kerbcam
                 PollControlFile();
             }
 
-            // Subscriber-aware skip: when no peer is subscribed, the
-            // sidecar has flushed `subscribed=false` to control.json and
-            // ApplyLayers has disabled the Unity Camera components. Bail
-            // before issuing a readback so we don't pump GPU→CPU bytes
-            // that nothing will consume. Pending in-flight readbacks
-            // (subscribe→unsubscribe race) still drain on the next path.
+            // Subscriber-aware skip: when no peer is subscribed, skip all
+            // rendering work — no camera.Render() calls, no readback, no
+            // ring writes, no encoder work downstream. Pending in-flight
+            // readbacks (subscribe→unsubscribe race) still drain on the
+            // next path.
             if (!_subscribed)
             {
                 if (_readbackInFlight && _pendingRequest.done)
@@ -730,6 +745,42 @@ namespace Kerbcam
 
             try
             {
+                // Manual render sequence: galaxy → scaled → near.
+                // Cameras are permanently disabled (enabled=false) so
+                // Unity's auto-render never fires them; we drive each
+                // layer explicitly here and gate on the current layer mask
+                // (mirroring the old enabled-flag gating).
+                //
+                // The Scaled layer is bracketed by strip/restore of the
+                // "Composite Shadows" CommandBuffer on scaledSunLight —
+                // defensive measure for Scatterer-installed configs where
+                // KSP's deferred renderer attaches such a buffer. No-op
+                // on configs without that buffer attached (our case at
+                // dev time, but anyone running Scatterer would need it).
+                // try/finally ensures restore even if Render() throws.
+                if (_galaxyCam != null && (_layers & CameraLayers.Galaxy) != 0)
+                {
+                    _galaxyCam.Render();
+                }
+
+                if (_scaledCam != null && (_layers & CameraLayers.Scaled) != 0)
+                {
+                    ScaledSunLightHelper.StripCompositeShadowsBuffer();
+                    try
+                    {
+                        _scaledCam.Render();
+                    }
+                    finally
+                    {
+                        ScaledSunLightHelper.RestoreCompositeShadowsBuffer();
+                    }
+                }
+
+                if (_nearCam != null && (_layers & CameraLayers.Near) != 0)
+                {
+                    _nearCam.Render();
+                }
+
                 // Blit the depth-bundled capture RT into the clean readback RT.
                 // When a HullcamVDS filter is active (NightVision etc), it
                 // replaces the plain Blit with its own shader pass that
