@@ -75,6 +75,15 @@ namespace Kerbcam
         public float PanYaw { get; private set; }
         public float PanPitch { get; private set; }
 
+        // Snapshot of identity fields captured at construction. Used by
+        // WriteInfoManifest and WriteDestroyedManifest so neither method
+        // needs to touch Hullcam.part (which may be null or dying by the
+        // time Dispose is called from a part-destruction handler).
+        private readonly string _cachedPartName;
+        private readonly string _cachedPartTitle;
+        private readonly string _cachedCameraName;
+        private readonly string _cachedVesselName;
+
         private Camera _nearCam;
         private Camera _scaledCam;
         private Camera _galaxyCam;
@@ -107,6 +116,7 @@ namespace Kerbcam
         /// changes.
         /// </summary>
         private bool _subscribed;
+        private bool _disposed;
 
         private UniversalAsyncGPUReadbackRequest _pendingRequest;
         private bool _readbackInFlight;
@@ -165,6 +175,15 @@ namespace Kerbcam
                 FovMax = hullcam.cameraFoV;
             }
             Fov = hullcam.cameraFoV;
+
+            // Cache identity fields now while the Part is guaranteed live.
+            // WriteDestroyedManifest (called from Dispose, which may be
+            // invoked from a part-destruction event) reads these instead of
+            // touching Hullcam.part, which may already be null by that point.
+            _cachedPartName = hullcam.part.partInfo?.name ?? "unknown";
+            _cachedPartTitle = hullcam.part.partInfo?.title ?? _cachedPartName;
+            _cachedCameraName = string.IsNullOrEmpty(hullcam.cameraName) ? _cachedPartTitle : hullcam.cameraName;
+            _cachedVesselName = hullcam.vessel?.GetDisplayName() ?? hullcam.vessel?.vesselName ?? "<unknown>";
 
             _ringPath = Path.Combine(ringDir, $"{FlightId}.ring");
             _infoPath = Path.Combine(ringDir, $"{FlightId}.info.json");
@@ -691,21 +710,43 @@ namespace Kerbcam
         // when it discovers the matching ring. Vessel name is technically
         // mutable (rename in flight), but for the v0.3 milestone the
         // capture-time snapshot is sufficient — vessel renames are rare.
+        //
+        // Identity fields are read from the cached snapshot (populated in
+        // the constructor) rather than from Hullcam.part directly so the
+        // same code path stays safe when called from Dispose during part
+        // destruction (where Hullcam.part may already be null).
         private void WriteInfoManifest()
+        {
+            WriteManifest("active");
+        }
+
+        // Rewrites the info.json with lifecycle="destroyed". Called from
+        // Dispose before any cleanup so the sidecar can observe the
+        // transition before the ring is closed. Wrapped in try/catch so a
+        // write failure never blocks the cleanup path.
+        public void WriteDestroyedManifest()
         {
             try
             {
-                var partName = Hullcam.part.partInfo?.name ?? "unknown";
-                var partTitle = Hullcam.part.partInfo?.title ?? partName;
-                var vesselName = Hullcam.vessel?.GetDisplayName() ?? Hullcam.vessel?.vesselName ?? "<unknown>";
-                var cameraName = string.IsNullOrEmpty(Hullcam.cameraName) ? partTitle : Hullcam.cameraName;
+                WriteManifest("destroyed");
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"[Kerbcam] cam={FlightId} destroyed manifest write failed: {ex.Message}");
+            }
+        }
 
+        private void WriteManifest(string lifecycle)
+        {
+            try
+            {
                 var json = "{\n"
+                    + $"  \"lifecycle\": \"{lifecycle}\",\n"
                     + $"  \"flight_id\": {FlightId},\n"
-                    + $"  \"part_name\": \"{EscapeJson(partName)}\",\n"
-                    + $"  \"part_title\": \"{EscapeJson(partTitle)}\",\n"
-                    + $"  \"camera_name\": \"{EscapeJson(cameraName)}\",\n"
-                    + $"  \"vessel_name\": \"{EscapeJson(vesselName)}\",\n"
+                    + $"  \"part_name\": \"{EscapeJson(_cachedPartName)}\",\n"
+                    + $"  \"part_title\": \"{EscapeJson(_cachedPartTitle)}\",\n"
+                    + $"  \"camera_name\": \"{EscapeJson(_cachedCameraName)}\",\n"
+                    + $"  \"vessel_name\": \"{EscapeJson(_cachedVesselName)}\",\n"
                     + $"  \"supports_zoom\": {(SupportsZoom ? "true" : "false")},\n"
                     + $"  \"fov\": {Fov.ToString(System.Globalization.CultureInfo.InvariantCulture)},\n"
                     + $"  \"fov_min\": {FovMin.ToString(System.Globalization.CultureInfo.InvariantCulture)},\n"
@@ -720,7 +761,7 @@ namespace Kerbcam
             }
             catch (Exception ex)
             {
-                Debug.LogWarning($"[Kerbcam] cam={FlightId} info manifest write failed: {ex.Message}");
+                Debug.LogWarning($"[Kerbcam] cam={FlightId} info manifest write failed (lifecycle={lifecycle}): {ex.Message}");
             }
         }
 
@@ -883,8 +924,43 @@ namespace Kerbcam
             _consecutiveErrors++;
         }
 
+        /// <summary>
+        /// Standard disposal: tear down cameras and ring, delete all sidecar
+        /// files (ring, info, control). Used by RebuildCameraList (vessel change)
+        /// and OnDestroy (scene exit) where the part was not destroyed in-flight.
+        /// </summary>
         public void Dispose()
         {
+            DisposeCore(partDestroyed: false);
+        }
+
+        /// <summary>
+        /// Destruction-path disposal: writes <c>lifecycle: "destroyed"</c> to
+        /// the info.json tombstone BEFORE closing the ring, then deletes the
+        /// ring and control files but leaves the info.json for the sidecar to
+        /// read. Called by OnPartDestroyed and the LateUpdate defensive sweep.
+        /// </summary>
+        public void DisposeDestroyed()
+        {
+            DisposeCore(partDestroyed: true);
+        }
+
+        private void DisposeCore(bool partDestroyed)
+        {
+            // Guard against double-dispose (onPartDestroyed and the LateUpdate
+            // defensive sweep can both fire; RebuildCameraList on vessel change
+            // is also a caller). Second call is a no-op.
+            if (_disposed) return;
+            _disposed = true;
+
+            if (partDestroyed)
+            {
+                // Write the destroyed tombstone BEFORE closing the ring so the
+                // sidecar can observe the lifecycle transition. Failure here
+                // must never block the cleanup path.
+                WriteDestroyedManifest();
+            }
+
             if (_cameraFilter != null)
             {
                 try { _cameraFilter.Deactivate(); }
@@ -903,7 +979,20 @@ namespace Kerbcam
             try
             {
                 if (File.Exists(_ringPath)) File.Delete(_ringPath);
-                if (File.Exists(_infoPath)) File.Delete(_infoPath);
+                if (partDestroyed)
+                {
+                    // _infoPath is intentionally NOT deleted on the destruction
+                    // path. It serves as the lifecycle tombstone the sidecar
+                    // reads to detect that this camera was destroyed. The sidecar
+                    // is responsible for cleaning it up after it acknowledges the
+                    // transition.
+                }
+                else
+                {
+                    // Normal teardown (vessel change, scene exit): delete the
+                    // info file so stale entries don't outlive the session.
+                    if (File.Exists(_infoPath)) File.Delete(_infoPath);
+                }
                 if (File.Exists(_controlPath)) File.Delete(_controlPath);
             }
             catch (Exception ex)

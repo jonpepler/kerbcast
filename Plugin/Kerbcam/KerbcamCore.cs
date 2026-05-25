@@ -121,6 +121,7 @@ namespace Kerbcam
             }
 
             GameEvents.onVesselChange.Add(OnVesselChange);
+            GameEvents.onPartDestroyed.Add(OnPartDestroyed);
             RebuildCameraList(FlightGlobals.ActiveVessel);
 
             // Throttle state seeded from the per-save Difficulty Setting
@@ -274,6 +275,29 @@ namespace Kerbcam
             RebuildCameraList(v);
         }
 
+        // GameEvents.onPartDestroyed fires when a Part's GameObject is
+        // destroyed (vessel crash, decoupling + physics-range expire, etc).
+        // Walk _cameras and dispose any whose Hullcam belongs to this part.
+        // DisposeDestroyed writes lifecycle="destroyed" to the info.json
+        // tombstone before closing the ring so the sidecar observes the
+        // transition, and leaves the info.json on disk for the sidecar.
+        private void OnPartDestroyed(Part part)
+        {
+            if (part == null) return;
+            // Iterate backwards so we can remove by index without
+            // skipping entries.
+            for (int i = _cameras.Count - 1; i >= 0; i--)
+            {
+                var cam = _cameras[i];
+                if (cam.Hullcam != null && cam.Hullcam.part == part)
+                {
+                    Debug.Log($"[Kerbcam] part destroyed — disposing cam={cam.FlightId} ({part.name})");
+                    _cameras.RemoveAt(i);
+                    cam.DisposeDestroyed();
+                }
+            }
+        }
+
         // Derive a unique FlightId per Hullcam module on a part. Module 0
         // (and parts with a single module — the common case) keep the bare
         // part.flightID for wire compatibility. Additional modules get a
@@ -402,6 +426,23 @@ namespace Kerbcam
                 _debugMaskCheckCountdown = 3600;
                 for (int i = 0; i < _cameras.Count; i++)
                     _cameras[i].LogCullingMaskIfDiverged();
+            }
+
+            // Defensive: scan for cameras whose Hullcam part has gone null
+            // (e.g. a destruction event we missed, or a KSP internal teardown
+            // that doesn't fire onPartDestroyed). DisposeDestroyed + remove them
+            // so the orphaned Unity Camera GameObjects and ring files are cleaned
+            // up even if the event path failed. Iterate backwards to allow
+            // removal by index.
+            for (int i = _cameras.Count - 1; i >= 0; i--)
+            {
+                var cam = _cameras[i];
+                if (cam.Hullcam == null || cam.Hullcam.part == null || cam.Hullcam.vessel == null)
+                {
+                    Debug.LogWarning($"[Kerbcam] defensive sweep: cam={cam.FlightId} has null Hullcam/part/vessel — disposing (missed destruction event?)");
+                    _cameras.RemoveAt(i);
+                    cam.DisposeDestroyed();
+                }
             }
 
             for (int i = 0; i < _cameras.Count; i++)
@@ -754,6 +795,7 @@ namespace Kerbcam
             RestoreMainScreen();
 
             GameEvents.onVesselChange.Remove(OnVesselChange);
+            GameEvents.onPartDestroyed.Remove(OnPartDestroyed);
             foreach (var cam in _cameras) cam.Dispose();
             _cameras.Clear();
             StopSidecar();
