@@ -10,7 +10,7 @@
 //                       streaming to gonogo / a browser on another
 //                       machine).
 //   Port              — sidecar HTTP signalling port (default 8088).
-//   Width / Height    — capture dimensions per Hullcam (default 768).
+//   Width / Height    — capture dimensions per Hullcam (default 1024 × 576, 16:9).
 //                       Larger = more pixels to push through openh264
 //                       on the CPU.
 //   AutoSpawnSidecar  — whether the plugin should `Process.Start` the
@@ -54,8 +54,8 @@ namespace Kerbcam
     {
         public string BindAddress { get; private set; } = "0.0.0.0";
         public int Port { get; private set; } = 8088;
-        public int Width { get; private set; } = 768;
-        public int Height { get; private set; } = 768;
+        public int Width { get; private set; } = 1024;
+        public int Height { get; private set; } = 576;
         public bool AutoSpawnSidecar { get; private set; } = true;
         public bool EnableAdaptiveShed { get; private set; } = true;
 
