@@ -11,7 +11,7 @@ export interface AdaptiveShedPayload {
 /**
  * Lifecycle state of a camera. Transmitted in `CameraState` so clients
  * can react to part destruction without a new message type.
- *
+ * 
  * Destroyed is a terminal state — the sidecar never transitions a camera
  * back to Active after writing the tombstone.
  */
@@ -35,7 +35,7 @@ export enum Layer {
  * Per-camera snapshot pushed by the sidecar on every state change
  * (operator API call, adaptive shed, vessel change). Same shape served
  * by `GET /cameras` so client UIs can treat the two interchangeably.
- *
+ * 
  * Capability fields (`supports_zoom`, `supports_pan`) let clients
  * render controls only for features each part actually offers — a
  * fixed-FoV camera shouldn't get a zoom slider, a non-steerable one
@@ -43,8 +43,14 @@ export enum Layer {
  */
 export interface CameraState {
 	flightId: number;
-	/** Part-destruction lifecycle. `active` for live cameras. `destroyed` when the plugin reports the Hullcam part was destroyed in-flight. */
-	lifecycle: CameraLifecycle;
+	/**
+	 * Part-destruction lifecycle. `Active` for live cameras. `Destroyed`
+	 * when the plugin reports the Hullcam part was destroyed in-flight
+	 * (collision, overheating, decoupling beyond physics range). Once
+	 * destroyed the sidecar stops forwarding frames; the client should
+	 * surface a "SIGNAL LOST" overlay and keep the last frame visible.
+	 */
+	lifecycle?: CameraLifecycle;
 	partName: string;
 	partTitle: string;
 	cameraName: string;
@@ -227,7 +233,9 @@ export type ClientMessage =
 	 * the current P-frame chain. Sidecar forwards to the camera's
 	 * encoder.
 	 */
-	| { type: "request-keyframe", content: FlightIdPayload };
+	| { type: "request-keyframe", content: FlightIdPayload }
+	/** Response to `Ping`. Browser sends this immediately on receiving each Ping. */
+	| { type: "pong", content?: undefined };
 
 /** Messages sent FROM the sidecar TO the client. */
 export type ServerMessage = 
@@ -258,5 +266,11 @@ export type ServerMessage =
 	 * Malformed / unknown client message. Includes the offending
 	 * payload so the client can log it.
 	 */
-	| { type: "error", content: ErrorPayload };
+	| { type: "error", content: ErrorPayload }
+	/**
+	 * Keepalive probe sent by the sidecar every 5 seconds. Browser responds
+	 * with `Pong`; if no Ping arrives within 15s the browser tears down
+	 * the connection.
+	 */
+	| { type: "ping", content?: undefined };
 
