@@ -1,17 +1,14 @@
 name: release
 
-# Triggered on v* tags. Builds the sidecar on ubuntu-22.04 (glibc 2.35) so
-# the bundled .so files don't exceed the Steam Deck's pressure-vessel glibc
-# floor (Steam Runtime 3 / sniper = glibc 2.36).
+# Triggered on v* tags. Assembles a complete GameData/Kerbcam/ install tree:
+# sidecar binary + bundled libs, plugin DLL, both shader bundles, settings.cfg.
 #
-# Shader bundles (HullcamVDS shaders.linux, kerbcam-shaders) require a Unity
-# Personal license to build and are produced by build-hullcam-shaders.yml and
-# build-kerbcam-shaders.yml respectively. Link their artifacts manually in the
-# release notes after this workflow completes.
+# Runs on ubuntu-22.04 (glibc 2.35) so bundled .so files stay within the
+# Steam Deck's pressure-vessel glibc floor (Steam Runtime 3 = glibc 2.36).
 #
-# KSP_MANAGED_TOKEN secret required: a PAT with read access to the private
-# repo jonpepler/ksp-managed, which holds the non-redistributable KSP Unity
-# assemblies.
+# Secrets required:
+#   KSP_MANAGED_TOKEN — fine-grained PAT (Contents: read) for jonpepler/ksp-managed
+#   UNITY_USERNAME / UNITY_PASSWORD — Unity Personal license for shader builds
 
 on:
   push:
@@ -27,6 +24,10 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-22.04
+    env:
+      UNITY_VERSION: 2019.4.40f1 (ffc62b691db5)
+      HULLCAM_REPO: linuxgurugamer/HullcamVDSContinued
+      HULLCAM_REF: master
     steps:
       - uses: actions/checkout@v6
 
@@ -100,6 +101,56 @@ jobs:
             /p:KspManaged="${{ github.workspace }}/ksp-managed/KSP_Data/Managed" \
             /p:KspGameData="${{ github.workspace }}/ksp-managed/GameData"
 
+      - name: Checkout HullcamVDSContinued (shader source)
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ env.HULLCAM_REPO }}
+          ref: ${{ env.HULLCAM_REF }}
+          path: hullcam
+
+      - name: Drop kerbcam build script into HullcamVDS project
+        run: |
+          mkdir -p hullcam/HullCameraAssets/Assets/Editor
+          rm -f hullcam/HullCameraAssets/Assets/Editor/CreateAssetBundles.cs
+          cp ci/hullcam-shaders/BuildShaderBundle.cs \
+             hullcam/HullCameraAssets/Assets/Editor/BuildShaderBundle.cs
+
+      - name: Set up Unity Hub + Editor
+        uses: buildalon/unity-setup@v2
+        with:
+          unity-version: ${{ env.UNITY_VERSION }}
+          version-file: 'None'
+          build-targets: StandaloneLinux64
+          cache-installation: true
+
+      - name: Activate Unity Personal license
+        uses: buildalon/activate-unity-license@v2
+        with:
+          license: 'Personal'
+          username: ${{ secrets.UNITY_USERNAME }}
+          password: ${{ secrets.UNITY_PASSWORD }}
+
+      - name: Build shaders.linux (HullcamVDS)
+        working-directory: hullcam/HullCameraAssets
+        run: |
+          "$UNITY_EDITOR_PATH" \
+            -batchmode -nographics -quit \
+            -projectPath "$(pwd)" \
+            -executeMethod KerbcamCI.BuildShaderBundle.BuildLinux \
+            -buildTarget Linux64 \
+            -logFile -
+          cp Bundles-linux/shaders shaders.linux
+
+      - name: Build kerbcam-shaders
+        working-directory: ci/kerbcam-shaders
+        run: |
+          "$UNITY_EDITOR_PATH" \
+            -batchmode -nographics -quit \
+            -projectPath "$(pwd)" \
+            -executeMethod KerbcamCI.BuildKerbcamShaders.BuildLinux \
+            -buildTarget Linux64 \
+            -logFile -
+
       - name: Cache cargo registry + typeshare binary
         uses: actions/cache@v5
         with:
@@ -159,12 +210,16 @@ jobs:
           set -euo pipefail
           mkdir -p \
             GameData/Kerbcam/Plugins \
-            GameData/Kerbcam/Sidecar/lib
+            GameData/Kerbcam/Sidecar/lib \
+            GameData/Kerbcam/HullcamShaders
 
           cp Plugin/obj/Release/Kerbcam.dll GameData/Kerbcam/Plugins/
 
           cp staging-sidecar/kerbcam-sidecar GameData/Kerbcam/Sidecar/
           cp staging-sidecar/lib/* GameData/Kerbcam/Sidecar/lib/ 2>/dev/null || true
+
+          cp hullcam/HullCameraAssets/shaders.linux GameData/Kerbcam/HullcamShaders/
+          cp ci/kerbcam-shaders/Bundles-linux/kerbcam-shaders GameData/Kerbcam/
 
           cp Plugin/settings.cfg GameData/Kerbcam/
 
@@ -196,11 +251,10 @@ jobs:
 
           1. Extract \`$(basename ${{ env.RELEASE_ZIP }})\` into your KSP \`GameData/\` directory.
           2. Install Hullcam VDS Continued (required).
-          3. Copy \`GameData/Kerbcam/HullcamShaders/shaders.linux\` from the \`shaders-linux\` workflow artifact if on Linux (see Actions tab).
-          4. Start KSP — kerbcam auto-launches the sidecar on scene load.
+          3. Start KSP — kerbcam auto-launches the sidecar on scene load.
 
           ## Assets
-          - \`$(basename ${{ env.RELEASE_ZIP }})\` — complete install tree (plugin + sidecar + settings)
+          - \`$(basename ${{ env.RELEASE_ZIP }})\` — complete install tree (plugin + sidecar + shader bundles + settings)
           - \`Kerbcam.dll\` — plugin DLL only (for manual installs)
 
           > TypeScript SDK \`@jonpepler/kerbcam@${TAG#v}\` published to GitHub Packages."
