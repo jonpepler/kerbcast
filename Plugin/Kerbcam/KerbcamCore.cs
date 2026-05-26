@@ -131,6 +131,7 @@ namespace Kerbcam
 
             GameEvents.onVesselChange.Add(OnVesselChange);
             GameEvents.onPartDestroyed.Add(OnPartDestroyed);
+            GameEvents.onVesselWasModified.Add(OnVesselWasModified);
             RebuildCameraList(FlightGlobals.ActiveVessel);
 
             // Throttle state seeded from the per-save Difficulty Setting
@@ -284,15 +285,43 @@ namespace Kerbcam
             RebuildCameraList(v);
         }
 
+        // Decoupling, docking, fairing jettison and similar structural events
+        // change part counts without firing onPartDestroyed. Dirty the FX
+        // renderer cache on all cameras tracking this vessel so the next
+        // Refresh rebuilds it against the updated part list.
+        private void OnVesselWasModified(Vessel v)
+        {
+            if (v == null) return;
+            foreach (var cam in _cameras)
+            {
+                if (cam.Hullcam != null && cam.Hullcam.vessel == v)
+                    cam.MarkFxRenderersDirty();
+            }
+        }
+
         // GameEvents.onPartDestroyed fires when a Part's GameObject is
         // destroyed (vessel crash, decoupling + physics-range expire, etc).
         // Walk _cameras and dispose any whose Hullcam belongs to this part.
         // DisposeDestroyed writes lifecycle="destroyed" to the info.json
         // tombstone before closing the ring so the sidecar observes the
         // transition, and leaves the info.json on disk for the sidecar.
+        // Also dirty FX renderer caches on remaining cams — the destroyed
+        // part's renderers must be purged from their CB lists.
         private void OnPartDestroyed(Part part)
         {
             if (part == null) return;
+            // Capture the vessel reference before any Dispose calls, since
+            // Hullcam.vessel may become null during destruction.
+            Vessel affectedVessel = null;
+            foreach (var cam in _cameras)
+            {
+                if (cam.Hullcam != null && cam.Hullcam.part == part)
+                {
+                    affectedVessel = cam.Hullcam.vessel;
+                    break;
+                }
+            }
+
             // Iterate backwards so we can remove by index without
             // skipping entries.
             for (int i = _cameras.Count - 1; i >= 0; i--)
@@ -303,6 +332,17 @@ namespace Kerbcam
                     Debug.Log($"[Kerbcam] part destroyed — disposing cam={cam.FlightId} ({part.name})");
                     _cameras.RemoveAt(i);
                     cam.DisposeDestroyed();
+                }
+            }
+
+            // Dirty remaining cameras on the same vessel so destroyed part's
+            // renderers are flushed from FX CB lists on next Refresh.
+            if (affectedVessel != null)
+            {
+                foreach (var cam in _cameras)
+                {
+                    if (cam.Hullcam != null && cam.Hullcam.vessel == affectedVessel)
+                        cam.MarkFxRenderersDirty();
                 }
             }
         }
@@ -805,6 +845,7 @@ namespace Kerbcam
 
             GameEvents.onVesselChange.Remove(OnVesselChange);
             GameEvents.onPartDestroyed.Remove(OnPartDestroyed);
+            GameEvents.onVesselWasModified.Remove(OnVesselWasModified);
             foreach (var cam in _cameras) cam.Dispose();
             _cameras.Clear();
             StopSidecar();

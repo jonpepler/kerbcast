@@ -19,12 +19,24 @@
 // bright. ScaledSunLightHelper strips and restores the buffer around the
 // Scaled layer's Render() call. Per-layer shedding is now expressed as
 // "skip camera.Render() this tick" rather than toggling enabled.
+//
+// Atmospheric FX (wind streaks, re-entry plasma): injected via a
+// CommandBuffer on _nearCam at CameraEvent.AfterForwardAlpha rather than
+// a separate FXCamera-mirroring overlay camera. The CB issues DrawRenderer
+// calls for each particle renderer that KSP's FXCamera would render,
+// running inside _nearCam's own pass so the framebuffer depth is Near's
+// depth and ZTest LEqual works correctly — FX no longer paints over the
+// rocket. The old _fxCam approach failed because its frustum (copied from
+// FXCamera) diverged from _nearCam's frustum, making depth values written
+// by the two passes incomparable.
 
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using HullcamVDS;
 using UnityEngine;
+using UnityEngine.Rendering;
 using Yangrc.OpenGLAsyncReadback;
 
 namespace Kerbcam
@@ -36,7 +48,12 @@ namespace Kerbcam
         Near = 1,
         Scaled = 2,
         Galaxy = 4,
-        All = Near | Scaled | Galaxy,
+        // Fx gates the CommandBuffer that injects atmospheric FX
+        // (wind streaks, re-entry plasma) into _nearCam's pass. Listed
+        // last so the shed cascade can drop it first under load — FX is
+        // visually optional and the most expensive particle layer.
+        Fx = 8,
+        All = Near | Scaled | Galaxy | Fx,
     }
 
     internal sealed class KerbcamCamera
@@ -87,6 +104,22 @@ namespace Kerbcam
         private Camera _nearCam;
         private Camera _scaledCam;
         private Camera _galaxyCam;
+        // CommandBuffer attached to _nearCam at CameraEvent.AfterForwardAlpha.
+        // Issues DrawRenderer calls for each FX particle renderer so atmospheric
+        // effects compose against Near's existing depth buffer rather than
+        // ignoring it (the root cause of the old _fxCam depth-mismatch bug).
+        private CommandBuffer _fxCb;
+        // Whether _fxCb is currently attached to _nearCam. Tracked separately
+        // so we can safely attach/detach across layer-mask changes at runtime
+        // without double-adding or leaving a dangling buffer.
+        private bool _fxCbAttached;
+        // Cached list of particle renderers on the active vessel that belong
+        // to FXCamera's culling layer set. Rebuilt when dirty; late subscribers
+        // draw from the cache immediately.
+        private readonly List<Renderer> _fxRenderers = new List<Renderer>();
+        // Dirty when part count changes (onPartDestroyed, onVesselWasModified)
+        // or on first setup. Forces a full renderer walk on next EnsureFxCommandBuffer.
+        private bool _fxRenderersDirty = true;
         private RenderTexture _captureRt;
         private RenderTexture _readbackRt; // depth=0, GL_TEXTURE_2D-clean
         private Texture2D _scratchTex;
@@ -120,7 +153,6 @@ namespace Kerbcam
 
         private UniversalAsyncGPUReadbackRequest _pendingRequest;
         private bool _readbackInFlight;
-        private bool _fxShaderApplied;
         private double _pendingCaptureTsMs;
         private int _consecutiveErrors;
 
@@ -442,43 +474,105 @@ namespace Kerbcam
                     $"scaled=src:0x{srcScaledMask:X8}/ours:0x{_scaledCam.cullingMask:X8} " +
                     $"galaxy=src:0x{srcGalaxyMask:X8}/ours:0x{_galaxyCam.cullingMask:X8}");
             }
-
-            ApplyAtmosphericFx();
         }
 
-        // Apply the same replacement shader FXCamera uses on Camera 00 to
-        // our near cam so atmospheric effects (wind streaks, re-entry plasma,
-        // anything else in FXCamera.ReplacementShaders) appear in the stream.
-        // CopyFrom does not copy replacement-shader bindings, so this must be
-        // called explicitly. Safe to call every frame — no-ops once applied.
-        // Retries silently until FXCamera.Instance is available (it initialises
-        // after our constructor during flight-scene setup).
-        // Near-only: scaled and galaxy cameras are at a scale where atmospheric
-        // FX renderers are not present in the scene.
-        private void ApplyAtmosphericFx()
+        // Walk the active vessel's parts and populate _fxRenderers with every
+        // Renderer that KSP's FXCamera culls. Filters by layer membership
+        // against FXCamera's live cullingMask so we track exactly the set
+        // FXCamera would draw — no more, no less. Also skips inactive
+        // renderers because DrawRenderer on a disabled renderer is a no-op
+        // and would leave particle emitters out of the CB unnecessarily.
+        private void RebuildFxRendererCache()
         {
-            if (_fxShaderApplied || _nearCam == null) return;
+            _fxRenderers.Clear();
             if (FXCamera.Instance == null) return;
-            var shaders = FXCamera.Instance.ReplacementShaders;
-            if (shaders == null || shaders.Length == 0) return;
 
-            // shaderLOD drives which entry in ReplacementShaders[] FXCamera
-            // itself uses. Read via reflection so we don't break if the field
-            // is private in a given KSP version; fall back to index 0.
-            int lod = 0;
-            var lodField = typeof(FXCamera).GetField("shaderLOD",
-                System.Reflection.BindingFlags.Public |
-                System.Reflection.BindingFlags.NonPublic |
-                System.Reflection.BindingFlags.Instance);
-            if (lodField != null)
-                lod = Mathf.Clamp((int)lodField.GetValue(FXCamera.Instance), 0, shaders.Length - 1);
+            var fxCamComponent = FXCamera.Instance.GetComponent<Camera>();
+            if (fxCamComponent == null) return;
+            // FXCamera's cullingMask overlaps Near's on rocket-part layers (layer 0
+            // / Default). Including those layers re-draws every part renderer at
+            // AfterForwardAlpha with no forward-lighting state — comes out black,
+            // and leaks renderer references that survive part destruction as
+            // silhouettes. Subtracting Near's mask isolates the layers that
+            // *only* FXCamera renders — i.e. the actual FX particles.
+            int fxOnlyMask = fxCamComponent.cullingMask & ~_nearCam.cullingMask;
 
-            var shader = shaders[lod];
-            if (shader == null) return;
-            _nearCam.SetReplacementShader(shader, "RenderType");
-            _fxShaderApplied = true;
-            Debug.Log($"[Kerbcam] cam={FlightId} atmospheric FX shader applied (lod={lod} shader={shader.name})");
+            var vessel = Hullcam.vessel;
+            if (vessel == null) return;
+
+            // GetComponentsInChildren allocates; for a vessel-level call this
+            // runs once per dirty-cycle, not per-frame, so it's acceptable.
+            foreach (var part in vessel.parts)
+            {
+                if (part == null) continue;
+                var renderers = part.GetComponentsInChildren<Renderer>(includeInactive: true);
+                foreach (var r in renderers)
+                {
+                    if (r == null || !r.enabled || !r.gameObject.activeInHierarchy) continue;
+                    if ((fxOnlyMask & (1 << r.gameObject.layer)) == 0) continue;
+                    _fxRenderers.Add(r);
+                }
+            }
         }
+
+        // Ensure _fxCb is created, populated, and attached to _nearCam.
+        // Called every Refresh() before _nearCam.Render() so the CB is
+        // current by the time the draw call fires. Handles three sub-cases:
+        //   1. FX layer disabled — detach CB if attached, no-op otherwise.
+        //   2. CB dirty (renderer cache stale) — clear + repopulate + attach.
+        //   3. CB clean + already attached — no-op.
+        private void EnsureFxCommandBuffer()
+        {
+            if (_nearCam == null) return;
+            bool fxEnabled = (_layers & CameraLayers.Fx) != 0;
+
+            if (!fxEnabled)
+            {
+                if (_fxCbAttached)
+                {
+                    _nearCam.RemoveCommandBuffer(CameraEvent.AfterForwardAlpha, _fxCb);
+                    _fxCbAttached = false;
+                }
+                return;
+            }
+
+            if (_fxCb == null) _fxCb = new CommandBuffer { name = "Kerbcam FX" };
+
+            if (_fxRenderersDirty)
+            {
+                RebuildFxRendererCache();
+                _fxCb.Clear();
+                foreach (var r in _fxRenderers)
+                {
+                    var mats = r.sharedMaterials;
+                    for (int i = 0; i < mats.Length; i++)
+                    {
+                        if (mats[i] != null) _fxCb.DrawRenderer(r, mats[i], i);
+                    }
+                }
+                _fxRenderersDirty = false;
+
+                if (KerbcamSettings.DebugCameraLogging)
+                    Debug.Log($"[Kerbcam-debug] cam={FlightId} FX CB rebuilt: {_fxRenderers.Count} renderers");
+            }
+
+            if (!_fxCbAttached)
+            {
+                // AfterForwardAlpha fires after all forward-rendered transparent
+                // geometry so FX particles composite on top of the rocket (and
+                // its exhaust plumes) with correct depth ordering.
+                _nearCam.AddCommandBuffer(CameraEvent.AfterForwardAlpha, _fxCb);
+                _fxCbAttached = true;
+            }
+        }
+
+        /// <summary>
+        /// Signal that the FX renderer cache needs a full rebuild on the
+        /// next Refresh tick. Called by KerbcamCore when parts are destroyed
+        /// or the vessel is modified — the renderer walk is deferred to the
+        /// render tick so KSP's part hierarchy is fully updated by then.
+        /// </summary>
+        public void MarkFxRenderersDirty() => _fxRenderersDirty = true;
 
         // Periodic cullingMask diff between our cams and their KSP
         // source cameras. Catches the case where KSP mutates the
@@ -798,11 +892,6 @@ namespace Kerbcam
                 PollControlFile();
             }
 
-            // Retry atmospheric FX shader application every tick until it
-            // succeeds. FXCamera.Instance is null during the first few frames
-            // of flight-scene init; once it arrives this becomes a no-op.
-            ApplyAtmosphericFx();
-
             // Subscriber-aware skip: when no peer is subscribed, skip all
             // rendering work — no camera.Render() calls, no readback, no
             // ring writes, no encoder work downstream. Pending in-flight
@@ -858,6 +947,11 @@ namespace Kerbcam
                         ScaledSunLightHelper.RestoreCompositeShadowsBuffer();
                     }
                 }
+
+                // Attach (or update) the FX CommandBuffer before _nearCam.Render()
+                // so it executes inside Near's pass. The CB is a no-op when the
+                // Fx layer is disabled; EnsureFxCommandBuffer detaches it then.
+                EnsureFxCommandBuffer();
 
                 if (_nearCam != null && (_layers & CameraLayers.Near) != 0)
                 {
@@ -967,7 +1061,13 @@ namespace Kerbcam
                 catch (Exception ex) { UnityEngine.Debug.LogWarning($"[Kerbcam] cam={FlightId} CameraFilter.Deactivate failed: {ex.Message}"); }
                 _cameraFilter = null;
             }
-            if (_nearCam != null) _nearCam.ResetReplacementShader();
+            if (_fxCbAttached && _nearCam != null)
+            {
+                _nearCam.RemoveCommandBuffer(CameraEvent.AfterForwardAlpha, _fxCb);
+                _fxCbAttached = false;
+            }
+            _fxCb?.Release();
+            _fxCb = null;
             if (_nearCam != null) UnityEngine.Object.Destroy(_nearCam.gameObject);
             if (_scaledCam != null) UnityEngine.Object.Destroy(_scaledCam.gameObject);
             if (_galaxyCam != null) UnityEngine.Object.Destroy(_galaxyCam.gameObject);
