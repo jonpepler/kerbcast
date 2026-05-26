@@ -395,6 +395,11 @@ namespace Kerbcam
             _scaledCam.allowHDR = true;
             _scaledCam.allowMSAA = true;
             _scaledCam.useOcclusionCulling = false;
+            // Deferred lighting fails silently for offscreen RTs on Mesa/OpenGL
+            // (surface goes pure black while the atmosphere limb, which uses its
+            // own MPB-based lighting, stays bright). Scaled space has exactly one
+            // light (scaledSunLight, layer 10 only) so forward costs nothing extra.
+            _scaledCam.renderingPath = RenderingPath.Forward;
             var scaledRot = scaledGo.AddComponent<LayerCamRotator>();
             scaledRot.NearCamera = _nearCam;
             scaledRot.UseScaledSpace = true;
