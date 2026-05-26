@@ -269,6 +269,8 @@ pub enum ClientMessage {
     /// the current P-frame chain. Sidecar forwards to the camera's
     /// encoder.
     RequestKeyframe(FlightIdPayload),
+    /// Response to `Ping`. Browser sends this immediately on receiving each Ping.
+    Pong,
 }
 
 /// Messages sent FROM the sidecar TO the client.
@@ -294,6 +296,10 @@ pub enum ServerMessage {
     /// Malformed / unknown client message. Includes the offending
     /// payload so the client can log it.
     Error(ErrorPayload),
+    /// Keepalive probe sent by the sidecar every 5 seconds. Browser responds
+    /// with `Pong`; if no Ping arrives within 15s the browser tears down
+    /// the connection.
+    Ping,
 }
 
 #[cfg(test)]
@@ -404,6 +410,17 @@ mod tests {
             }
             _ => panic!("wrong variant"),
         }
+    }
+
+    #[test]
+    fn ping_pong_roundtrip() {
+        let ping = serde_json::to_string(&ServerMessage::Ping).unwrap();
+        assert_eq!(ping, r#"{"type":"ping"}"#);
+        let pong = serde_json::to_string(&ClientMessage::Pong).unwrap();
+        assert_eq!(pong, r#"{"type":"pong"}"#);
+        // Pong should parse back
+        let back: ClientMessage = serde_json::from_str(&pong).unwrap();
+        assert!(matches!(back, ClientMessage::Pong));
     }
 
     #[test]

@@ -364,6 +364,9 @@ async fn handle_client_message(
                 }
             }
         }
+        ClientMessage::Pong => {
+            // No-op — the peer is alive by virtue of having sent this.
+        }
     }
 }
 

@@ -16,6 +16,7 @@
   table.cameras th, table.cameras td { padding: 6px 8px; border-bottom: 1px solid #e5e5e5; text-align: left; vertical-align: middle; }
   table.cameras th { background: #fafafa; font-weight: 600; }
   table.cameras tr.subscribed { background: #f0fff4; }
+  .cameras tr.destroyed { opacity: 0.6; }
   table.cameras .layer { width: 80px; text-align: center; }
   table.cameras .zoom { width: 220px; }
   table.cameras .zoom input[type=range] { width: 140px; vertical-align: middle; }
@@ -80,6 +81,42 @@ const LAYER_KINDS = ["NEAR", "SCALED", "GALAXY"];
 let pc = null;
 let dc = null;
 let statsTimer = null;
+let pingTimer = null;
+let reconnectTimer = null;
+let reconnectAttempts = 0;
+let userDisconnected = false;
+
+function resetPingTimer() {
+  if (pingTimer) clearTimeout(pingTimer);
+  pingTimer = setTimeout(() => {
+    console.warn("kerbcam: no ping for 15s — connection dead");
+    disconnect();
+    scheduleReconnect();
+  }, 15000);
+}
+
+function clearPingTimer() {
+  if (pingTimer) { clearTimeout(pingTimer); pingTimer = null; }
+}
+
+function scheduleReconnect() {
+  if (reconnectTimer) return;
+  if (included.size === 0) return;
+  if (userDisconnected) return;
+  const delay = Math.min(2000 * Math.pow(2, reconnectAttempts), 30000);
+  reconnectAttempts++;
+  setStatus(`reconnecting in ${Math.round(delay / 1000)}s (attempt ${reconnectAttempts})…`, "#b80");
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    connect();
+  }, delay);
+}
+
+function cancelReconnect() {
+  if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+  reconnectAttempts = 0;
+}
+
 let discovered = []; // CameraInfo[] from /cameras (HTTP, pre-offer) — camelCase keys
 let included = new Set(); // flight_ids selected for streaming
 let operatorLayers = new Map(); // flight_id -> Set<layer> (operator-requested)
@@ -89,6 +126,7 @@ let renderSizeState = new Map(); // flight_id -> { width, height }
 let bitrateState = new Map(); // flight_id -> { encoderBitrateBps, targetBitrateBps }
 let degradeState = new Map(); // flight_id -> 0..1 (this client's last requested level)
 let effectiveDegradeState = new Map(); // flight_id -> 0..1 (max across all subscribers, from server)
+let lifecycleState = new Map(); // flight_id -> string ("active" | "destroyed")
 let trackByFlightId = new Map();
 
 function sendControl(message) {
@@ -117,10 +155,15 @@ function handleServerMessage(msg) {
           targetBitrateBps: cs.targetBitrateBps,
         });
         effectiveDegradeState.set(cs.flightId, cs.degradeLevel ?? 0);
+        if (cs.lifecycle != null) lifecycleState.set(cs.flightId, cs.lifecycle);
       }
       renderTable();
       break;
     }
+    case "ping":
+      sendControl({ type: "pong" });
+      resetPingTimer();
+      break;
     case "adaptive-shed":
       setStatus(`adaptive shed level=${msg.content.level} (KSP ${msg.content.kspFps.toFixed(1)} fps): ${msg.content.reason}`,
         msg.content.level > 0 ? "#b80" : "green");
@@ -143,6 +186,7 @@ function renderTable() {
   for (const cam of discovered) {
     const tr = document.createElement("tr");
     if (included.has(cam.flightId)) tr.classList.add("subscribed");
+    if (lifecycleState.get(cam.flightId) === "destroyed") tr.classList.add("destroyed");
 
     const incTd = document.createElement("td");
     const incCb = document.createElement("input");
@@ -158,8 +202,11 @@ function renderTable() {
     tr.appendChild(incTd);
 
     const nameTd = document.createElement("td");
+    const destroyedBadge = lifecycleState.get(cam.flightId) === "destroyed"
+      ? ` <span style="color:red;font-size:10px;font-family:ui-monospace,monospace">[SIGNAL LOST]</span>`
+      : "";
     nameTd.innerHTML = `
-      <div class="name">${escapeHtml(cam.cameraName || cam.partTitle || cam.partName || "(no label)")}</div>
+      <div class="name">${escapeHtml(cam.cameraName || cam.partTitle || cam.partName || "(no label)")}${destroyedBadge}</div>
       <div class="vessel">${escapeHtml(cam.vesselName || "")} · ${cam.maxWidth}×${cam.maxHeight}</div>
       <div class="id">flight_id ${cam.flightId}</div>`;
     tr.appendChild(nameTd);
@@ -343,6 +390,7 @@ async function refreshCameras() {
       if (!fovState.has(cam.flightId)) fovState.set(cam.flightId, cam.fov);
       if (!renderSizeState.has(cam.flightId)) renderSizeState.set(cam.flightId, { width: cam.maxWidth, height: cam.maxHeight });
       if (!bitrateState.has(cam.flightId)) bitrateState.set(cam.flightId, { encoderBitrateBps: cam.encoderBitrateBps, targetBitrateBps: cam.targetBitrateBps });
+      lifecycleState.set(cam.flightId, cam.lifecycle ?? "active");
       if (pc === null) included.add(cam.flightId);
     }
     for (const id of [...included]) {
@@ -356,6 +404,8 @@ async function refreshCameras() {
 }
 
 function disconnect() {
+  cancelReconnect();
+  clearPingTimer();
   if (dc) { try { dc.close(); } catch {} dc = null; }
   if (pc) { pc.close(); pc = null; }
   if (statsTimer) { clearInterval(statsTimer); statsTimer = null; }
@@ -369,11 +419,16 @@ function disconnect() {
 }
 
 $("refreshBtn").addEventListener("click", refreshCameras);
-$("disconnectBtn").addEventListener("click", disconnect);
+$("disconnectBtn").addEventListener("click", () => {
+  userDisconnected = true;
+  cancelReconnect();
+  disconnect();
+});
 refreshCameras();
 
-$("connectBtn").addEventListener("click", async () => {
+async function connect() {
   if (included.size === 0) return;
+  userDisconnected = false;
   const selected = [...included];
   setStatus(`creating peer connection for ${selected.length} camera(s)`);
 
@@ -389,6 +444,7 @@ $("connectBtn").addEventListener("click", async () => {
   dc.onopen = () => {
     setChannelStatus("opened, sending hello");
     sendControl({ type: "hello" });
+    resetPingTimer();
     renderTable();
   };
   dc.onmessage = (ev) => {
@@ -432,7 +488,12 @@ $("connectBtn").addEventListener("click", async () => {
     setStatus(`PC: ${pc.connectionState}`,
       pc.connectionState === "connected" ? "green" :
       pc.connectionState === "failed" ? "red" : "#666");
-    if (["failed", "closed", "disconnected"].includes(pc.connectionState)) disconnect();
+    if (pc.connectionState === "connected") {
+      reconnectAttempts = 0;
+    } else if (["failed", "closed"].includes(pc.connectionState)) {
+      disconnect();
+      scheduleReconnect();
+    }
   };
 
   const offer = await pc.createOffer();
@@ -474,7 +535,9 @@ $("connectBtn").addEventListener("click", async () => {
       el.textContent = `pkts=${r.packetsReceived} bytes=${r.bytesReceived} recv=${r.framesReceived ?? "?"} dec=${r.framesDecoded ?? "?"} jitter=${r.jitter?.toFixed(3) ?? "?"}`;
     }
   }, 1000);
-});
+}
+
+$("connectBtn").addEventListener("click", connect);
 </script>
 </body>
 </html>

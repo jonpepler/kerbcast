@@ -48,10 +48,10 @@ struct Cli {
     #[arg(long, default_value_os_t = default_shm_dir())]
     shm_dir: PathBuf,
 
-    #[arg(long, default_value_t = 768)]
+    #[arg(long, default_value_t = 1024)]
     max_width: u32,
 
-    #[arg(long, default_value_t = 768)]
+    #[arg(long, default_value_t = 576)]
     max_height: u32,
 
     #[arg(long, default_value_t = 4)]
@@ -144,6 +144,20 @@ async fn main() -> Result<()> {
     let http_server = tokio::spawn(async move {
         if let Err(e) = axum::serve(http_listener, http_app).await {
             warn!(error = %e, "HTTP server exited with error");
+        }
+    });
+
+    let ping_peers = peers.clone();
+    tokio::spawn(async move {
+        let interval = Duration::from_secs(5);
+        loop {
+            sleep(interval).await;
+            let snapshot: Vec<Arc<KerbcamPeer>> = ping_peers.read().await.clone();
+            for peer in &snapshot {
+                if peer.is_alive() {
+                    peer.push_message(&ServerMessage::Ping).await;
+                }
+            }
         }
     });
 
