@@ -152,6 +152,9 @@ namespace Kerbcam
         private bool _disposed;
         private bool _firstRender = true;
         private bool _firstPixelCheck = true;
+        // Pre-allocated; cleared and repopulated each scaled render to avoid
+        // per-frame GC pressure.
+        private readonly List<Renderer> _faderDisabled = new List<Renderer>();
 
         private UniversalAsyncGPUReadbackRequest _pendingRequest;
         private bool _readbackInFlight;
@@ -271,7 +274,7 @@ namespace Kerbcam
 
         private void BuildRenderTargets(int width, int height)
         {
-            _captureRt = new RenderTexture(width, height, 24, RenderTextureFormat.ARGB32)
+            _captureRt = new RenderTexture(width, height, 24, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear)
             {
                 antiAliasing = 1,
             };
@@ -948,6 +951,22 @@ namespace Kerbcam
                 if (_scaledCam != null && (_layers & CameraLayers.Scaled) != 0)
                 {
                     ScaledSunLightHelper.StripCompositeShadowsBuffer();
+                    // ScaledSpaceFader disables scaled-body renderers globally
+                    // based on the main camera's angular size. Our camera renders
+                    // from a different position, so we manage visibility ourselves:
+                    // force-enable any renderer that ScaledSpaceFader switched off,
+                    // render, then restore. The finally block guarantees restore even
+                    // if Render() throws.
+                    _faderDisabled.Clear();
+                    foreach (var body in FlightGlobals.Bodies)
+                    {
+                        var r = body.scaledBody?.GetComponent<Renderer>();
+                        if (r != null && !r.enabled)
+                        {
+                            _faderDisabled.Add(r);
+                            r.enabled = true;
+                        }
+                    }
                     try
                     {
                         if (_firstPixelCheck)
@@ -979,6 +998,8 @@ namespace Kerbcam
                     }
                     finally
                     {
+                        foreach (var r in _faderDisabled)
+                            r.enabled = false;
                         ScaledSunLightHelper.RestoreCompositeShadowsBuffer();
                     }
                 }
