@@ -18,9 +18,9 @@ name: publish-protocol
 # workflow fails before publishing. `./scripts/bump-version.sh
 # X.Y.Z` bumps all of them atomically.
 #
-# Before publish:
-#   * typeshare drift check (same as protocol-ci) — stale generated
-#     TS can't escape under a release tag
+# CI regenerates types fresh from Rust — the Rust protocol is the
+# source of truth. No drift check; version sync check still gates publish.
+#   * typeshare regen (in-place, no drift gate)
 #   * Version sync check (tag == Cargo.toml == package.json)
 #   * tsc build
 #   * `npm publish` to GitHub Packages, using the workflow's
@@ -70,14 +70,7 @@ jobs:
         run: |
           typeshare ./sidecar/src \
             --lang=typescript \
-            --output-file=/tmp/regenerated.ts
-
-      - name: Diff against committed bindings
-        run: |
-          if ! diff -u client-sdk/typescript/src/__generated__/types.ts /tmp/regenerated.ts; then
-            echo "::error::client-sdk/typescript/src/__generated__/types.ts is out of sync with the Rust protocol types — cannot publish."
-            exit 1
-          fi
+            --output-file=client-sdk/typescript/src/__generated__/types.ts
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v6

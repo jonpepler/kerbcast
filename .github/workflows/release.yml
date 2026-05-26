@@ -1,0 +1,206 @@
+name: release
+
+# Triggered on v* tags. Builds the sidecar on ubuntu-22.04 (glibc 2.35) so
+# the bundled .so files don't exceed the Steam Deck's pressure-vessel glibc
+# floor (Steam Runtime 3 / sniper = glibc 2.36).
+#
+# Shader bundles (HullcamVDS shaders.linux, kerbcam-shaders) require a Unity
+# Personal license to build and are produced by build-hullcam-shaders.yml and
+# build-kerbcam-shaders.yml respectively. Link their artifacts manually in the
+# release notes after this workflow completes.
+#
+# KSP_MANAGED_TOKEN secret required: a PAT with read access to the private
+# repo jonpepler/ksp-managed, which holds the non-redistributable KSP Unity
+# assemblies.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  packages: write
+  id-token: write
+
+jobs:
+  release:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install ffmpeg + VA-API system libs
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config clang libclang-dev \
+            libavcodec-dev libavutil-dev libavformat-dev \
+            libavfilter-dev libswscale-dev libva-dev
+
+      - name: Install stable Rust + components
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry + target
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            sidecar/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('sidecar/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Build sidecar
+        working-directory: sidecar
+        run: cargo build --release
+
+      - name: Stage sidecar + bundled shared libs
+        run: |
+          set -euo pipefail
+          mkdir -p staging-sidecar/lib
+          cp sidecar/target/release/kerbcam-sidecar staging-sidecar/
+
+          deps="$(ldd staging-sidecar/kerbcam-sidecar \
+            | awk '/=>/ && $3 ~ /^\// {print $3}' \
+            | grep -Ev '/(libc|libm|libpthread|libdl|librt|libstdc\+\+|libgcc_s)[.\-]' \
+            | grep -Ev '/(ld-linux|linux-vdso)' \
+            | grep -v libva \
+            || true)"
+          if [ -z "$deps" ]; then
+            echo "::error::ldd found no bundleable non-system deps — refusing to upload a non-self-contained artefact"
+            ldd staging-sidecar/kerbcam-sidecar
+            exit 1
+          fi
+          echo "Bundling:"
+          echo "$deps"
+          while IFS= read -r src; do
+            [ -z "$src" ] && continue
+            real="$(readlink -f "$src")"
+            soname="$(basename "$src")"
+            cp "$real" "staging-sidecar/lib/$soname"
+          done <<< "$deps"
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.x'
+
+      - name: Checkout KSP assemblies
+        uses: actions/checkout@v6
+        with:
+          repository: jonpepler/ksp-managed
+          token: ${{ secrets.KSP_MANAGED_TOKEN }}
+          path: ksp-managed
+
+      - name: Build Kerbcam.dll
+        run: |
+          dotnet build Plugin/Kerbcam.csproj -c Release \
+            /p:KspManaged="${{ github.workspace }}/ksp-managed/KSP_Data/Managed" \
+            /p:KspGameData="${{ github.workspace }}/ksp-managed/GameData"
+
+      - name: Cache cargo registry + typeshare binary
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cargo/bin/typeshare
+          key: ${{ runner.os }}-typeshare-cli-1.13.4
+
+      - name: Install typeshare-cli
+        run: |
+          if ! command -v typeshare >/dev/null 2>&1; then
+            cargo install typeshare-cli --version 1.13.4 --locked
+          fi
+          typeshare --version
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 9
+
+      - name: Setup Node + GitHub Packages registry
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: client-sdk/typescript/pnpm-lock.yaml
+          registry-url: https://npm.pkg.github.com
+          scope: '@jonpepler'
+
+      - name: Verify version sync (tag == Cargo.toml == package.json)
+        working-directory: ${{ github.workspace }}
+        run: |
+          TAG_VER="${GITHUB_REF_NAME#v}"
+          PKG_VER="$(node -p "require('./client-sdk/typescript/package.json').version")"
+          CARGO_VER="$(grep -m1 '^version = ' sidecar/Cargo.toml | sed -E 's/version = "(.*)"/\1/')"
+          echo "tag=$TAG_VER cargo=$CARGO_VER package=$PKG_VER"
+          if [ "$TAG_VER" != "$CARGO_VER" ] || [ "$CARGO_VER" != "$PKG_VER" ]; then
+            echo "::error::version mismatch — run ./scripts/bump-version.sh $TAG_VER and re-tag"
+            exit 1
+          fi
+
+      - name: Regenerate TS bindings
+        run: |
+          typeshare ./sidecar/src \
+            --lang=typescript \
+            --output-file=client-sdk/typescript/src/__generated__/types.ts
+
+      - name: Build TypeScript package
+        working-directory: client-sdk/typescript
+        run: |
+          pnpm install --no-frozen-lockfile
+          pnpm run build
+
+      - name: Assemble GameData/KerbCam
+        run: |
+          set -euo pipefail
+          mkdir -p \
+            GameData/Kerbcam/Plugins \
+            GameData/Kerbcam/Sidecar/lib
+
+          cp Plugin/obj/Release/Kerbcam.dll GameData/Kerbcam/Plugins/
+
+          cp staging-sidecar/kerbcam-sidecar GameData/Kerbcam/Sidecar/
+          cp staging-sidecar/lib/* GameData/Kerbcam/Sidecar/lib/ 2>/dev/null || true
+
+          cp Plugin/settings.cfg GameData/Kerbcam/
+
+          echo "GameData/Kerbcam tree:"
+          find GameData/Kerbcam -type f | sort
+
+      - name: Create release zip
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          zip -r "kerbcam-${TAG}.zip" GameData/
+          echo "RELEASE_ZIP=kerbcam-${TAG}.zip" >> $GITHUB_ENV
+
+      - name: Publish TypeScript package
+        working-directory: client-sdk/typescript
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npm publish --provenance
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          gh release create "${TAG}" \
+            "${{ env.RELEASE_ZIP }}" \
+            Plugin/obj/Release/Kerbcam.dll \
+            --title "kerbcam ${TAG}" \
+            --notes "## Installation
+
+          1. Extract \`$(basename ${{ env.RELEASE_ZIP }})\` into your KSP \`GameData/\` directory.
+          2. Install Hullcam VDS Continued (required).
+          3. Copy \`GameData/Kerbcam/HullcamShaders/shaders.linux\` from the \`shaders-linux\` workflow artifact if on Linux (see Actions tab).
+          4. Start KSP — kerbcam auto-launches the sidecar on scene load.
+
+          ## Assets
+          - \`$(basename ${{ env.RELEASE_ZIP }})\` — complete install tree (plugin + sidecar + settings)
+          - \`Kerbcam.dll\` — plugin DLL only (for manual installs)
+
+          > TypeScript SDK \`@jonpepler/kerbcam@${TAG#v}\` published to GitHub Packages."
