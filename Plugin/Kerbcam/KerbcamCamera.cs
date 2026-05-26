@@ -237,7 +237,7 @@ namespace Kerbcam
 
         private void BuildRenderTargets(int width, int height)
         {
-            _captureRt = new RenderTexture(width, height, 24, RenderTextureFormat.ARGB32)
+            _captureRt = new RenderTexture(width, height, 24, RenderTextureFormat.ARGBHalf)
             {
                 antiAliasing = 1,
             };
