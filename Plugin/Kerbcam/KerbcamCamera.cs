@@ -386,6 +386,9 @@ namespace Kerbcam
             {
                 _scaledCam.CopyFrom(sourceScaled);
                 scaledGo.transform.parent = sourceScaled.transform;
+                var scaledComps = sourceScaled.gameObject.GetComponents<MonoBehaviour>();
+                Debug.Log($"[Kerbcam] Camera ScaledSpace components ({scaledComps.Length}): " +
+                    string.Join(", ", System.Array.ConvertAll(scaledComps, c => c.GetType().Name)));
             }
             _scaledCam.name = $"Kerbcam_{FlightId}_Scaled";
             scaledGo.transform.localRotation = Quaternion.identity;
