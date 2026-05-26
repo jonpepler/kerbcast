@@ -151,6 +151,7 @@ namespace Kerbcam
         private bool _subscribed;
         private bool _disposed;
         private bool _firstRender = true;
+        private bool _firstPixelCheck = true;
 
         private UniversalAsyncGPUReadbackRequest _pendingRequest;
         private bool _readbackInFlight;
@@ -949,11 +950,31 @@ namespace Kerbcam
                     ScaledSunLightHelper.StripCompositeShadowsBuffer();
                     try
                     {
+                        if (_firstPixelCheck)
+                        {
+                            var ssl = ScaledSunLightHelper.GetScaledSunLight();
+                            Debug.Log($"[Kerbcam] pre-scaled-render: " +
+                                $"ambient={RenderSettings.ambientLight} ambientMode={RenderSettings.ambientMode} " +
+                                $"scaledSunLight={(ssl == null ? "null" : $"enabled={ssl.enabled} intensity={ssl.intensity} color={ssl.color} cullingMask={ssl.cullingMask}")}");
+                        }
                         _scaledCam.Render();
                         if (_firstRender)
                         {
                             _firstRender = false;
                             Debug.Log($"[Kerbcam] cam={FlightId} scaled actualRenderingPath={_scaledCam.actualRenderingPath} (set={_scaledCam.renderingPath})");
+                        }
+                        if (_firstPixelCheck)
+                        {
+                            _firstPixelCheck = false;
+                            var prev = RenderTexture.active;
+                            RenderTexture.active = _captureRt;
+                            var sample = new Texture2D(1, 1, TextureFormat.RGBA32, false);
+                            sample.ReadPixels(new Rect(_captureRt.width / 2, _captureRt.height / 2, 1, 1), 0, 0);
+                            sample.Apply();
+                            var px = sample.GetPixel(0, 0);
+                            UnityEngine.Object.Destroy(sample);
+                            RenderTexture.active = prev;
+                            Debug.Log($"[Kerbcam] cam={FlightId} scaled center pixel: r={px.r:F3} g={px.g:F3} b={px.b:F3} a={px.a:F3}");
                         }
                     }
                     finally
