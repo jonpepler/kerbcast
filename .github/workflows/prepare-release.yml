@@ -111,3 +111,13 @@ jobs:
           git commit -m "release: v${NEW}"
           git tag "${TAG}"
           git push origin HEAD:main "${TAG}"
+
+      - name: Trigger release workflow
+        # GITHUB_TOKEN pushes don't fire push-tag triggers in other workflows.
+        # workflow_dispatch does fire, so dispatch release.yml on the new tag.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh workflow run release.yml \
+            --repo "${{ github.repository }}" \
+            --ref "${{ steps.version.outputs.tag }}"
