@@ -50,8 +50,8 @@ use crate::cameras::CameraRegistry;
 use crate::encoder::selected_backend_name;
 use crate::protocol::{
     CameraLifecycle, CameraSnapshotPayload, CameraState, CameraStateChangedPayload, ClientMessage,
-    ErrorPayload, FlightIdPayload, HelloPayload, Layer, ServerMessage, SetDegradePayload,
-    SetFovPayload, SetLayersPayload, SetPanPayload, SetRenderSizePayload,
+    ErrorPayload, ErrorSource, FlightIdPayload, HelloPayload, Layer, ServerMessage,
+    SetDegradePayload, SetFovPayload, SetLayersPayload, SetPanPayload, SetRenderSizePayload,
 };
 
 const CONTROL_CHANNEL_LABEL: &str = "kerbcam-control";
@@ -308,6 +308,7 @@ async fn handle_client_message(
                 &dc,
                 &ServerMessage::Error(ErrorPayload {
                     message: format!("parse failed: {e}"),
+                    source: ErrorSource::Sidecar,
                 }),
             )
             .await;
@@ -383,6 +384,7 @@ async fn apply_layer_change(
                 dc,
                 &ServerMessage::Error(ErrorPayload {
                     message: format!("no camera with flight_id={flight_id}"),
+                    source: ErrorSource::Sidecar,
                 }),
             )
             .await;
@@ -402,6 +404,7 @@ async fn apply_layer_change(
             dc,
             &ServerMessage::Error(ErrorPayload {
                 message: format!("control file flush failed: {e}"),
+                    source: ErrorSource::Sidecar,
             }),
         )
         .await;
@@ -426,6 +429,7 @@ async fn apply_render_size_change(
                 dc,
                 &ServerMessage::Error(ErrorPayload {
                     message: format!("no camera with flight_id={flight_id}"),
+                    source: ErrorSource::Sidecar,
                 }),
             )
             .await;
@@ -451,6 +455,7 @@ async fn apply_render_size_change(
             dc,
             &ServerMessage::Error(ErrorPayload {
                 message: format!("control file flush failed: {e}"),
+                    source: ErrorSource::Sidecar,
             }),
         )
         .await;
@@ -479,6 +484,7 @@ async fn apply_fov_change(
                 dc,
                 &ServerMessage::Error(ErrorPayload {
                     message: format!("no camera with flight_id={flight_id}"),
+                    source: ErrorSource::Sidecar,
                 }),
             )
             .await;
@@ -490,6 +496,7 @@ async fn apply_fov_change(
             dc,
             &ServerMessage::Error(ErrorPayload {
                 message: format!("camera {flight_id} does not support zoom"),
+                    source: ErrorSource::Sidecar,
             }),
         )
         .await;
@@ -511,6 +518,7 @@ async fn apply_fov_change(
             dc,
             &ServerMessage::Error(ErrorPayload {
                 message: format!("control file flush failed: {e}"),
+                    source: ErrorSource::Sidecar,
             }),
         )
         .await;
@@ -535,6 +543,7 @@ async fn apply_pan_change(
                 dc,
                 &ServerMessage::Error(ErrorPayload {
                     message: format!("no camera with flight_id={flight_id}"),
+                    source: ErrorSource::Sidecar,
                 }),
             )
             .await;
@@ -549,6 +558,7 @@ async fn apply_pan_change(
                     "camera {flight_id} does not support pan/tilt (yet — \
                      planned mod extension)"
                 ),
+                source: ErrorSource::Sidecar,
             }),
         )
         .await;
@@ -570,6 +580,7 @@ async fn apply_pan_change(
             dc,
             &ServerMessage::Error(ErrorPayload {
                 message: format!("control file flush failed: {e}"),
+                    source: ErrorSource::Sidecar,
             }),
         )
         .await;
@@ -599,6 +610,7 @@ async fn apply_degrade_change(
                 dc,
                 &ServerMessage::Error(ErrorPayload {
                     message: format!("no camera with flight_id={flight_id}"),
+                    source: ErrorSource::Sidecar,
                 }),
             )
             .await;

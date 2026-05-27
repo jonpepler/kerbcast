@@ -6,6 +6,7 @@ import type {
   Layer,
   ServerMessage,
 } from "./__generated__/types";
+import { ErrorSource } from "./__generated__/types";
 
 /**
  * Per-camera handle returned from {@link KerbcamClient.camera}.
@@ -136,7 +137,8 @@ class BrowserKerbcamTransport implements KerbcamTransport {
       addRecvOnlyTransceiver: () => {
         pc.addTransceiver("video", { direction: "recvonly" });
       },
-      createDataChannel: (label) => wrapBrowserDataChannel(pc.createDataChannel(label)),
+      createDataChannel: (label) =>
+        wrapBrowserDataChannel(pc.createDataChannel(label)),
       onTrack: (h) => {
         onTrack = h;
       },
@@ -222,7 +224,7 @@ type Listener<T> = (data: T) => void;
 // (interfaces don't carry an implicit string index signature, so
 // `extends Record<string, unknown>` would reject them).
 class TypedEmitter<E> {
-  private listeners = new Map<keyof E, Set<Listener<unknown>>>();
+  private readonly listeners = new Map<keyof E, Set<Listener<unknown>>>();
 
   on<K extends keyof E>(event: K, handler: (data: E[K]) => void): () => void {
     let set = this.listeners.get(event);
@@ -253,7 +255,7 @@ class CameraHandle
   readonly flightId: number;
   private _state: CameraState | null = null;
   private _mediaStream: MediaStream | null = null;
-  private client: KerbcamClient;
+  private readonly client: KerbcamClient;
 
   constructor(flightId: number, client: KerbcamClient) {
     super();
@@ -353,13 +355,13 @@ class CameraHandle
  * tracks arrive.
  */
 export class KerbcamClient extends TypedEmitter<KerbcamClientEvents> {
-  private cfg: KerbcamClientConfig;
-  private transport: KerbcamTransport;
+  private readonly cfg: KerbcamClientConfig;
+  private readonly transport: KerbcamTransport;
   private peer: KerbcamPeer | null = null;
   private control: KerbcamDataChannel | null = null;
   private _state: KerbcamConnectionState = "disconnected";
   private _cameras: CameraState[] = [];
-  private handles = new Map<number, CameraHandle>();
+  private readonly handles = new Map<number, CameraHandle>();
   private requestedOrder: number[] = [];
   /** Sidecar version reported on `Hello`; null before handshake. */
   private _sidecarVersion: string | null = null;
@@ -496,10 +498,7 @@ export class KerbcamClient extends TypedEmitter<KerbcamClientEvents> {
    */
   async _send(msg: ClientMessage): Promise<void> {
     if (!this.control) {
-      console.warn("[kerbcam] dropping message — control channel not open", {
-        type: msg.type,
-      });
-      return;
+      throw new Error("[kerbcam] control channel not open");
     }
     this.control.send(JSON.stringify(msg));
   }
@@ -520,7 +519,10 @@ export class KerbcamClient extends TypedEmitter<KerbcamClientEvents> {
     try {
       msg = JSON.parse(raw) as ServerMessage;
     } catch (err) {
-      console.warn("[kerbcam] server message parse failed", err);
+      this.emit("error", {
+        message: err instanceof Error ? err.message : String(err),
+        source: ErrorSource.Client,
+      });
       return;
     }
     switch (msg.type) {

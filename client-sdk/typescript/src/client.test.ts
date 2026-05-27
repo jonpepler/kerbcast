@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { Layer } from "./__generated__/types";
+import { ErrorSource, Layer } from "./__generated__/types";
 import {
   type KerbcamConnectionState,
   type KerbcamDataChannel,
@@ -78,6 +78,37 @@ function fakeAnswer(cameras: number[] = []) {
   return new Response(JSON.stringify({ sdp: "answer-sdp", cameras }), {
     status: 200,
   });
+}
+
+function fakeCameraState(flightId: number, overrides: Record<string, unknown> = {}) {
+  return {
+    flightId,
+    partName: "navCam1",
+    partTitle: "NavCam",
+    cameraName: "NavCam",
+    vesselName: "Perf Test 1",
+    layers: [Layer.Near],
+    operatorLayers: [Layer.Near, Layer.Scaled, Layer.Galaxy],
+    renderWidth: 768,
+    renderHeight: 768,
+    operatorWidth: 768,
+    operatorHeight: 768,
+    supportsZoom: true,
+    fov: 60,
+    fovMin: 30,
+    fovMax: 100,
+    supportsPan: false,
+    panYaw: 0,
+    panPitch: 0,
+    panYawMin: 0,
+    panYawMax: 0,
+    panPitchMin: 0,
+    panPitchMax: 0,
+    encoderBitrateBps: 1_500_000,
+    targetBitrateBps: 0,
+    degradeLevel: 0,
+    ...overrides,
+  };
 }
 
 beforeEach(() => {
@@ -250,5 +281,198 @@ describe("KerbcamClient", () => {
     expect(captured.closed).toBe(true);
     expect(client.state).toBe("disconnected");
     expect(streams[streams.length - 1]).toBeNull();
+  });
+
+  it("non-OK /offer response throws with status code and transitions to failed", async () => {
+    const { transport } = makeFakeTransport();
+    const client = new KerbcamClient({ host: "h", port: 1 }, transport);
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response("service unavailable", { status: 503 }),
+    );
+
+    const states: KerbcamConnectionState[] = [];
+    client.on("state-change", (s) => states.push(s));
+
+    await expect(client.connect()).rejects.toThrow("503");
+    expect(states).toContain("failed");
+    expect(client.state).toBe("failed");
+  });
+
+  it("discover() returns the camera list from /cameras", async () => {
+    const { transport } = makeFakeTransport();
+    const client = new KerbcamClient({ host: "h", port: 1 }, transport);
+    const mockCameras = [
+      {
+        flightId: 99,
+        partName: "navCam1",
+        partTitle: "NavCam",
+        cameraName: "NavCam",
+        vesselName: "Test Vessel",
+        maxWidth: 1280,
+        maxHeight: 720,
+        supportsZoom: true,
+        fov: 60,
+        fovMin: 30,
+        fovMax: 100,
+        supportsPan: false,
+      },
+    ];
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ cameras: mockCameras }), { status: 200 }),
+    );
+
+    const result = await client.discover();
+    expect(result).toHaveLength(1);
+    expect(result[0].flightId).toBe(99);
+    expect(result[0].partTitle).toBe("NavCam");
+    expect(result[0].supportsZoom).toBe(true);
+  });
+
+  it("sidecar error message emits error event with correct payload including source", async () => {
+    const { transport, captured } = makeFakeTransport();
+    const client = new KerbcamClient({ host: "h", port: 1 }, transport);
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(fakeAnswer());
+
+    await client.connect();
+    captured.dc?._open();
+
+    const errors: { message: string; source?: string }[] = [];
+    client.on("error", (e) => errors.push(e));
+
+    captured.dc?._msg(
+      JSON.stringify({ type: "error", content: { message: "boom", source: "sidecar" } }),
+    );
+
+    expect(errors).toHaveLength(1);
+    expect(errors[0].message).toBe("boom");
+    expect(errors[0].source).toBe("sidecar");
+  });
+
+  it("malformed JSON emits error event with source: client", async () => {
+    const { transport, captured } = makeFakeTransport();
+    const client = new KerbcamClient({ host: "h", port: 1 }, transport);
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(fakeAnswer());
+
+    await client.connect();
+    captured.dc?._open();
+
+    const errors: { message: string; source?: string }[] = [];
+    client.on("error", (e) => errors.push(e));
+
+    captured.dc?._msg("not valid json {{{{");
+
+    expect(errors).toHaveLength(1);
+    expect(errors[0].source).toBe(ErrorSource.Client);
+    expect(typeof errors[0].message).toBe("string");
+    expect(errors[0].message.length).toBeGreaterThan(0);
+  });
+
+  it("_send rejects when control channel is not open", async () => {
+    const { transport } = makeFakeTransport();
+    const client = new KerbcamClient({ host: "h", port: 1 }, transport);
+
+    // camera() and setFov() before connect — control channel is null
+    await expect(client.camera(1).setFov(30)).rejects.toThrow(
+      "[kerbcam] control channel not open",
+    );
+  });
+
+  it("adaptive-shed message emits adaptive-shed event with correct payload", async () => {
+    const { transport, captured } = makeFakeTransport();
+    const client = new KerbcamClient({ host: "h", port: 1 }, transport);
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(fakeAnswer());
+
+    await client.connect();
+    captured.dc?._open();
+
+    const events: { level: number; kspFps: number; reason: string }[] = [];
+    client.on("adaptive-shed", (e) => events.push(e));
+
+    captured.dc?._msg(
+      JSON.stringify({
+        type: "adaptive-shed",
+        content: { level: 2, kspFps: 14.0, reason: "ksp-fps-low" },
+      }),
+    );
+
+    expect(events).toHaveLength(1);
+    expect(events[0].level).toBe(2);
+    expect(events[0].kspFps).toBe(14.0);
+    expect(events[0].reason).toBe("ksp-fps-low");
+  });
+
+  it("cameras-change fires and camera state updates on camera-state-changed", async () => {
+    const { transport, captured } = makeFakeTransport();
+    const client = new KerbcamClient({ host: "h", port: 1 }, transport);
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(fakeAnswer());
+
+    await client.connect();
+    captured.dc?._open();
+
+    // Push initial snapshot with camera 42
+    captured.dc?._msg(
+      JSON.stringify({
+        type: "camera-snapshot",
+        content: { cameras: [fakeCameraState(42, { fov: 60 })] },
+      }),
+    );
+
+    const camerasChanges: unknown[][] = [];
+    client.on("cameras-change", (cams) => camerasChanges.push([...cams]));
+
+    // Push a state change that updates fov to 45
+    captured.dc?._msg(
+      JSON.stringify({
+        type: "camera-state-changed",
+        content: { state: fakeCameraState(42, { fov: 45 }) },
+      }),
+    );
+
+    expect(camerasChanges).toHaveLength(1);
+    expect(client.cameras[0].fov).toBe(45);
+  });
+
+  it("setPan and requestKeyframe route correct JSON onto the control channel", async () => {
+    const { transport, captured } = makeFakeTransport();
+    const client = new KerbcamClient({ host: "h", port: 1 }, transport);
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(fakeAnswer());
+
+    await client.connect();
+    captured.dc?._open();
+    captured.dc!.sent.length = 0;
+
+    const cam = client.camera(5);
+    await cam.setPan(10.5, -3.2);
+    await cam.requestKeyframe();
+
+    expect(captured.dc?.sent[0]).toBe(
+      JSON.stringify({ type: "set-pan", content: { flightId: 5, yaw: 10.5, pitch: -3.2 } }),
+    );
+    expect(captured.dc?.sent[1]).toBe(
+      JSON.stringify({ type: "request-keyframe", content: { flightId: 5 } }),
+    );
+  });
+
+  it("peer failed state emits failed and tears down streams", async () => {
+    const { transport, captured } = makeFakeTransport();
+    const client = new KerbcamClient({ host: "h", port: 1 }, transport);
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(fakeAnswer([42]));
+
+    await client.connect([42]);
+
+    // Simulate track arrival to get a non-null mediaStream
+    const fakeTrack = {} as MediaStreamTrack;
+    captured.onTrack?.(fakeTrack, 0);
+    expect(client.camera(42).mediaStream).not.toBeNull();
+
+    const states: KerbcamConnectionState[] = [];
+    client.on("state-change", (s) => states.push(s));
+
+    // Trigger peer failed state
+    captured.onState?.("failed");
+
+    expect(states).toContain("failed");
+    expect(client.state).toBe("failed");
+    expect(client.camera(42).mediaStream).toBeNull();
   });
 });

@@ -223,10 +223,21 @@ pub struct AdaptiveShedPayload {
 }
 
 #[typeshare]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum ErrorSource {
+    #[default]
+    Sidecar,
+    Client,
+}
+
+#[typeshare]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ErrorPayload {
     pub message: String,
+    #[serde(default)]
+    pub source: ErrorSource,
 }
 
 /// Messages sent FROM the client TO the sidecar.

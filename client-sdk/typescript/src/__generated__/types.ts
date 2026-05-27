@@ -137,8 +137,14 @@ export interface CameraStateChangedPayload {
 	state: CameraState;
 }
 
+export enum ErrorSource {
+	Sidecar = "sidecar",
+	Client = "client",
+}
+
 export interface ErrorPayload {
 	message: string;
+	source?: ErrorSource;
 }
 
 export interface FlightIdPayload {
