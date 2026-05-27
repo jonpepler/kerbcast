@@ -1,18 +1,19 @@
 # kerbcam
 
-A from-scratch successor to OCISLY for streaming Kerbal Space Program camera feeds to a browser. Hardware-accelerated H.264 over WebRTC, with full Hullcam VDS camera-type fidelity.
+A from-scratch successor to OCISLY for streaming Kerbal Space Program camera feeds to a browser. Hardware-accelerated H.264 over WebRTC, with full Hullcam VDS camera-type fidelity. Designed with Linux in mind. J
 
 ## What it does
 
 - Streams HullcamVDS camera sources to a browser via a simple html page or through [@jonpepler/kerbcam](https://github.com/jonpepler/kerbcam/pkgs/npm/kerbcam), a TypeScript package
-- Supports performance tweak options to keep fps reasonable through degrading resolution, shedding render layers, and adding 'realistic' noise at source
+- Supports performance tweak options to keep fps reasonable through degrading resolution, shedding render layers, and adding 'realistic' noise at sour era ce
 - Honours each camera's `cameraMode` so B&W / CRT / night-vision variants look like they do in the in-game Hullcam GUI
 - Supports a data channel for sending control data (eg zoom)
+- Fixes and patches long term issues with OCISLY and Hullcam on Linux
 
 ### How it does it
 
 - Captures KSP Hullcam VDS camera feeds inside the game via `AsyncGPUReadback` — zero stall on the game's main thread
-- Encodes them in hardware (libva on Linux / Steam Deck; VideoToolbox / NVENC on other tier-2 platforms) in an out-of-process 'sidecar'
+- Encodes them in hardware (libva on Linux / Steam Deck; VideoToolbox / NVENC on other tier-2 platforms) in an bggprocess 'sidecar'
 - Streams them out as WebRTC media tracks — adaptive bitrate, congestion control, packet loss recovery for free
 - Renders cameras only when a peer is subscribed — no idle CPU work, no in-game UI required
 
