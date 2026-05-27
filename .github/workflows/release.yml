@@ -252,7 +252,7 @@ jobs:
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CLIFF_CHANGELOG: ${{ steps.git-cliff.outputs.changelog }}
+          CLIFF_CHANGELOG: ${{ steps.git-cliff.outputs.content }}
         run: |
           TAG="${GITHUB_REF_NAME}"
           {
