@@ -1,0 +1,113 @@
+name: prepare-release
+
+# Analyzes conventional commits since the last tag to determine the version
+# bump, updates Cargo.toml and package.json atomically, commits, and pushes
+# a signed tag. The tag push triggers release.yml which does the actual build
+# and publish.
+#
+# Run via the Actions tab: Actions -> prepare-release -> Run workflow.
+# Override bump to force a specific level regardless of commit content.
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: 'Version bump (auto = analyze commits since last tag)'
+        required: false
+        default: 'auto'
+        type: choice
+        options:
+          - auto
+          - patch
+          - minor
+          - major
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Determine bump level
+        id: bump
+        run: |
+          BUMP="${{ inputs.bump }}"
+
+          if [ "$BUMP" = "auto" ]; then
+            LAST_TAG="$(git describe --tags --abbrev=0 2>/dev/null || true)"
+            if [ -n "$LAST_TAG" ]; then
+              LOG="$(git log "${LAST_TAG}..HEAD" --format='%s%n%b')"
+            else
+              LOG="$(git log --format='%s%n%b')"
+            fi
+
+            echo "Commits since ${LAST_TAG:-the beginning}:"
+            echo "$LOG"
+
+            # BREAKING CHANGE in body, or ! after type/scope -> major
+            # feat -> minor, everything else -> patch
+            if echo "$LOG" | grep -qE '(^BREAKING CHANGE|^[a-z]+(\([^)]+\))?!:)'; then
+              BUMP=major
+            elif echo "$LOG" | grep -qE '^feat(\([^)]+\))?:'; then
+              BUMP=minor
+            else
+              BUMP=patch
+            fi
+            echo "Auto-detected bump: $BUMP"
+          fi
+
+          echo "bump=$BUMP" >> "$GITHUB_OUTPUT"
+
+      - name: Compute new version
+        id: version
+        run: |
+          CURRENT="$(grep -m1 '^version = ' sidecar/Cargo.toml | sed -E 's/version = "(.*)"/\1/')"
+          IFS='.' read -r MAJ MIN PAT <<< "$CURRENT"
+
+          case "${{ steps.bump.outputs.bump }}" in
+            major) MAJ=$((MAJ+1)); MIN=0; PAT=0 ;;
+            minor) MIN=$((MIN+1)); PAT=0 ;;
+            patch) PAT=$((PAT+1)) ;;
+          esac
+
+          NEW="${MAJ}.${MIN}.${PAT}"
+          echo "current=$CURRENT -> new=$NEW (${{ steps.bump.outputs.bump }})"
+          echo "new=$NEW" >> "$GITHUB_OUTPUT"
+          echo "tag=v${NEW}" >> "$GITHUB_OUTPUT"
+
+      - name: Bump versions
+        run: |
+          NEW="${{ steps.version.outputs.new }}"
+          CURRENT="$(grep -m1 '^version = ' sidecar/Cargo.toml | sed -E 's/version = "(.*)"/\1/')"
+
+          # Replace the [package] version line only (first occurrence).
+          # GNU sed's 0,/pattern/ addr stops after the first match.
+          sed -i "0,/^version = \"${CURRENT}\"/{s/version = \"${CURRENT}\"/version = \"${NEW}\"/}" \
+            sidecar/Cargo.toml
+
+          node -e "
+            const fs = require('fs');
+            const p = JSON.parse(fs.readFileSync('client-sdk/typescript/package.json', 'utf8'));
+            p.version = process.argv[1];
+            fs.writeFileSync('client-sdk/typescript/package.json', JSON.stringify(p, null, 2) + '\n');
+          " "$NEW"
+
+          echo "Cargo.toml: $(grep -m1 '^version' sidecar/Cargo.toml)"
+          echo "package.json: $(node -p "require('./client-sdk/typescript/package.json').version")"
+
+      - name: Commit, tag, push
+        run: |
+          NEW="${{ steps.version.outputs.new }}"
+          TAG="${{ steps.version.outputs.tag }}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add sidecar/Cargo.toml client-sdk/typescript/package.json
+          git commit -m "release: v${NEW}"
+          git tag "${TAG}"
+          git push origin HEAD:main "${TAG}"
