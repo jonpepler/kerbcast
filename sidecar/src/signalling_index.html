@@ -22,6 +22,10 @@
   table.cameras .zoom input[type=range] { width: 140px; vertical-align: middle; }
   table.cameras .zoom .value { display: inline-block; min-width: 50px; font-family: ui-monospace, monospace; font-size: 11px; color: #666; }
   table.cameras .zoom.disabled { color: #ccc; }
+  table.cameras .pan { width: 220px; }
+  table.cameras .pan input[type=range] { width: 140px; vertical-align: middle; }
+  table.cameras .pan .value { display: inline-block; min-width: 50px; font-family: ui-monospace, monospace; font-size: 11px; color: #666; }
+  table.cameras .pan.disabled { color: #ccc; }
   table.cameras .name { font-weight: 500; }
   table.cameras .vessel { color: #666; font-size: 12px; }
   table.cameras .id { color: #999; font-family: ui-monospace, monospace; font-size: 11px; }
@@ -58,10 +62,11 @@
       <th class="zoom">Render size</th>
       <th class="zoom">Degrade</th>
       <th class="zoom">Bitrate</th>
+      <th class="pan">Pan yaw</th>
     </tr>
   </thead>
   <tbody id="cameraTable">
-    <tr><td colspan="9" class="empty">none yet — click Refresh</td></tr>
+    <tr><td colspan="10" class="empty">none yet — click Refresh</td></tr>
   </tbody>
 </table>
 
@@ -127,6 +132,7 @@ let bitrateState = new Map(); // flight_id -> { encoderBitrateBps, targetBitrate
 let degradeState = new Map(); // flight_id -> 0..1 (this client's last requested level)
 let effectiveDegradeState = new Map(); // flight_id -> 0..1 (max across all subscribers, from server)
 let lifecycleState = new Map(); // flight_id -> string ("active" | "destroyed")
+let panYawState = new Map(); // flight_id -> degrees (current commanded yaw)
 let trackByFlightId = new Map();
 
 function sendControl(message) {
@@ -156,6 +162,7 @@ function handleServerMessage(msg) {
         });
         effectiveDegradeState.set(cs.flightId, cs.degradeLevel ?? 0);
         if (cs.lifecycle != null) lifecycleState.set(cs.flightId, cs.lifecycle);
+        if (cs.panYaw != null) panYawState.set(cs.flightId, cs.panYaw);
       }
       renderTable();
       break;
@@ -179,7 +186,7 @@ function handleServerMessage(msg) {
 function renderTable() {
   const tbody = $("cameraTable");
   if (discovered.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="9" class="empty">none yet — is KSP running with Hullcam parts?</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="10" class="empty">none yet — is KSP running with Hullcam parts?</td></tr>`;
     return;
   }
   tbody.innerHTML = "";
@@ -370,6 +377,39 @@ function renderTable() {
     }</span>`;
     tr.appendChild(brTd);
 
+    // Pan yaw slider — shown only for parts where supportsPan is true.
+    const panTd = document.createElement("td");
+    panTd.className = cam.supportsPan ? "pan" : "pan disabled";
+    if (cam.supportsPan) {
+      const currentYaw = panYawState.get(cam.flightId) ?? 0;
+      const panSlider = document.createElement("input");
+      panSlider.type = "range";
+      panSlider.min = cam.panYawMin;
+      panSlider.max = cam.panYawMax;
+      panSlider.step = 1;
+      panSlider.value = currentYaw;
+      panSlider.disabled = !dc || dc.readyState !== "open";
+      const panValue = document.createElement("span");
+      panValue.className = "value";
+      panValue.textContent = `${Number(currentYaw).toFixed(0)}°`;
+      panSlider.addEventListener("input", () => {
+        panValue.textContent = `${Number(panSlider.value).toFixed(0)}°`;
+      });
+      panSlider.addEventListener("change", () => {
+        const yaw = parseFloat(panSlider.value);
+        panYawState.set(cam.flightId, yaw);
+        sendControl({
+          type: "set-pan",
+          content: { flightId: cam.flightId, yaw, pitch: 0 },
+        });
+      });
+      panTd.appendChild(panSlider);
+      panTd.appendChild(panValue);
+    } else {
+      panTd.textContent = "—";
+    }
+    tr.appendChild(panTd);
+
     tbody.appendChild(tr);
   }
 }
@@ -390,6 +430,7 @@ async function refreshCameras() {
       if (!fovState.has(cam.flightId)) fovState.set(cam.flightId, cam.fov);
       if (!renderSizeState.has(cam.flightId)) renderSizeState.set(cam.flightId, { width: cam.maxWidth, height: cam.maxHeight });
       if (!bitrateState.has(cam.flightId)) bitrateState.set(cam.flightId, { encoderBitrateBps: cam.encoderBitrateBps, targetBitrateBps: cam.targetBitrateBps });
+      if (!panYawState.has(cam.flightId)) panYawState.set(cam.flightId, 0);
       lifecycleState.set(cam.flightId, cam.lifecycle ?? "active");
       if (pc === null) included.add(cam.flightId);
     }
@@ -399,7 +440,7 @@ async function refreshCameras() {
     renderTable();
     $("connectBtn").disabled = pc !== null || included.size === 0;
   } catch (e) {
-    $("cameraTable").innerHTML = `<tr><td colspan="9" class="empty">error fetching /cameras: ${escapeHtml(e.message)}</td></tr>`;
+    $("cameraTable").innerHTML = `<tr><td colspan="10" class="empty">error fetching /cameras: ${escapeHtml(e.message)}</td></tr>`;
   }
 }
 

@@ -79,18 +79,18 @@ namespace Kerbcam
         public float FovMax { get; }
         public float Fov { get; private set; }
 
-        /// <summary>Pan/tilt capability is reserved for the planned
-        /// kerbcam-side mod extension that adds steerable mounts to
-        /// specific Hullcam parts. False on every shipping part today;
-        /// the protocol carries the fields so clients are ready for
-        /// when this flips true per part.</summary>
-        public bool SupportsPan => false;
-        public float PanYawMin => 0f;
-        public float PanYawMax => 0f;
-        public float PanPitchMin => 0f;
-        public float PanPitchMax => 0f;
-        public float PanYaw { get; private set; }
-        public float PanPitch { get; private set; }
+        private readonly PanCapability _panCap;
+        public bool SupportsPan => _panCap.SupportsPan;
+        public float PanYawMin => _panCap.YawMin;
+        public float PanYawMax => _panCap.YawMax;
+        public float PanPitchMin => _panCap.PitchMin;
+        public float PanPitchMax => _panCap.PitchMax;
+        /// <summary>Current interpolated yaw (degrees). Use this for
+        /// status reporting — not the target — so operators see what
+        /// is actually on-screen, not the commanded position.</summary>
+        public float PanYaw => _panYawCurrent;
+        /// <summary>Current interpolated pitch (degrees).</summary>
+        public float PanPitch => _panPitchCurrent;
 
         // Snapshot of identity fields captured at construction. Used by
         // WriteInfoManifest and WriteDestroyedManifest so neither method
@@ -129,6 +129,25 @@ namespace Kerbcam
         private readonly string _controlPath;
         private DateTime _lastControlMtime = DateTime.MinValue;
         private int _controlCheckCountdown;
+
+        // Pan/tilt interpolation state. Target is written by PollControlFile
+        // from operator control.json; Current tracks toward it each Refresh()
+        // at SlewDegPerSec. Near-cam rotation and mesh transforms are driven
+        // from Current, so status echoes what is actually on-screen.
+        private float _panYawTarget;
+        private float _panPitchTarget;
+        private float _panYawCurrent;
+        private float _panPitchCurrent;
+        // Base rotation of the near camera at part-attach time. Pan is applied
+        // as baseRot * Euler(-pitch, yaw, 0) so the camera's natural forward
+        // direction is the zero point.
+        private Quaternion _baseRotation;
+        // Mesh transform nodes driven by pan slew. Null when the capability
+        // table leaves the transform name empty (no animated joint in the mesh).
+        private Transform _yawTransform;
+        private Quaternion _yawRestRot;
+        private Transform _pitchTransform;
+        private Quaternion _pitchRestRot;
 
         private CameraLayers _layers = CameraLayers.All;
         /// <summary>
@@ -191,9 +210,11 @@ namespace Kerbcam
             int maxHeight,
             int renderWidth,
             int renderHeight,
-            CameraLayers initialLayers)
+            CameraLayers initialLayers,
+            PanCapability panCap = default)
         {
             Hullcam = hullcam;
+            _panCap = panCap;
             FlightId = flightId;
             MaxWidth = maxWidth;
             MaxHeight = maxHeight;
@@ -378,15 +399,52 @@ namespace Kerbcam
                 return;
             }
 
+            // Resolve the yaw mesh transform before camera setup so we can
+            // parent the near camera to it. Must happen here, at rest pose,
+            // so InverseTransformPoint reads the unrotated frame correctly.
+            if (!string.IsNullOrEmpty(_panCap.YawTransformName))
+            {
+                _yawTransform = Hullcam.part.FindModelTransform(_panCap.YawTransformName);
+                if (_yawTransform != null)
+                    _yawRestRot = _yawTransform.localRotation;
+                else
+                    Debug.LogWarning($"[Kerbcam] cam={FlightId} yaw transform '{_panCap.YawTransformName}' not found on {Hullcam.part.name}");
+            }
+
+            // When a yaw joint exists, parent the near camera to it so it
+            // physically follows the rotating head. cameraPosition and
+            // cameraForward/Up are defined in partTransform space; re-express
+            // them in the joint's local frame so the lens stays at the correct
+            // world position after the joint rotates.
+            Transform nearParent;
+            Vector3 nearLocalPos;
+            if (_yawTransform != null)
+            {
+                Vector3 worldPos = partTransform.TransformPoint(Hullcam.cameraPosition);
+                nearLocalPos = _yawTransform.InverseTransformPoint(worldPos);
+                Vector3 worldFwd = partTransform.TransformDirection(Hullcam.cameraForward);
+                Vector3 worldUp  = partTransform.TransformDirection(Hullcam.cameraUp);
+                _baseRotation = Quaternion.LookRotation(
+                    _yawTransform.InverseTransformDirection(worldFwd),
+                    _yawTransform.InverseTransformDirection(worldUp));
+                nearParent = _yawTransform;
+            }
+            else
+            {
+                nearLocalPos = Hullcam.cameraPosition;
+                _baseRotation = Quaternion.LookRotation(Hullcam.cameraForward, Hullcam.cameraUp);
+                nearParent = partTransform;
+            }
+
             // Near layer — close-up of parts + atmospheric effects.
             var nearGo = new GameObject($"Kerbcam_{FlightId}_Near");
             _nearCam = nearGo.AddComponent<Camera>();
             var sourceNear = FindKspCamera("Camera 00");
             if (sourceNear != null) _nearCam.CopyFrom(sourceNear);
             _nearCam.name = $"Kerbcam_{FlightId}_Near";
-            nearGo.transform.parent = partTransform;
-            nearGo.transform.localPosition = Hullcam.cameraPosition;
-            nearGo.transform.localRotation = Quaternion.LookRotation(Hullcam.cameraForward, Hullcam.cameraUp);
+            nearGo.transform.parent = nearParent;
+            nearGo.transform.localPosition = nearLocalPos;
+            nearGo.transform.localRotation = _baseRotation;
             _nearCam.fieldOfView = Hullcam.cameraFoV;
             _nearCam.nearClipPlane = Hullcam.cameraClip;
             _nearCam.targetTexture = _captureRt;
@@ -482,6 +540,17 @@ namespace Kerbcam
                 TUFXIntegration.ApplyToCamera(_nearCam);
                 TUFXIntegration.ApplyToCamera(_scaledCam);
                 TUFXIntegration.ApplyToCamera(_galaxyCam);
+            }
+
+            // Pitch transform — resolved here rather than above because it
+            // doesn't affect camera parenting in the current design.
+            if (!string.IsNullOrEmpty(_panCap.PitchTransformName))
+            {
+                _pitchTransform = Hullcam.part.FindModelTransform(_panCap.PitchTransformName);
+                if (_pitchTransform != null)
+                    _pitchRestRot = _pitchTransform.localRotation;
+                else
+                    Debug.LogWarning($"[Kerbcam] cam={FlightId} pitch transform '{_panCap.PitchTransformName}' not found on {Hullcam.part.name}");
             }
 
             // All three cameras are permanently disabled — Unity must not
@@ -749,6 +818,14 @@ namespace Kerbcam
                 if (subscribed != _subscribed)
                 {
                     _subscribed = subscribed;
+                    if (_subscribed)
+                    {
+                        // Snap interpolation to target on peer reconnect so the
+                        // peer sees the current commanded position immediately
+                        // instead of a phantom pan-back from the last rest position.
+                        _panYawCurrent = _panYawTarget;
+                        _panPitchCurrent = _panPitchTarget;
+                    }
                     Debug.Log($"[Kerbcam] cam={FlightId} subscribed → {_subscribed}");
                     ApplyLayers();
                 }
@@ -763,10 +840,15 @@ namespace Kerbcam
                 {
                     SetFov(fov.Value);
                 }
-                // Pan parsing is wired but ignored on shipping parts
-                // (`SupportsPan == false` short-circuits in setters).
-                // The plumbing exists so the future extended mod can
-                // flip the capability flag without protocol churn.
+                if (SupportsPan)
+                {
+                    var panYaw = ParseFloatField(raw, "pan_yaw");
+                    var panPitch = ParseFloatField(raw, "pan_pitch");
+                    if (panYaw.HasValue)
+                        _panYawTarget = Mathf.Clamp(panYaw.Value, _panCap.YawMin, _panCap.YawMax);
+                    if (panPitch.HasValue)
+                        _panPitchTarget = Mathf.Clamp(panPitch.Value, _panCap.PitchMin, _panCap.PitchMax);
+                }
             }
             catch (Exception ex)
             {
@@ -920,13 +1002,47 @@ namespace Kerbcam
 
         public void Refresh()
         {
-            // Cheap control-file poll once per second (LateUpdate fires
-            // at KSP's frame rate, so ~30-60 ticks/sec). File.GetLastWriteTime
-            // is a stat() — fine at 1Hz, would be wasteful per-frame.
+            // Control-file poll ~20Hz (countdown=3 at 60fps). Fast enough
+            // for interactive pan; File.GetLastWriteTime is a stat() so the
+            // cost is negligible even at 20Hz. The old 1Hz cadence (60) was
+            // fine for layer/fov changes but too sluggish for pan input.
             if (--_controlCheckCountdown <= 0)
             {
-                _controlCheckCountdown = 60;
+                _controlCheckCountdown = 3;
                 PollControlFile();
+            }
+
+            // Pan slew runs every tick regardless of subscription state so
+            // the physical mesh keeps animating when no peer is watching.
+            // The near-cam rotation update is a no-op while cameras are
+            // unsubscribed (no Render() call happens), but it keeps the
+            // transform consistent for the frame when subscription resumes.
+            if (SupportsPan)
+            {
+                float maxDelta = _panCap.SlewDegPerSec * Time.deltaTime;
+                _panYawCurrent = Mathf.MoveTowards(_panYawCurrent, _panYawTarget, maxDelta);
+                _panPitchCurrent = Mathf.MoveTowards(_panPitchCurrent, _panPitchTarget, maxDelta);
+
+                if (_nearCam != null)
+                {
+                    // Positive pan_yaw = camera turns right; positive pan_pitch = up.
+                    // Negate pitch because Unity's X-rotation is positive-down.
+                    // When parented to the yaw joint, the joint's own rotation
+                    // carries the yaw — applying it here too would double it.
+                    float camYaw = _yawTransform != null ? 0f : _panYawCurrent;
+                    _nearCam.transform.localRotation = _baseRotation
+                        * Quaternion.Euler(-_panPitchCurrent, camYaw, 0f);
+                }
+                if (_yawTransform != null)
+                {
+                    _yawTransform.localRotation = _yawRestRot
+                        * Quaternion.Euler(0f, _panYawCurrent, 0f);
+                }
+                if (_pitchTransform != null)
+                {
+                    _pitchTransform.localRotation = _pitchRestRot
+                        * Quaternion.Euler(-_panPitchCurrent, 0f, 0f);
+                }
             }
 
             // Subscriber-aware skip: when no peer is subscribed, skip all

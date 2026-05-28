@@ -401,6 +401,7 @@ namespace Kerbcam
                         // get a deterministic hash of (flightID, cameraName)
                         // so they're stable across loads.
                         uint flightId = SyntheticFlightId(part.flightID, moduleIdx, hullcam.cameraName);
+                        var panCap = PartCapabilities.ForPart(hullcam.part.partInfo?.name ?? "");
                         _cameras.Add(new KerbcamCamera(
                             hullcam,
                             flightId,
@@ -410,7 +411,8 @@ namespace Kerbcam
                             _settings.Height,
                             renderW,
                             renderH,
-                            initialLayers));
+                            initialLayers,
+                            panCap));
                     }
                     catch (Exception ex)
                     {

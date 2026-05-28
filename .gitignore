@@ -38,6 +38,9 @@ Thumbs.db
 # Claude Code
 .claude/
 
+# Local reference docs (cloned source repos, design notes, etc.)
+local_docs/
+
 # Packaged binaries (built by CI, not committed)
 GameData/KerbCam/Sidecar/*/kerbcam-sidecar
 GameData/KerbCam/Sidecar/*/kerbcam-sidecar.exe
