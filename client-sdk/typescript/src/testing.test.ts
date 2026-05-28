@@ -1,0 +1,156 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { CameraLifecycle, Layer } from "./__generated__/types";
+import { KerbcamClient } from "./index";
+import { MockSidecar } from "./testing/index";
+
+beforeEach(() => {
+  vi.spyOn(globalThis, "fetch").mockImplementation(() =>
+    Promise.resolve(MockSidecar.makeOfferResponse([42])),
+  );
+});
+
+describe("MockSidecar", () => {
+  it("cameras populate on open()", async () => {
+    const sidecar = new MockSidecar();
+    sidecar.addCamera({ flightId: 42 });
+
+    const client = new KerbcamClient(
+      { host: "localhost", port: 8088 },
+      sidecar.createTransport(),
+    );
+
+    const cameraEvents: unknown[] = [];
+    client.on("cameras-change", (cams) => cameraEvents.push(cams));
+
+    await client.connect([42]);
+    sidecar.open();
+
+    expect(client.cameras).toHaveLength(1);
+    expect(client.cameras[0].flightId).toBe(42);
+    expect(cameraEvents).toHaveLength(1);
+  });
+
+  it("client sends hello on open()", async () => {
+    const sidecar = new MockSidecar();
+    sidecar.addCamera({ flightId: 42 });
+
+    const client = new KerbcamClient(
+      { host: "localhost", port: 8088 },
+      sidecar.createTransport(),
+    );
+    await client.connect([42]);
+    sidecar.open();
+
+    expect(sidecar.lastCommand("hello")).toBeDefined();
+  });
+
+  it("destroyCamera sends Destroyed lifecycle to client", async () => {
+    const sidecar = new MockSidecar();
+    sidecar.addCamera({ flightId: 42 });
+
+    const client = new KerbcamClient(
+      { host: "localhost", port: 8088 },
+      sidecar.createTransport(),
+    );
+    await client.connect([42]);
+    sidecar.open();
+
+    const cam = client.camera(42);
+    const changes: unknown[] = [];
+    cam.on("change", (s) => changes.push(s));
+
+    sidecar.destroyCamera(42);
+
+    expect(cam.state?.lifecycle).toBe(CameraLifecycle.Destroyed);
+    expect(changes).toHaveLength(1);
+  });
+
+  it("firePing causes client to respond with pong", async () => {
+    const sidecar = new MockSidecar();
+    sidecar.addCamera({ flightId: 42 });
+
+    const client = new KerbcamClient(
+      { host: "localhost", port: 8088 },
+      sidecar.createTransport(),
+    );
+    await client.connect([42]);
+    sidecar.open();
+
+    const cmdsBefore = sidecar.commands.length;
+    sidecar.firePing();
+
+    expect(sidecar.commands.length).toBe(cmdsBefore + 1);
+    expect(sidecar.lastCommand("pong")).toBeDefined();
+  });
+
+  it("ping event fires on the client when sidecar sends ping", async () => {
+    const sidecar = new MockSidecar();
+    sidecar.addCamera({ flightId: 42 });
+
+    const client = new KerbcamClient(
+      { host: "localhost", port: 8088 },
+      sidecar.createTransport(),
+    );
+    await client.connect([42]);
+    sidecar.open();
+
+    let pingFired = false;
+    client.on("ping", () => { pingFired = true; });
+
+    sidecar.firePing();
+
+    expect(pingFired).toBe(true);
+  });
+
+  it("lastCommand filters by flightId", async () => {
+    const sidecar = new MockSidecar();
+    sidecar.addCamera({ flightId: 42 });
+
+    const client = new KerbcamClient(
+      { host: "localhost", port: 8088 },
+      sidecar.createTransport(),
+    );
+    await client.connect([42]);
+    sidecar.open();
+
+    const cam = client.camera(42);
+    await cam.setFov(35);
+    await cam.setFov(60);
+
+    const last = sidecar.lastCommand("set-fov", 42);
+    expect(last?.content.fov).toBe(60);
+  });
+
+  it("updateCamera pushes state-change to the client", async () => {
+    const sidecar = new MockSidecar();
+    sidecar.addCamera({ flightId: 42, layers: [Layer.Near] });
+
+    const client = new KerbcamClient(
+      { host: "localhost", port: 8088 },
+      sidecar.createTransport(),
+    );
+    await client.connect([42]);
+    sidecar.open();
+
+    sidecar.updateCamera(42, { layers: [Layer.Near, Layer.Scaled] });
+
+    expect(client.cameras[0].layers).toEqual([Layer.Near, Layer.Scaled]);
+  });
+
+  it("setConnectionState drives client state-change events", async () => {
+    const sidecar = new MockSidecar();
+    const client = new KerbcamClient(
+      { host: "localhost", port: 8088 },
+      sidecar.createTransport(),
+    );
+    await client.connect();
+
+    const states: string[] = [];
+    client.on("state-change", (s) => states.push(s));
+
+    sidecar.setConnectionState("connected");
+    sidecar.setConnectionState("failed");
+
+    expect(states).toEqual(["connected", "failed"]);
+  });
+});
