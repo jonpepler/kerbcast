@@ -87,6 +87,20 @@ namespace Kerbcam
                 // feed upside-down. 180° roll corrects it.
                 CameraRollDeg = 180f,
             },
+            // NavCam and NightVision: cameraForward = 0,1,0 / cameraUp = 0,0,-1.
+            // Same model-frame Y-inversion as launchcam; 180° roll corrects it.
+            // No pan capability.
+            ["hc.navcam"] = new PanCapability { CameraRollDeg = 180f },
+            ["hc.nightvision"] = new PanCapability { CameraRollDeg = 180f },
+
+            // Stock docking ports patched by HullcamVDS DockingPortCameraPatch.cfg.
+            // Those with cameraForward = 0,1,0 / cameraUp = 0,0,-1 need the same
+            // 180° roll correction. The lateral and mk2 ports use cameraForward =
+            // 0,0,-1 (same as TurretCam) so they are left uncorrected.
+            ["dockingPort1"]    = new PanCapability { CameraRollDeg = 180f },
+            ["dockingPort2"]    = new PanCapability { CameraRollDeg = 180f },
+            ["dockingPort3"]    = new PanCapability { CameraRollDeg = 180f },
+            ["dockingPortLarge"] = new PanCapability { CameraRollDeg = 180f },
         };
 
         public static PanCapability ForPart(string partName)
