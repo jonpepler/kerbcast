@@ -16,4 +16,5 @@ export {
   type KerbcamPeer,
   type KerbcamDataChannel,
   type DiscoveredCamera,
+  type NoiseConfig,
 } from "./client";

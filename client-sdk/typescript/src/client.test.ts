@@ -475,4 +475,128 @@ describe("KerbcamClient", () => {
     expect(client.state).toBe("failed");
     expect(client.camera(42).mediaStream).toBeNull();
   });
+
+  describe("noise config", () => {
+    // jsdom has no captureStream, so tryCreateNoisePipeline returns null and
+    // the raw stream is surfaced. Tests cover the config resolution logic and
+    // ensure that flipping noise on/off via configure() replaces the stream.
+
+    it("noise is enabled by default (no explicit config)", async () => {
+      const { transport, captured } = makeFakeTransport();
+      const client = new KerbcamClient({ host: "h", port: 1 }, transport);
+      // _resolveNoise with null override and no cfg.noise should return true
+      expect(client._resolveNoise(null)).toBe(true);
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(fakeAnswer([1]));
+      await client.connect([1]);
+      captured.onTrack?.({} as MediaStreamTrack, 0);
+      // In jsdom: captureStream absent → pipeline skipped → raw stream exposed
+      expect(client.camera(1).mediaStream).not.toBeNull();
+    });
+
+    it("noise can be disabled at the client level", () => {
+      const { transport } = makeFakeTransport();
+      const client = new KerbcamClient({ host: "h", port: 1, noise: { enabled: false } }, transport);
+      expect(client._resolveNoise(null)).toBe(false);
+    });
+
+    it("per-camera configure() overrides client default", () => {
+      const { transport } = makeFakeTransport();
+      const clientOn = new KerbcamClient({ host: "h", port: 1 }, transport);
+      const clientOff = new KerbcamClient({ host: "h", port: 1, noise: { enabled: false } }, transport);
+
+      // Per-camera enable overrides client-off
+      expect(clientOff._resolveNoise({ enabled: true })).toBe(true);
+      // Per-camera disable overrides client-on (default)
+      expect(clientOn._resolveNoise({ enabled: false })).toBe(false);
+    });
+
+    it("configure() triggers stream re-emit", async () => {
+      const { transport, captured } = makeFakeTransport();
+      const client = new KerbcamClient({ host: "h", port: 1 }, transport);
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(fakeAnswer([5]));
+
+      await client.connect([5]);
+      const cam = client.camera(5);
+      const streams: (MediaStream | null)[] = [];
+      cam.on("stream", (s) => streams.push(s));
+
+      captured.onTrack?.({} as MediaStreamTrack, 0);
+      expect(streams).toHaveLength(1);
+      expect(streams[0]).not.toBeNull();
+
+      // Calling configure re-builds the pipeline → re-emits the stream
+      cam.configure({ noise: { enabled: false } });
+      expect(streams).toHaveLength(2);
+      expect(streams[1]).not.toBeNull();
+    });
+
+    it("_setState updates noise intensity and does not break without a stream", async () => {
+      const { transport, captured } = makeFakeTransport();
+      const client = new KerbcamClient({ host: "h", port: 1 }, transport);
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(fakeAnswer());
+
+      await client.connect();
+      captured.dc?._open();
+
+      // Push a state update before any track arrives — must not throw
+      captured.dc?._msg(
+        JSON.stringify({
+          type: "camera-state-changed",
+          content: { state: fakeCameraState(99, { degradeLevel: 0.6 }) },
+        }),
+      );
+
+      expect(client.camera(99).state?.degradeLevel).toBe(0.6);
+    });
+
+    it("disconnect destroys noise pipeline and sets stream to null", async () => {
+      const { transport, captured } = makeFakeTransport();
+      const client = new KerbcamClient({ host: "h", port: 1 }, transport);
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(fakeAnswer([7]));
+
+      await client.connect([7]);
+      captured.onTrack?.({} as MediaStreamTrack, 0);
+      expect(client.camera(7).mediaStream).not.toBeNull();
+
+      const streams: (MediaStream | null)[] = [];
+      client.camera(7).on("stream", (s) => streams.push(s));
+
+      client.disconnect();
+      expect(client.camera(7).mediaStream).toBeNull();
+      expect(streams[streams.length - 1]).toBeNull();
+    });
+
+    it("noise pipeline is used when captureStream is available", async () => {
+      const fakeProcessed = new MediaStream();
+      const mockCaptureStream = vi.fn().mockReturnValue(fakeProcessed);
+      const fakeCtx = {
+        drawImage: vi.fn(),
+        createImageData: vi.fn().mockReturnValue({ data: new Uint8ClampedArray(4) }),
+        putImageData: vi.fn(),
+      };
+      const origGetContext = HTMLCanvasElement.prototype.getContext;
+      // @ts-expect-error — jsdom augmentation
+      HTMLCanvasElement.prototype.getContext = vi.fn().mockReturnValue(fakeCtx);
+      // @ts-expect-error — jsdom augmentation
+      HTMLCanvasElement.prototype.captureStream = mockCaptureStream;
+      const rafSpy = vi.spyOn(globalThis, "requestAnimationFrame").mockReturnValue(0);
+
+      try {
+        const { transport, captured } = makeFakeTransport();
+        const client = new KerbcamClient({ host: "h", port: 1 }, transport);
+        vi.spyOn(globalThis, "fetch").mockResolvedValue(fakeAnswer([3]));
+
+        await client.connect([3]);
+        captured.onTrack?.({} as MediaStreamTrack, 0);
+
+        expect(client.camera(3).mediaStream).toBe(fakeProcessed);
+        expect(mockCaptureStream).toHaveBeenCalledWith(30);
+      } finally {
+        HTMLCanvasElement.prototype.getContext = origGetContext;
+        // @ts-expect-error — cleanup
+        delete HTMLCanvasElement.prototype.captureStream;
+        rafSpy.mockRestore();
+      }
+    });
+  });
 });

@@ -7,6 +7,13 @@ import type {
   ServerMessage,
 } from "./__generated__/types";
 import { ErrorSource } from "./__generated__/types";
+import { type NoisePipeline, tryCreateNoisePipeline } from "./noise";
+
+/** Controls the digital-static noise overlay baked into `cam.mediaStream`. */
+export interface NoiseConfig {
+  /** When false, the pipeline is bypassed and `mediaStream` is the raw WebRTC track. */
+  enabled: boolean;
+}
 
 /**
  * Per-camera handle returned from {@link KerbcamClient.camera}.
@@ -23,6 +30,12 @@ export interface KerbcamCameraHandle {
   setPan(yaw: number, pitch: number): Promise<void>;
   setDegrade(level: number): Promise<void>;
   requestKeyframe(): Promise<void>;
+
+  /**
+   * Override noise settings for this camera only. Takes precedence over the
+   * client-level default in {@link KerbcamClientConfig.noise}.
+   */
+  configure(options: { noise?: Partial<NoiseConfig> }): void;
 
   on<K extends keyof KerbcamCameraEvents>(
     event: K,
@@ -49,6 +62,11 @@ export interface KerbcamClientConfig {
    * which is enough for LAN streaming.
    */
   iceServers?: RTCIceServer[];
+  /**
+   * Default noise settings for all cameras. Individual cameras can override
+   * this via `cam.configure({ noise: … })`. Noise is enabled by default.
+   */
+  noise?: Partial<NoiseConfig>;
 }
 
 /** WebRTC connection state surface. */
@@ -261,6 +279,9 @@ class CameraHandle
   readonly flightId: number;
   private _state: CameraState | null = null;
   private _mediaStream: MediaStream | null = null;
+  private _rawStream: MediaStream | null = null;
+  private _noisePipeline: NoisePipeline | null = null;
+  private _noiseOverride: Partial<NoiseConfig> | null = null;
   private readonly client: KerbcamClient;
 
   constructor(flightId: number, client: KerbcamClient) {
@@ -277,16 +298,53 @@ class CameraHandle
     return this._mediaStream;
   }
 
+  configure(options: { noise?: Partial<NoiseConfig> }): void {
+    this._noiseOverride = options.noise ?? null;
+    if (this._rawStream) this._rebuildPipeline(this._rawStream);
+  }
+
   /** Internal — called by the client when CameraState pushes arrive. */
   _setState(state: CameraState): void {
     this._state = state;
+    this._noisePipeline?.setIntensity(Math.max(0.05, state.degradeLevel));
     this.emit("change", state);
   }
 
   /** Internal — called by the client when a track arrives or drops. */
   _setMediaStream(stream: MediaStream | null): void {
-    this._mediaStream = stream;
-    this.emit("stream", stream);
+    this._noisePipeline?.destroy();
+    this._noisePipeline = null;
+    this._rawStream = stream;
+
+    if (!stream) {
+      this._mediaStream = null;
+      this.emit("stream", null);
+      return;
+    }
+
+    this._rebuildPipeline(stream);
+  }
+
+  private _rebuildPipeline(raw: MediaStream): void {
+    this._noisePipeline?.destroy();
+    this._noisePipeline = null;
+
+    const noiseEnabled = this.client._resolveNoise(this._noiseOverride);
+    const initialIntensity = Math.max(0.05, this._state?.degradeLevel ?? 0);
+
+    if (noiseEnabled) {
+      const pipeline = tryCreateNoisePipeline(raw, initialIntensity);
+      if (pipeline) {
+        this._noisePipeline = pipeline;
+        this._mediaStream = pipeline.processedStream;
+        this.emit("stream", pipeline.processedStream);
+        return;
+      }
+    }
+
+    // Noise disabled or captureStream unavailable — expose raw stream directly.
+    this._mediaStream = raw;
+    this.emit("stream", raw);
   }
 
   async setLayers(layers: Layer[]): Promise<void> {
@@ -497,6 +555,15 @@ export class KerbcamClient extends TypedEmitter<KerbcamClientEvents> {
   }
 
   /**
+   * Internal — resolves the effective noise enabled state for a camera,
+   * merging the per-camera override (if any) with the client-level default.
+   */
+  _resolveNoise(override: Partial<NoiseConfig> | null): boolean {
+    if (override?.enabled !== undefined) return override.enabled;
+    return this.cfg.noise?.enabled !== false; // default: enabled
+  }
+
+  /**
    * Internal — sends a typed `ClientMessage` over the control
    * channel. Drops silently if the channel hasn't opened yet (and
    * logs to console). Public on the camera handle, but consumers
@@ -577,7 +644,7 @@ export class KerbcamClient extends TypedEmitter<KerbcamClientEvents> {
 
   private tearDownStreams(): void {
     for (const handle of this.handles.values()) {
-      if (handle.mediaStream !== null) handle._setMediaStream(null);
+      handle._setMediaStream(null);
     }
   }
 }
