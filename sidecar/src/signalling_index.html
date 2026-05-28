@@ -287,12 +287,11 @@ function renderTable() {
     }
     tr.appendChild(fovTd);
 
-    // Render-size slider: same per-axis size (square only for v0.4 —
-    // the protocol supports non-square but the UI doesn't bother).
+    // Render-size slider: width-only; height is derived from the camera's
+    // native aspect ratio (cam.maxWidth × cam.maxHeight) so the stream
+    // stays in the correct aspect ratio at every quality level.
     // Capped at the ring's allocated max so the slider can't exceed
-    // the sidecar's validation bounds. Two presets shown as labelled
-    // ticks via the `list` attribute aren't worth the markup; just a
-    // continuous slider with the current value next to it.
+    // the sidecar's validation bounds.
     const rsTd = document.createElement("td");
     rsTd.className = "zoom";
     const rs = renderSizeState.get(cam.flightId) ?? { width: cam.maxWidth, height: cam.maxHeight };
@@ -303,19 +302,24 @@ function renderTable() {
     rsSlider.step = 32; // even; openh264 requires it
     rsSlider.value = rs.width;
     rsSlider.disabled = !dc || dc.readyState !== "open";
+    const rsHeight = (w) => {
+      const h = Math.round(w * cam.maxHeight / cam.maxWidth);
+      return h - (h & 1); // even
+    };
+    const rsLabel = (w) => `${w}×${rsHeight(w)}`;
     const rsValue = document.createElement("span");
     rsValue.className = "value";
-    rsValue.textContent = `${rs.width}²`;
+    rsValue.textContent = rsLabel(rs.width);
     rsSlider.addEventListener("input", () => {
-      rsValue.textContent = `${rsSlider.value}²`;
+      rsValue.textContent = rsLabel(parseInt(rsSlider.value, 10));
     });
     rsSlider.addEventListener("change", () => {
-      const v = parseInt(rsSlider.value, 10);
-      const target = v - (v & 1); // even
-      renderSizeState.set(cam.flightId, { width: target, height: target });
+      const w = parseInt(rsSlider.value, 10) - (parseInt(rsSlider.value, 10) & 1); // even
+      const h = rsHeight(w);
+      renderSizeState.set(cam.flightId, { width: w, height: h });
       sendControl({
         type: "set-render-size",
-        content: { flightId: cam.flightId, width: target, height: target },
+        content: { flightId: cam.flightId, width: w, height: h },
       });
     });
     rsTd.appendChild(rsSlider);
