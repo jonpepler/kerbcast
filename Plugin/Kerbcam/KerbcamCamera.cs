@@ -466,6 +466,9 @@ namespace Kerbcam
                 nearParent = partTransform;
             }
 
+            if (_panCap.CameraRollDeg != 0f)
+                _baseRotation *= Quaternion.AngleAxis(_panCap.CameraRollDeg, Vector3.forward);
+
             // Near layer — close-up of parts + atmospheric effects.
             var nearGo = new GameObject($"Kerbcam_{FlightId}_Near");
             _nearCam = nearGo.AddComponent<Camera>();

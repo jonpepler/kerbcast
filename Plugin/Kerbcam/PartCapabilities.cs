@@ -25,6 +25,10 @@ namespace Kerbcam
         /// around this point (via a localPosition compensation) rather than the
         /// transform origin. Tune from the DumpModelTransforms log.</summary>
         public float PitchPivotLocalY;
+        /// <summary>Roll offset (degrees) applied to the near-camera base
+        /// rotation around the view axis. Use 180 to correct an upside-down
+        /// feed when cameraForward points opposite to the default camera Z.</summary>
+        public float CameraRollDeg;
 
         public bool SupportsPan => YawMin != YawMax || PitchMin != PitchMax;
     }
@@ -78,6 +82,10 @@ namespace Kerbcam
                 // (grep "[Kerbcam] model transforms for hc.launchcam") and update
                 // to the localY of hc_launchcam's first visible geometry.
                 PitchPivotLocalY = 0.3f,
+                // cameraForward = 0,0,+1 is opposite to TurretCam's 0,0,-1;
+                // the model's local frame ends up with Y inverted, flipping the
+                // feed upside-down. 180° roll corrects it.
+                CameraRollDeg = 180f,
             },
         };
 
