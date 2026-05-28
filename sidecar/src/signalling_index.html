@@ -62,7 +62,7 @@
       <th class="zoom">Render size</th>
       <th class="zoom">Degrade</th>
       <th class="zoom">Bitrate</th>
-      <th class="pan">Pan yaw</th>
+      <th class="pan">Pan</th>
     </tr>
   </thead>
   <tbody id="cameraTable">
@@ -133,6 +133,7 @@ let degradeState = new Map(); // flight_id -> 0..1 (this client's last requested
 let effectiveDegradeState = new Map(); // flight_id -> 0..1 (max across all subscribers, from server)
 let lifecycleState = new Map(); // flight_id -> string ("active" | "destroyed")
 let panYawState = new Map(); // flight_id -> degrees (current commanded yaw)
+let panPitchState = new Map(); // flight_id -> degrees (current commanded pitch)
 let trackByFlightId = new Map();
 
 function sendControl(message) {
@@ -163,6 +164,7 @@ function handleServerMessage(msg) {
         effectiveDegradeState.set(cs.flightId, cs.degradeLevel ?? 0);
         if (cs.lifecycle != null) lifecycleState.set(cs.flightId, cs.lifecycle);
         if (cs.panYaw != null) panYawState.set(cs.flightId, cs.panYaw);
+        if (cs.panPitch != null) panPitchState.set(cs.flightId, cs.panPitch);
       }
       renderTable();
       break;
@@ -389,34 +391,67 @@ function renderTable() {
     }</span>`;
     tr.appendChild(brTd);
 
-    // Pan yaw slider — shown only for parts where supportsPan is true.
+    // Pan sliders — yaw always shown when supportsPan; pitch shown only when
+    // the part has a pitch range (panPitchMin !== panPitchMax).
     const panTd = document.createElement("td");
     panTd.className = cam.supportsPan ? "pan" : "pan disabled";
     if (cam.supportsPan) {
+      const hasPitch = cam.panPitchMin !== cam.panPitchMax;
+
+      // Yaw row
       const currentYaw = panYawState.get(cam.flightId) ?? 0;
-      const panSlider = document.createElement("input");
-      panSlider.type = "range";
-      panSlider.min = cam.panYawMin;
-      panSlider.max = cam.panYawMax;
-      panSlider.step = 1;
-      panSlider.value = currentYaw;
-      panSlider.disabled = !dc || dc.readyState !== "open";
-      const panValue = document.createElement("span");
-      panValue.className = "value";
-      panValue.textContent = `${Number(currentYaw).toFixed(0)}°`;
-      panSlider.addEventListener("input", () => {
-        panValue.textContent = `${Number(panSlider.value).toFixed(0)}°`;
+      const yawSlider = document.createElement("input");
+      yawSlider.type = "range";
+      yawSlider.min = cam.panYawMin;
+      yawSlider.max = cam.panYawMax;
+      yawSlider.step = 1;
+      yawSlider.value = currentYaw;
+      yawSlider.disabled = !dc || dc.readyState !== "open";
+      const yawValue = document.createElement("span");
+      yawValue.className = "value";
+      yawValue.textContent = `Y ${Number(currentYaw).toFixed(0)}°`;
+      yawSlider.addEventListener("input", () => {
+        yawValue.textContent = `Y ${Number(yawSlider.value).toFixed(0)}°`;
       });
-      panSlider.addEventListener("change", () => {
-        const yaw = parseFloat(panSlider.value);
+      yawSlider.addEventListener("change", () => {
+        const yaw = parseFloat(yawSlider.value);
         panYawState.set(cam.flightId, yaw);
         sendControl({
           type: "set-pan",
-          content: { flightId: cam.flightId, yaw, pitch: 0 },
+          content: { flightId: cam.flightId, yaw, pitch: panPitchState.get(cam.flightId) ?? 0 },
         });
       });
-      panTd.appendChild(panSlider);
-      panTd.appendChild(panValue);
+      panTd.appendChild(yawSlider);
+      panTd.appendChild(yawValue);
+
+      // Pitch row — only for parts that have a pitch range
+      if (hasPitch) {
+        const currentPitch = panPitchState.get(cam.flightId) ?? 0;
+        const pitchSlider = document.createElement("input");
+        pitchSlider.type = "range";
+        pitchSlider.min = cam.panPitchMin;
+        pitchSlider.max = cam.panPitchMax;
+        pitchSlider.step = 1;
+        pitchSlider.value = currentPitch;
+        pitchSlider.disabled = !dc || dc.readyState !== "open";
+        const pitchValue = document.createElement("span");
+        pitchValue.className = "value";
+        pitchValue.textContent = `P ${Number(currentPitch).toFixed(0)}°`;
+        pitchSlider.addEventListener("input", () => {
+          pitchValue.textContent = `P ${Number(pitchSlider.value).toFixed(0)}°`;
+        });
+        pitchSlider.addEventListener("change", () => {
+          const pitch = parseFloat(pitchSlider.value);
+          panPitchState.set(cam.flightId, pitch);
+          sendControl({
+            type: "set-pan",
+            content: { flightId: cam.flightId, yaw: panYawState.get(cam.flightId) ?? 0, pitch },
+          });
+        });
+        panTd.appendChild(document.createElement("br"));
+        panTd.appendChild(pitchSlider);
+        panTd.appendChild(pitchValue);
+      }
     } else {
       panTd.textContent = "—";
     }
@@ -443,6 +478,7 @@ async function refreshCameras() {
       if (!renderSizeState.has(cam.flightId)) renderSizeState.set(cam.flightId, { width: cam.maxWidth, height: cam.maxHeight });
       if (!bitrateState.has(cam.flightId)) bitrateState.set(cam.flightId, { encoderBitrateBps: cam.encoderBitrateBps, targetBitrateBps: cam.targetBitrateBps });
       if (!panYawState.has(cam.flightId)) panYawState.set(cam.flightId, 0);
+      if (!panPitchState.has(cam.flightId)) panPitchState.set(cam.flightId, 0);
       lifecycleState.set(cam.flightId, cam.lifecycle ?? "active");
       if (pc === null) included.add(cam.flightId);
     }
