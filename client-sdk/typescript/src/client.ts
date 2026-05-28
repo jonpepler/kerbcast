@@ -80,6 +80,12 @@ export interface KerbcamClientEvents {
   "cameras-change": CameraState[];
   "adaptive-shed": AdaptiveShedPayload;
   error: ErrorPayload;
+  /**
+   * Fired whenever a `ping` keepalive arrives from the sidecar.
+   * Consumers can use this to reset their own staleness watchdogs
+   * without intercepting at the transport layer.
+   */
+  ping: undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -119,7 +125,7 @@ export interface KerbcamDataChannel {
 // Default transport: browser RTCPeerConnection
 // ---------------------------------------------------------------------------
 
-class BrowserKerbcamTransport implements KerbcamTransport {
+export class BrowserKerbcamTransport implements KerbcamTransport {
   createPeer(iceServers: RTCIceServer[]): KerbcamPeer {
     const pc = new RTCPeerConnection({ iceServers });
     let trackIdx = 0;
@@ -555,6 +561,10 @@ export class KerbcamClient extends TypedEmitter<KerbcamClientEvents> {
         break;
       case "error":
         this.emit("error", msg.content);
+        break;
+      case "ping":
+        void this._send({ type: "pong" });
+        this.emit("ping", undefined);
         break;
     }
   }
