@@ -53,7 +53,7 @@
 <table class="cameras">
   <thead>
     <tr>
-      <th style="width:60px">Stream</th>
+      <th style="width:60px"><input type="checkbox" id="selectAllCb" title="select / deselect all"></th>
       <th>Camera</th>
       <th class="layer">Near</th>
       <th class="layer">Scaled</th>
@@ -185,9 +185,17 @@ function handleServerMessage(msg) {
 
 function renderTable() {
   const tbody = $("cameraTable");
+  const selectAllCb = $("selectAllCb");
   if (discovered.length === 0) {
     tbody.innerHTML = `<tr><td colspan="10" class="empty">none yet — is KSP running with Hullcam parts?</td></tr>`;
+    if (selectAllCb) { selectAllCb.checked = false; selectAllCb.indeterminate = false; selectAllCb.disabled = true; }
     return;
+  }
+  if (selectAllCb) {
+    const checkedCount = discovered.filter((c) => included.has(c.flightId)).length;
+    selectAllCb.checked = checkedCount === discovered.length;
+    selectAllCb.indeterminate = checkedCount > 0 && checkedCount < discovered.length;
+    selectAllCb.disabled = pc !== null;
   }
   tbody.innerHTML = "";
   for (const cam of discovered) {
@@ -464,6 +472,15 @@ function disconnect() {
 }
 
 $("refreshBtn").addEventListener("click", refreshCameras);
+$("selectAllCb").addEventListener("change", () => {
+  if ($("selectAllCb").checked) {
+    for (const cam of discovered) included.add(cam.flightId);
+  } else {
+    included.clear();
+  }
+  renderTable();
+  $("connectBtn").disabled = pc !== null || included.size === 0;
+});
 $("disconnectBtn").addEventListener("click", () => {
   userDisconnected = true;
   cancelReconnect();
