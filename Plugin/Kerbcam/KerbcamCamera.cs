@@ -146,8 +146,13 @@ namespace Kerbcam
         // table leaves the transform name empty (no animated joint in the mesh).
         private Transform _yawTransform;
         private Quaternion _yawRestRot;
+        private Vector3 _yawRestLocalPos;
         private Transform _pitchTransform;
         private Quaternion _pitchRestRot;
+        // Optional co-rotating base (yaw-only, no pitch) to prevent the
+        // moving head from clipping into a symmetric fixed base.
+        private Transform _yawBaseTransform;
+        private Quaternion _yawBaseRestRot;
 
         private CameraLayers _layers = CameraLayers.All;
         /// <summary>
@@ -393,7 +398,11 @@ namespace Kerbcam
 
         private static void WalkTransforms(Transform t, int depth, System.Text.StringBuilder sb)
         {
-            sb.Append(' ', depth * 2).Append(t.name).Append('\n');
+            var p = t.localPosition;
+            sb.Append(' ', depth * 2)
+              .Append(t.name)
+              .AppendFormat(" pos=({0:F3},{1:F3},{2:F3})", p.x, p.y, p.z)
+              .Append('\n');
             for (int i = 0; i < t.childCount; i++)
                 WalkTransforms(t.GetChild(i), depth + 1, sb);
         }
@@ -425,7 +434,8 @@ namespace Kerbcam
                 if (_yawTransform != null)
                 {
                     _yawRestRot = _yawTransform.localRotation;
-                    Debug.Log($"[Kerbcam] cam={FlightId} yaw transform '{_panCap.YawTransformName}' found, restRot={_yawRestRot}");
+                    _yawRestLocalPos = _yawTransform.localPosition;
+                    Debug.Log($"[Kerbcam] cam={FlightId} yaw transform '{_panCap.YawTransformName}' found, restRot={_yawRestRot} restPos={_yawRestLocalPos}");
                 }
                 else
                     Debug.LogWarning($"[Kerbcam] cam={FlightId} yaw transform '{_panCap.YawTransformName}' not found on {Hullcam.part.name}");
@@ -571,6 +581,20 @@ namespace Kerbcam
                     _pitchRestRot = _pitchTransform.localRotation;
                 else
                     Debug.LogWarning($"[Kerbcam] cam={FlightId} pitch transform '{_panCap.PitchTransformName}' not found on {Hullcam.part.name}");
+            }
+
+            // Yaw-base transform: a fixed base that co-rotates in yaw so the
+            // moving head doesn't clip through it. No pitch — the base is static.
+            if (!string.IsNullOrEmpty(_panCap.YawBaseTransformName))
+            {
+                _yawBaseTransform = Hullcam.part.FindModelTransform(_panCap.YawBaseTransformName);
+                if (_yawBaseTransform != null)
+                {
+                    _yawBaseRestRot = _yawBaseTransform.localRotation;
+                    Debug.Log($"[Kerbcam] cam={FlightId} yaw-base transform '{_panCap.YawBaseTransformName}' found");
+                }
+                else
+                    Debug.LogWarning($"[Kerbcam] cam={FlightId} yaw-base transform '{_panCap.YawBaseTransformName}' not found on {Hullcam.part.name}");
             }
 
             // All three cameras are permanently disabled — Unity must not
@@ -1070,8 +1094,25 @@ namespace Kerbcam
                 }
                 if (compoundJoint)
                 {
-                    _yawTransform.localRotation = _yawRestRot
+                    var rotation = _yawRestRot
                         * Quaternion.Euler(-_panPitchCurrent, _panYawCurrent, 0f);
+
+                    if (_panCap.PitchPivotLocalY != 0f)
+                    {
+                        // The physical hinge sits above the transform origin.
+                        // Rotating around the origin would swing the whole head
+                        // from the base; instead, rotate around the hinge by
+                        // adjusting localPosition so the pivot stays fixed.
+                        var pivot = _yawRestLocalPos + new Vector3(0f, _panCap.PitchPivotLocalY, 0f);
+                        _yawTransform.localPosition = pivot + rotation * (_yawRestLocalPos - pivot);
+                    }
+                    _yawTransform.localRotation = rotation;
+
+                    // Co-rotate the static base in yaw so the moving head
+                    // doesn't clip into it (pitch is not applied to the base).
+                    if (_yawBaseTransform != null)
+                        _yawBaseTransform.localRotation = _yawBaseRestRot
+                            * Quaternion.Euler(0f, _panYawCurrent, 0f);
                 }
                 else
                 {

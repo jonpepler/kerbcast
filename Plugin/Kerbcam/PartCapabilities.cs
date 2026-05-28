@@ -16,6 +16,15 @@ namespace Kerbcam
         /// <summary>Named transform in the part mesh that rotates for pitch.
         /// Empty string means no mesh animation for pitch.</summary>
         public string PitchTransformName;
+        /// <summary>Optional fixed-base transform that co-rotates in yaw only
+        /// (no pitch). Prevents the moving head from clipping into a symmetric
+        /// base when yawing.</summary>
+        public string YawBaseTransformName;
+        /// <summary>Local Y offset from the yaw transform's parent origin to
+        /// the physical hinge point. When non-zero, pitch rotation is applied
+        /// around this point (via a localPosition compensation) rather than the
+        /// transform origin. Tune from the DumpModelTransforms log.</summary>
+        public float PitchPivotLocalY;
 
         public bool SupportsPan => YawMin != YawMax || PitchMin != PitchMax;
     }
@@ -64,6 +73,11 @@ namespace Kerbcam
                 SlewDegPerSec = 90f,
                 YawTransformName = "hc_launchcam",
                 PitchTransformName = "hc_launchcam",
+                YawBaseTransformName = "hc_launchbase",
+                // Approximate hinge height — verify from DumpModelTransforms log
+                // (grep "[Kerbcam] model transforms for hc.launchcam") and update
+                // to the localY of hc_launchcam's first visible geometry.
+                PitchPivotLocalY = 0.3f,
             },
         };
 
