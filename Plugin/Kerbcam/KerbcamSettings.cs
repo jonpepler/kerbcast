@@ -125,6 +125,14 @@ namespace Kerbcam
         // by default — leave off for normal play.
         public static bool ForceAtmosphericFx { get; private set; } = false;
 
+        // Debug: override the vessel's surface velocity (world space) used to
+        // drive FX direction — wind-aligned streaks, bowshock placement, trail
+        // orientation, ember drift. Zero (default) → real srf_velocity. Pair
+        // with ForceAtmosphericFx to test motion-dependent shader behaviour on
+        // the pad without flying. Magnitude should be > 1 so velocity-gates in
+        // effects don't trip. settings.cfg syntax: `DebugWindDirection = 100, 0, 0`.
+        public static Vector3 DebugWindDirection { get; private set; } = Vector3.zero;
+
         // Default for the per-save ThrottleMainScreen Difficulty Setting
         // when a save is loaded for the first time. After that the
         // value stored in the save file wins; settings.cfg changes
@@ -247,6 +255,7 @@ namespace Kerbcam
             ApplyBool(node, "EnableHullcamLinuxShaderSwap", v => EnableHullcamLinuxShaderSwap = v);
             ApplyBool(node, "DebugCameraLogging", v => DebugCameraLogging = v);
             ApplyBool(node, "ForceAtmosphericFx", v => ForceAtmosphericFx = v);
+            ApplyVector3(node, "DebugWindDirection", v => DebugWindDirection = v);
             // Static slots so KerbcamGameParameters (constructed by
             // KSP before our plugin instance loads) can pick up the
             // seed values. Settings.cfg is the source of truth for
@@ -388,6 +397,25 @@ namespace Kerbcam
             if (string.IsNullOrEmpty(raw)) return;
             if (bool.TryParse(raw.Trim(), out bool v)) set(v);
             else Debug.LogWarning($"[Kerbcam] settings.cfg: {key}='{raw}' is not a bool; using default");
+        }
+
+        // Parses three comma-separated floats: `x, y, z`.
+        private static void ApplyVector3(ConfigNode node, string key, System.Action<Vector3> set)
+        {
+            var raw = node.GetValue(key);
+            if (string.IsNullOrEmpty(raw)) return;
+            var parts = raw.Split(',');
+            if (parts.Length != 3)
+            {
+                Debug.LogWarning($"[Kerbcam] settings.cfg: {key}='{raw}' must be three comma-separated floats; using default");
+                return;
+            }
+            if (float.TryParse(parts[0].Trim(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float x) &&
+                float.TryParse(parts[1].Trim(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float y) &&
+                float.TryParse(parts[2].Trim(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float z))
+                set(new Vector3(x, y, z));
+            else
+                Debug.LogWarning($"[Kerbcam] settings.cfg: {key}='{raw}' contains a non-float component; using default");
         }
     }
 }

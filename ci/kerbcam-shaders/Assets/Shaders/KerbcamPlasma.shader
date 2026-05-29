@@ -55,14 +55,22 @@ Shader "Kerbcam/Plasma"
             };
 
             // Per-vertex puff modulator in [0.25 .. 1.0] — drives a lumpy,
-            // non-uniform inflation that varies across the hull (so the shell
+            // non-uniform inflation that varies *across* the hull (so the shell
             // comes near and far from the parts, never further out than the
-            // uniform _PuffDistance).
+            // uniform _PuffDistance). High spatial frequencies (a few cycles
+            // per metre) so peaks and valleys are visible at part scale; the
+            // time term is position-phase-shifted so different points breathe
+            // out of phase instead of the whole thing throbbing together.
             float puffScale(float3 p)
             {
-                float n = sin(p.x * 0.6) + sin(p.z * 0.7 + 1.3) * 0.7 + sin(p.y * 0.5 - 0.8) * 0.5;
-                n += sin(_Time.y * 0.4) * 0.2;       // gentle breathing
-                return 0.25 + 0.75 * saturate(n * 0.5 + 0.5);
+                float n = sin(p.x * 2.3 + p.y * 1.7) * 0.5
+                        + sin(p.y * 3.1 - p.z * 2.5 + 1.3) * 0.35
+                        + sin(p.x * 4.7 + p.z * 3.9 + 0.8) * 0.25
+                        + sin(p.z * 5.5 - p.y * 2.1 + 2.1) * 0.2;
+                // Position-shifted breathing: phase varies with worldPos so
+                // adjacent points are at different phases of the cycle.
+                n += sin(_Time.y * 0.7 + p.x * 0.9 + p.z * 0.6) * 0.18;
+                return 0.25 + 0.75 * saturate(n * 0.4 + 0.5);
             }
 
             v2f vert(appdata_base v)

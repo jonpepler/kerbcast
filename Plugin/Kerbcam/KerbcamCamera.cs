@@ -639,6 +639,12 @@ namespace Kerbcam
             Vector3 vel = v != null ? (Vector3)v.srf_velocity : Vector3.zero;
             float mach = v != null ? (float)v.mach : 0f;
             float q = v != null ? (float)v.dynamicPressurekPa : 0f;
+            // Debug override: pretend the vessel is moving in this world-space
+            // direction so motion-dependent shader paths (wind axis, streak
+            // scroll, bowshock placement, trail orientation, ember drift) can
+            // be exercised on the pad. Pair with ForceAtmosphericFx.
+            if (KerbcamSettings.DebugWindDirection.sqrMagnitude > 0.0001f)
+                vel = KerbcamSettings.DebugWindDirection;
             return new FxFrameState(v, _nearCam, vel, mach, q, Time.deltaTime, Time.time);
         }
 
