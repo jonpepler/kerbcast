@@ -27,12 +27,18 @@ namespace Kerbcam
         private static readonly int _IntensityId = Shader.PropertyToID("_Intensity");
         private static readonly int _WindDirId = Shader.PropertyToID("_WindDirWorld");
 
+        // Diagnostics (gated on DebugCameraLogging): how many DrawRenderer calls
+        // the CB holds + a throttle so the per-frame state log doesn't spam.
+        private int _drawCount;
+        private float _lastLogTime;
+
         // Intensity ramp (C#-side, fast loop — no CI rebuild to tune). Below
         // _minQ there's no meaningful atmosphere; intensity ramps with mach
-        // across the transonic→reentry band.
+        // from transonic up. Tuned low so the indicator shows across ordinary
+        // ascent, not just extreme reentry.
         private const float _minQ = 0.1f;       // kPa
-        private const float _machLow = 1.5f;
-        private const float _machHigh = 7.0f;
+        private const float _machLow = 0.8f;
+        private const float _machHigh = 5.0f;
 
         public bool TryInitialize(Camera nearCam)
         {
@@ -40,6 +46,7 @@ namespace Kerbcam
             _material = KerbcamFxAssets.LoadMaterial("KerbcamPlasma");
             if (_material == null) return false; // bundle/shader missing → unavailable
             _cb = new CommandBuffer { name = "Kerbcam FX Core" };
+            Debug.Log($"[Kerbcam] FX core initialized on {nearCam.name} (KerbcamPlasma material loaded)");
             return true;
         }
 
@@ -53,7 +60,27 @@ namespace Kerbcam
         {
             if (_material == null || _cam == null) return;
 
-            float intensity = ComputeIntensity(state.Mach, state.DynamicPressure);
+            float intensity = KerbcamSettings.ForceAtmosphericFx
+                ? 1f
+                : ComputeIntensity(state.Mach, state.DynamicPressure);
+
+            // Throttled state readout — logged even when intensity is 0, so a
+            // missing effect can be diagnosed: flight regime (mach/q), whether
+            // intensity ramps, CB draw count, attach state, and the rendering
+            // path (AfterForwardAlpha only fires in Forward — Deferred = no FX).
+            if (KerbcamSettings.DebugCameraLogging && Time.time - _lastLogTime > 1.5f)
+            {
+                _lastLogTime = Time.time;
+                var v = state.Vessel;
+                Debug.Log($"[Kerbcam-debug] FX core {_cam.name}: " +
+                    $"vessel={(v != null ? v.vesselName : "null")} " +
+                    $"srfSpd={state.VelocityWorld.magnitude:F0} mach={state.Mach:F2} " +
+                    $"q={state.DynamicPressure:F2} alt={(v != null ? v.altitude : 0):F0} " +
+                    $"sit={(v != null ? v.situation.ToString() : "?")} " +
+                    $"intensity={intensity:F2} draws={_drawCount} attached={_attached} " +
+                    $"path={_cam.actualRenderingPath}");
+            }
+
             if (intensity <= 0.001f)
             {
                 Detach(); // no heating → zero GPU cost
@@ -80,6 +107,7 @@ namespace Kerbcam
         {
             _cb.Clear();
             _cbDirty = false;
+            _drawCount = 0;
             if (vessel == null) return;
 
             foreach (var part in vessel.parts)
@@ -94,7 +122,10 @@ namespace Kerbcam
                     // additively over the part's normal render.
                     int subMeshes = rend.sharedMaterials.Length;
                     for (int s = 0; s < subMeshes; s++)
+                    {
                         _cb.DrawRenderer(rend, _material, s);
+                        _drawCount++;
+                    }
                 }
             }
         }

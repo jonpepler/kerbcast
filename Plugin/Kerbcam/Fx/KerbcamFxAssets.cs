@@ -15,14 +15,28 @@ namespace Kerbcam
         private static AssetBundle _bundle;
         private static bool _attempted;
 
+        private const string BundleName = "kerbcam-shaders";
+
         private static AssetBundle Bundle()
         {
             if (_attempted) return _bundle;
             _attempted = true;
             try
             {
+                // Unity allows only one load per bundle file: a second
+                // LoadFromFile on the same file returns null. Several callers
+                // share this bundle (NightVision filter + FX effects), so reuse
+                // an already-loaded instance before loading.
+                foreach (var loaded in AssetBundle.GetAllLoadedAssetBundles())
+                {
+                    if (loaded != null && loaded.name == BundleName)
+                    {
+                        _bundle = loaded;
+                        return _bundle;
+                    }
+                }
                 var path = Path.Combine(
-                    KSPUtil.ApplicationRootPath, "GameData", "Kerbcam", "kerbcam-shaders");
+                    KSPUtil.ApplicationRootPath, "GameData", "Kerbcam", BundleName);
                 if (!File.Exists(path))
                 {
                     Debug.LogWarning($"[Kerbcam] FX shader bundle not found at {path}; atmospheric FX disabled");

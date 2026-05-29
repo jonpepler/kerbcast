@@ -119,6 +119,12 @@ namespace Kerbcam
         // without needing a back-ref to the settings instance.
         public static bool DebugCameraLogging { get; private set; } = false;
 
+        // Debug: force atmospheric-FX intensity to full regardless of mach /
+        // dynamic pressure, so the effect renders even on the pad. Used to
+        // verify the FX *renders* independent of the flight-state gating. Off
+        // by default — leave off for normal play.
+        public static bool ForceAtmosphericFx { get; private set; } = false;
+
         // Default for the per-save ThrottleMainScreen Difficulty Setting
         // when a save is loaded for the first time. After that the
         // value stored in the save file wins; settings.cfg changes
@@ -240,6 +246,7 @@ namespace Kerbcam
             ApplyString(node, "TUFXProfile", v => TUFXProfile = v);
             ApplyBool(node, "EnableHullcamLinuxShaderSwap", v => EnableHullcamLinuxShaderSwap = v);
             ApplyBool(node, "DebugCameraLogging", v => DebugCameraLogging = v);
+            ApplyBool(node, "ForceAtmosphericFx", v => ForceAtmosphericFx = v);
             // Static slots so KerbcamGameParameters (constructed by
             // KSP before our plugin instance loads) can pick up the
             // seed values. Settings.cfg is the source of truth for
