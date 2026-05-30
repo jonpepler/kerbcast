@@ -67,6 +67,18 @@ export interface KerbcamClientConfig {
    * this via `cam.configure({ noise: … })`. Noise is enabled by default.
    */
   noise?: Partial<NoiseConfig>;
+  /**
+   * Override how the SDP offer/answer is exchanged. Defaults to a POST to the
+   * sidecar's HTTP `/offer`. A station screen injects a version that relays
+   * the offer through the main screen (which can reach the sidecar), so the
+   * station needs no direct sidecar address. The media itself still flows
+   * peer↔sidecar (direct or via TURN) — only the handshake is brokered.
+   */
+  negotiate?: (offer: {
+    sdp: string;
+    cameras: number[];
+    slots?: number;
+  }) => Promise<{ sdp: string; cameras: number[] }>;
 }
 
 /** WebRTC connection state surface. */
@@ -550,16 +562,15 @@ export class KerbcamClient extends TypedEmitter<KerbcamClientEvents> {
     };
     if (this.dynamicMode) body.slots = slotCount;
 
-    const res = await fetch(`http://${this.cfg.host}:${this.cfg.port}/offer`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    if (!res.ok) {
+    let answer: { sdp: string; cameras: number[] };
+    try {
+      answer = await (this.cfg.negotiate
+        ? this.cfg.negotiate(body)
+        : this.httpNegotiate(body));
+    } catch (err) {
       this.setState("failed");
-      throw new Error(`POST /offer returned ${res.status}`);
+      throw err;
     }
-    const answer = (await res.json()) as { sdp: string; cameras: number[] };
     await peer.setRemoteAnswer(answer.sdp);
     // Legacy mode routes by index → requestedOrder, so realign to what the
     // sidecar actually wired. Dynamic mode routes by mid via SlotMap (initial
@@ -567,6 +578,21 @@ export class KerbcamClient extends TypedEmitter<KerbcamClientEvents> {
     if (!this.dynamicMode) {
       this.requestedOrder = answer.cameras;
     }
+  }
+
+  /** Default signaling: POST the offer to the sidecar's HTTP `/offer`. */
+  private async httpNegotiate(offer: {
+    sdp: string;
+    cameras: number[];
+    slots?: number;
+  }): Promise<{ sdp: string; cameras: number[] }> {
+    const res = await fetch(`http://${this.cfg.host}:${this.cfg.port}/offer`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(offer),
+    });
+    if (!res.ok) throw new Error(`POST /offer returned ${res.status}`);
+    return (await res.json()) as { sdp: string; cameras: number[] };
   }
 
   disconnect(): void {

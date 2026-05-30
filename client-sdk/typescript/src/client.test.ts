@@ -679,4 +679,31 @@ describe("KerbcamClient — dynamic slot subscription", () => {
     await client.subscribe(2); // no free slot → sidecar error
     expect(errors.some((e) => /no free slot/.test(e.message))).toBe(true);
   });
+
+  it("uses an injected negotiate (signaling seam) instead of HTTP /offer", async () => {
+    const sidecar = new MockSidecar();
+    const negotiate = vi.fn(
+      (offer: { sdp: string; cameras: number[]; slots?: number }) =>
+        sidecar.negotiate(offer),
+    );
+    const client = new KerbcamClient(
+      { host: "h", port: 1, negotiate },
+      sidecar.createTransport(),
+    );
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy.mockClear(); // the global fetch spy accumulates across tests
+
+    await client.connect([], { slots: 2 });
+    sidecar.open();
+
+    expect(negotiate).toHaveBeenCalledOnce();
+    expect(negotiate.mock.calls[0][0].slots).toBe(2);
+    expect(fetchSpy).not.toHaveBeenCalled(); // brokered — no HTTP /offer
+
+    // The control channel + dynamic subscribe still work over the direct peer.
+    await client.subscribe(7);
+    const mid = sidecar.slotMidFor(7) as string;
+    sidecar.deliverTrack(mid, {} as MediaStreamTrack);
+    expect(client.camera(7).mediaStream).not.toBeNull();
+  });
 });

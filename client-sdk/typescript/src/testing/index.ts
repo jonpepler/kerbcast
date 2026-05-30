@@ -272,6 +272,19 @@ export class MockSidecar {
     );
   }
 
+  /**
+   * Signaling-seam analogue of {@link makeOfferResponse}: resolve an offer's
+   * answer without HTTP. Pass as the client's `negotiate` config to exercise
+   * the brokered-signaling path a station uses.
+   */
+  negotiate(offer: {
+    sdp: string;
+    cameras: number[];
+    slots?: number;
+  }): Promise<{ sdp: string; cameras: number[] }> {
+    return Promise.resolve({ sdp: "v=0\r\n", cameras: offer.cameras });
+  }
+
   private _sendToClient(msg: ServerMessage): void {
     this._clientMsgHandler?.(JSON.stringify(msg));
   }
