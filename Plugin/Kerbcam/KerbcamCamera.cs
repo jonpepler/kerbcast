@@ -639,14 +639,30 @@ namespace Kerbcam
             Vector3 vel = v != null ? (Vector3)v.srf_velocity : Vector3.zero;
             float mach = v != null ? (float)v.mach : 0f;
             float q = v != null ? (float)v.dynamicPressurekPa : 0f;
-            // Debug override: pretend the vessel is moving in this world-space
-            // direction so motion-dependent shader paths (wind axis, streak
-            // scroll, bowshock placement, trail orientation, ember drift) can
-            // be exercised on the pad. Pair with ForceAtmosphericFx.
+
+            // Prefer KSP's published aero direction (_LightDirection0) when
+            // meaningful — it's the same vector FXCamera uses internally and
+            // is physics-driven from the actual flight state. Falling through
+            // to the vessel's srf_velocity if FXCamera isn't publishing
+            // anything yet (early in flight init, or in vacuum). This makes
+            // every effect (core, bowshock, trail, embers) wind-driven by the
+            // game's own aero solver without each shader having to sample
+            // globals independently.
+            Vector3 fxDir = Shader.GetGlobalVector(_LightDirection0Id);
+            if (fxDir.sqrMagnitude > 0.01f)
+                vel = fxDir;
+
+            // Debug override beats both: pretend the vessel is moving in this
+            // world-space direction so motion-dependent shader paths can be
+            // exercised on the pad. Pair with ForceAtmosphericFx.
             if (KerbcamSettings.DebugWindDirection.sqrMagnitude > 0.0001f)
                 vel = KerbcamSettings.DebugWindDirection;
+
             return new FxFrameState(v, _nearCam, vel, mach, q, Time.deltaTime, Time.time);
         }
+
+        // Cached shader ID for FXCamera's published wind direction global.
+        private static readonly int _LightDirection0Id = Shader.PropertyToID("_LightDirection0");
 
         /// <summary>
         /// Turn atmospheric-FX replication on or off at runtime. Re-syncs the
