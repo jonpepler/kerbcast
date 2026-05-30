@@ -292,6 +292,27 @@ impl CameraState {
         self.subscribers.fetch_sub(n, Ordering::AcqRel);
     }
 
+    /// Remove a *specific, still-alive* track — the explicit `Unsubscribe`
+    /// path of the dynamic slot model. Unlike the consume loop's pruner
+    /// (which collects Weaks that have gone dead because a peer dropped),
+    /// here the track Arc is still owned by the peer as a reusable slot, so
+    /// it won't appear dead; we match it by pointer, drop its Weak, and
+    /// decrement the subscriber count ourselves. The fan-out pruner therefore
+    /// never double-counts it (it's already out of the list). Returns the
+    /// subscriber count after the decrement; removing a track this camera
+    /// isn't feeding is a no-op.
+    pub async fn remove_track(&self, track: &Arc<TrackLocalStaticSample>) -> usize {
+        let mut tracks = self.tracks.write().await;
+        let before = tracks.len();
+        tracks.retain(|w| !w.upgrade().is_some_and(|t| Arc::ptr_eq(&t, track)));
+        let removed = before - tracks.len();
+        drop(tracks);
+        if removed > 0 {
+            self.subscribers.fetch_sub(removed, Ordering::AcqRel);
+        }
+        self.subscribers.load(Ordering::Acquire)
+    }
+
     /// Record a REMB bandwidth estimate from a subscriber. Identified
     /// by the receiving track's SSRC so per-peer estimates stay
     /// distinct. Recomputes `target_bitrate_bps` as the min across all
