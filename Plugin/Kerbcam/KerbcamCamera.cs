@@ -652,9 +652,15 @@ namespace Kerbcam
             // every effect (core, bowshock, trail, embers) wind-driven by the
             // game's own aero solver without each shader having to sample
             // globals independently.
+            //
+            // IMPORTANT SIGN: AerodynamicsFX.cs (line 411 of the decompile)
+            // sets `fxCamera.effectDirection = -velocity`, so _LightDirection0
+            // is the AIRFLOW direction (the direction the air is blowing,
+            // i.e. opposite of the vessel's motion). Our state.VelocityWorld
+            // convention is the vessel's velocity direction, so negate.
             Vector3 fxDir = Shader.GetGlobalVector(_LightDirection0Id);
             if (fxDir.sqrMagnitude > 0.01f)
-                vel = fxDir;
+                vel = -fxDir;
 
             // Debug override beats both: pretend the vessel is moving in this
             // world-space direction so motion-dependent shader paths can be
