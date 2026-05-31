@@ -95,6 +95,14 @@ Shader "Kerbcam/Trail"
                 // tail (uv.y=1). pow gives a soft front and a long thin tail.
                 float lenFade = pow(saturate(1.0 - i.uv.y), _FadePower);
 
+                // Head fade — ramps the trail in over its first ~5% length
+                // so the cylinder's vessel-end RING isn't a hard bright
+                // disc against the dark sky. Combined with the head of the
+                // tube positioned slightly inside the vessel body (occluded
+                // by the cylinder), the wake reads as emerging continuously
+                // from the craft rather than starting at a hard edge.
+                float headFade = smoothstep(0.0, 0.05, i.uv.y);
+
                 // Scroll speed scales with intensity — faster wake at higher
                 // mach. Sample KSP's tuned plasma noise scrolled along the
                 // tube length (uv.y - t) so streaks visibly pull toward the
@@ -129,8 +137,9 @@ Shader "Kerbcam/Trail"
                 float volume = pow(faceAbs, 1.5);
 
                 // Brightness held in by _Brightness so even at _Intensity=1
-                // the trail's peak fragment doesn't paint a wall.
-                float glow = (streaks * 0.85 + head * 0.4) * lenFade * volume
+                // the trail's peak fragment doesn't paint a wall. headFade
+                // suppresses the hard top ring at uv.y=0.
+                float glow = (streaks * 0.85 + head * 0.4) * lenFade * volume * headFade
                              * saturate(_Intensity) * _Brightness;
 
                 // Wind→plasma colour ramp, then tinted toward KSP's stock

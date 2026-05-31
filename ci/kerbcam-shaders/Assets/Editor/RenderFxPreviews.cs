@@ -208,7 +208,12 @@ namespace KerbcamCI
         {
             var go = new GameObject("trail_tube");
             go.transform.SetParent(root, false);
-            go.transform.localPosition = new Vector3(0f, -1.2f, 0f); // exactly at cylinder base
+            // Head of tube sits INSIDE the cylinder (cylinder extends to
+            // y = -1.2, we start at y = -0.7) so the cylinder occludes the
+            // top fragments of the tube. Combined with the shader's
+            // headFade, the wake emerges seamlessly from the vessel body
+            // rather than starting at a hard ring.
+            go.transform.localPosition = new Vector3(0f, -0.7f, 0f);
             Vector3 windDir = inputs != null && inputs.windDirWorld != null && inputs.windDirWorld.Length >= 3
                 ? new Vector3(inputs.windDirWorld[0], inputs.windDirWorld[1], inputs.windDirWorld[2]).normalized
                 : Vector3.up;

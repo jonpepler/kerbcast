@@ -113,7 +113,18 @@ Shader "Kerbcam/Bowshock"
                 float lpLen = length(lpXY);
                 float3 nLocal = float3(lpXY / max(lpLen, 1e-3), 0.0);
                 float3 n = normalize(mul((float3x3)unity_ObjectToWorld, nLocal));
+                // apexFade: fades the rim near the cone tip (lpXY ~ 0)
+                // where the smoothed radial normal is degenerate.
+                // baseFade: fades the wide base ring (local z near -3)
+                // so the cone has no hard outer outline — fragments at
+                // the very back of the cone smoothly dissolve.
+                // Together these make the whole mesh fade to zero at its
+                // boundaries — what the user was asking for ("where's
+                // the alpha drop-off"). Half-length of cone is 3 in mesh
+                // local; fading begins at the outer ~17 % of the cone.
                 float apexFade = saturate(lpLen / 0.4);
+                float baseFade = smoothstep(-3.0, -2.5, i.localPos.z);
+                float endsFade = apexFade * baseFade;
 
                 float3 toCam = _WorldSpaceCameraPos - i.worldPos;
                 float distToCam = length(toCam);
@@ -145,11 +156,12 @@ Shader "Kerbcam/Bowshock"
 
                 // Rim-dominant glow with a sharp brightness cap. baseGlow is
                 // tiny on purpose — the interior should NOT be visible as a
-                // surface. apexFade kills the rim contribution right at the
-                // cone tip where the smoothed normal is degenerate.
-                float baseGlow = 0.03;
-                float raw = (baseGlow + rim * apexFade * 1.2) * shimmer * nearFade;
-                float glow = saturate(raw * 0.55) * _Intensity;
+                // surface. endsFade kills the rim contribution at both the
+                // cone tip AND the base ring, so the visible mesh has soft
+                // boundaries instead of hard polygon outlines.
+                float baseGlow = 0.02;
+                float raw = (baseGlow + rim * endsFade) * shimmer * nearFade;
+                float glow = saturate(raw * 0.45) * _Intensity;
 
                 // Wind→plasma colour ramp, then tinted toward KSP's stock
                 // heating colour (_FXColor) at high real heating. Stays
