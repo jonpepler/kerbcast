@@ -101,12 +101,22 @@ namespace Kerbcam
             ["dockingPort2"]    = new PanCapability { CameraRollDeg = 180f },
             ["dockingPort3"]    = new PanCapability { CameraRollDeg = 180f },
             ["dockingPortLarge"] = new PanCapability { CameraRollDeg = 180f },
+
+            // Hullcam Deluxe — the base MuMechModuleHullCamera variant. Cfg
+            // `name = mumech_hullcam`; KSP normalises underscore→dot in
+            // partInfo.name, so the table key matches as "mumech.hullcam"
+            // (same convention as the hc.* entries above). cameraForward
+            // matches TurretCam's (0,0,-1) but the model's local frame is
+            // Y-inverted — empirical 180° roll correction.
+            ["mumech.hullcam"] = new PanCapability { CameraRollDeg = 180f },
         };
 
         public static PanCapability ForPart(string partName)
         {
             if (string.IsNullOrEmpty(partName)) return None;
-            return Table.TryGetValue(partName, out var cap) ? cap : None;
+            var hit = Table.TryGetValue(partName, out var cap);
+            UnityEngine.Debug.Log($"[Kerbcam] PartCapabilities.ForPart('{partName}') → {(hit ? "matched" : "no match")} (roll={(hit ? cap.CameraRollDeg : 0):F0}°)");
+            return hit ? cap : None;
         }
     }
 }
