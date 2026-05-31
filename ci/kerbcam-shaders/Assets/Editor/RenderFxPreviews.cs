@@ -424,9 +424,14 @@ namespace KerbcamCI
             switch (viewId)
             {
                 case "side_profile":
-                    t.localPosition = new Vector3(9f, 1f, 0f);
+                    // Closer (5 m) so the plasma geom-shader extrusion strips
+                    // don't project as huge fragments — the pulled-back 9 m
+                    // version froze LLVMpipe at fixture 04's max-length
+                    // extrusion. Still angled to keep the long trail visible
+                    // below the vessel.
+                    t.localPosition = new Vector3(5f, 0.5f, 0f);
                     t.localRotation = Quaternion.LookRotation(
-                        (new Vector3(0f, -3f, 0f) - t.localPosition).normalized, Vector3.up);
+                        (new Vector3(0f, -1.5f, 0f) - t.localPosition).normalized, Vector3.up);
                     return;
                 case "aft_hullcam":
                     t.localPosition = new Vector3(0.85f, -0.5f, 0.3f);
