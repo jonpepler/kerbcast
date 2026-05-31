@@ -93,6 +93,13 @@ namespace Kerbcam
 
         public void Render(in FxFrameState state)
         {
+            // Skip when the vessel is physics-unloaded (KSP "packs" vessels
+            // outside the 2.5km physics range and switches them onto rails).
+            // Their part renderers' state is stale, so the CB's DrawRenderer
+            // calls — and the geometry-shader extrusion on top — emit
+            // garbage triangles into the frame.
+            var v = state.Vessel;
+            if (v == null || !v.loaded || v.packed) return;
             for (int i = 0; i < _effects.Count; i++) _effects[i].Render(state);
         }
 
