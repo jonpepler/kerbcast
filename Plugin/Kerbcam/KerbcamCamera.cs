@@ -1263,6 +1263,18 @@ namespace Kerbcam
                     Graphics.Blit(_captureRt, _readbackRt);
                 }
 
+                // Horizontal-flip correction. The Camera→RT→readback chain on
+                // Linux/GL produces a horizontally-mirrored frame relative to
+                // KSP's stock cameras-to-screen pipeline (root cause not yet
+                // pinned down — suspected GL texture-coord convention or an
+                // implicit X-axis flip in Unity's RT path). Compensate with
+                // one final blit that mirrors U. Done in-place via a temp RT
+                // so all three filter paths above benefit from the same fix.
+                var flipTmp = RenderTexture.GetTemporary(_readbackRt.descriptor);
+                Graphics.Blit(_readbackRt, flipTmp, new Vector2(-1f, 1f), new Vector2(1f, 0f));
+                Graphics.Blit(flipTmp, _readbackRt);
+                RenderTexture.ReleaseTemporary(flipTmp);
+
                 _readbackInFlight = true;
                 _pendingCaptureTsMs = Time.unscaledTime * 1000.0;
                 _pendingRequest = UniversalAsyncGPUReadbackRequest.Request(_readbackRt, 0);
