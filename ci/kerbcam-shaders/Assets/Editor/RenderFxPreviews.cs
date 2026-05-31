@@ -71,7 +71,16 @@ namespace KerbcamCI
                         emberShader;
                     foreach (var viewId in _viewIds)
                     {
-                        RenderOne(fx, shaderId, sh, viewId, fixtureDir);
+                        Debug.Log($"[Kerbcam-CI]   begin {fx.name}/{shaderId}/{viewId}");
+                        try
+                        {
+                            RenderOne(fx, shaderId, sh, viewId, fixtureDir);
+                            Debug.Log($"[Kerbcam-CI]   end   {fx.name}/{shaderId}/{viewId} OK");
+                        }
+                        catch (System.Exception e)
+                        {
+                            Debug.LogError($"[Kerbcam-CI]   end   {fx.name}/{shaderId}/{viewId} FAILED: {e.GetType().Name}: {e.Message}");
+                        }
                     }
                 }
             }
@@ -204,16 +213,16 @@ namespace KerbcamCI
             mr.receiveShadows = false;
         }
 
-        // Ember: a ParticleSystem mirroring EmbersEffect.ConfigureParticleSystem.
-        // ParticleSystem.Simulate() is called to advance into a steady-state
-        // distribution before the camera render — without that, render time =
-        // 0 = no particles spawned yet.
+        // Ember: a ParticleSystem mirroring EmbersEffect.ConfigureParticleSystem,
+        // pre-populated with manually-placed particles via Emit(EmitParams).
+        // We do NOT call ParticleSystem.Simulate() — known to deadlock in
+        // headless batchmode on Linux. Manual Emit gives us a snapshot worth
+        // rendering without time-stepping.
         private static void SetupEmber(Transform root, Material mat)
         {
             var go = new GameObject("ember_system");
             go.transform.SetParent(root, false);
             go.transform.localPosition = new Vector3(0f, -0.5f, 0f);
-            // Emitter axis = downstream; airflow is -Y in our fixtures.
             go.transform.localRotation = Quaternion.LookRotation(Vector3.down, Vector3.forward);
             var ps = go.AddComponent<ParticleSystem>();
             var psr = go.GetComponent<ParticleSystemRenderer>();
@@ -223,8 +232,31 @@ namespace KerbcamCI
             psr.alignment = ParticleSystemRenderSpace.View;
             psr.shadowCastingMode = ShadowCastingMode.Off;
             psr.receiveShadows = false;
-            ps.Play();
-            ps.Simulate(1.2f, withChildren: true, restart: false, fixedTimeStep: true);
+            // Spawn a snapshot of particles scattered along the wake. We can't
+            // rely on ColorOverLifetime — without Simulate, all particles are
+            // at t=0 of their lifetime, so the gradient gives the same hot
+            // colour to every spark. Instead sample the ember gradient
+            // manually per-particle so the snapshot shows the full hot→cool
+            // progression as a spatial distribution along the wake.
+            var emberGradient = MakeEmberGradient();
+            const int count = 80;
+            for (int i = 0; i < count; i++)
+            {
+                float along01 = (float)i / count;
+                float along = along01 * 6f + Random.Range(-0.4f, 0.4f); // m downstream
+                float radius = (along / 6f) * Random.Range(0.2f, 1.4f);
+                float theta = Random.Range(0f, Mathf.PI * 2f);
+                var ep = new ParticleSystem.EmitParams();
+                ep.position = go.transform.TransformPoint(new Vector3(
+                    Mathf.Cos(theta) * radius,
+                    Mathf.Sin(theta) * radius,
+                    along));
+                ep.startSize = Mathf.Lerp(0.14f, 0.04f, along01);
+                ep.startLifetime = 1f;
+                ep.startColor = emberGradient.Evaluate(along01);
+                ep.applyShapeToPosition = false;
+                ps.Emit(ep, 1);
+            }
         }
 
         private static void ConfigureParticleSystem(ParticleSystem ps)
@@ -286,6 +318,27 @@ namespace KerbcamCI
                 var c = new AnimationCurve(new Keyframe(0f, 1f), new Keyframe(0.6f, 0.7f), new Keyframe(1f, 0.3f));
                 sz.size = new ParticleSystem.MinMaxCurve(1f, c);
             }
+        }
+
+        private static Gradient MakeEmberGradient()
+        {
+            var g = new Gradient();
+            g.SetKeys(
+                new[]
+                {
+                    new GradientColorKey(new Color(1.0f, 0.95f, 0.75f), 0.0f),
+                    new GradientColorKey(new Color(1.0f, 0.55f, 0.15f), 0.35f),
+                    new GradientColorKey(new Color(0.8f, 0.15f, 0.05f), 0.75f),
+                    new GradientColorKey(new Color(0.1f, 0.02f, 0.0f), 1.0f),
+                },
+                new[]
+                {
+                    new GradientAlphaKey(1.0f, 0.0f),
+                    new GradientAlphaKey(0.8f, 0.4f),
+                    new GradientAlphaKey(0.3f, 0.8f),
+                    new GradientAlphaKey(0.0f, 1.0f),
+                });
+            return g;
         }
 
         // ------------------------------------------------------------------
