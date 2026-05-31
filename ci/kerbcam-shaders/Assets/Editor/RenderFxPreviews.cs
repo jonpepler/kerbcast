@@ -255,175 +255,24 @@ namespace KerbcamCI
             mr.receiveShadows = false;
         }
 
-        // Ember: a pre-baked mesh of N billboarded quads with per-vertex
-        // colour. We do NOT use ParticleSystem in the preview — in headless
-        // batchmode the PS renderer doesn't tick (no frame advance), so
-        // particles emitted via Emit() don't render. Plain MeshRenderer
-        // bypasses that entirely. Each quad is manually oriented to face
-        // the camera at mesh-build time (the ember shader vert stage does
-        // a vanilla ObjectToClipPos and doesn't billboard internally), so
-        // we rebuild per render to track the active camera.
-        //
-        // Spawn area + drift direction are derived from the windward
-        // profile so the embers shed off the vessel's actual windward
-        // edge and trail along the airflow regardless of orientation.
+        // Ember: same CB.DrawRenderer pattern as plasma — the new ember
+        // shader has its own geom stage that filters windward triangles
+        // and emits camera-aligned spark quads along the airflow
+        // extrusion. Sparks shed FROM the vessel's heated surfaces (where
+        // ablation physically happens) rather than spawning from an
+        // abstract perpendicular disc. Replaces the old quad-mesh
+        // pre-baking and ParticleSystem approaches.
         private static void SetupEmber(Transform root, Camera cam, Material mat, FxFixture.Inputs inputs)
         {
-            Vector3 windDir = WindDirFromInputs(inputs);
-            var profile = ComputeWindwardProfile(root, windDir);
-            var go = new GameObject("ember_quads");
-            go.transform.SetParent(root, false);
-            go.transform.localPosition = Vector3.zero;
-            var mf = go.AddComponent<MeshFilter>();
-            var mr = go.AddComponent<MeshRenderer>();
-            mf.sharedMesh = BuildEmberQuadMesh(cam, windDir, profile);
-            mr.sharedMaterial = mat;
-            mr.shadowCastingMode = ShadowCastingMode.Off;
-            mr.receiveShadows = false;
-        }
-
-        // Build N camera-facing quads spread along the wake. The emitter
-        // region spans the vessel's windward edge (perpendicular to wind)
-        // and the wake extends along -windDir for ~6m. Each particle's
-        // colour is sampled from the ember gradient based on its
-        // along-wake position so the spatial distribution reads
-        // hot→cool from front to tail.
-        private static Mesh BuildEmberQuadMesh(Camera cam, Vector3 windDir, WindwardProfile profile)
-        {
-            const int count = 80;
-            const float wakeLen = 4.5f;
-            var gradient = MakeEmberGradient();
-            Vector3 camRight = cam.transform.right;
-            Vector3 camUp = cam.transform.up;
-
-            // Build an orthonormal basis perpendicular to windDir so we
-            // can scatter the emit origins across the windward face.
-            Vector3 perpUp = Mathf.Abs(windDir.y) < 0.99f ? Vector3.up : Vector3.right;
-            Vector3 perpA = Vector3.Cross(windDir, perpUp).normalized;
-            Vector3 perpB = Vector3.Cross(windDir, perpA).normalized;
-            float emitRadius = Mathf.Max(profile.WindwardRadius * 0.7f, 0.2f);
-            // Origin of the wake: at the vessel's aft windward edge.
-            Vector3 wakeOrigin = -windDir * (profile.AftStandoff - 0.2f);
-
-            var verts = new Vector3[count * 4];
-            var uvs = new Vector2[count * 4];
-            var cols = new Color[count * 4];
-            var tris = new int[count * 6];
-            for (int i = 0; i < count; i++)
+            var cb = new CommandBuffer { name = "Kerbcam Preview FX Ember" };
+            foreach (var rend in root.GetComponentsInChildren<Renderer>())
             {
-                float along01 = i / (float)(count - 1);
-                float along = -along01 * wakeLen + Random.Range(-0.2f, 0.2f);
-                float spread = Mathf.Lerp(emitRadius * 0.2f, emitRadius * 1.4f, along01)
-                               * Random.Range(0.2f, 1.4f);
-                float theta = Random.Range(0f, Mathf.PI * 2f);
-                Vector3 centre = wakeOrigin
-                    + windDir * along
-                    + (perpA * Mathf.Cos(theta) + perpB * Mathf.Sin(theta)) * spread;
-                float size = Mathf.Lerp(0.10f, 0.04f, along01);
-                Color col = gradient.Evaluate(along01);
-                int v = i * 4;
-                verts[v + 0] = centre + (-camRight - camUp) * size;
-                verts[v + 1] = centre + ( camRight - camUp) * size;
-                verts[v + 2] = centre + (-camRight + camUp) * size;
-                verts[v + 3] = centre + ( camRight + camUp) * size;
-                uvs[v + 0] = new Vector2(0, 0);
-                uvs[v + 1] = new Vector2(1, 0);
-                uvs[v + 2] = new Vector2(0, 1);
-                uvs[v + 3] = new Vector2(1, 1);
-                cols[v + 0] = cols[v + 1] = cols[v + 2] = cols[v + 3] = col;
-                int t = i * 6;
-                tris[t + 0] = v + 0; tris[t + 1] = v + 2; tris[t + 2] = v + 1;
-                tris[t + 3] = v + 1; tris[t + 4] = v + 2; tris[t + 5] = v + 3;
+                if (rend == null || rend is ParticleSystemRenderer) continue;
+                int subMeshes = rend.sharedMaterials != null ? rend.sharedMaterials.Length : 1;
+                if (subMeshes < 1) subMeshes = 1;
+                for (int s = 0; s < subMeshes; s++) cb.DrawRenderer(rend, mat, s);
             }
-            var mesh = new Mesh { name = "ember_quads_mesh" };
-            mesh.vertices = verts;
-            mesh.uv = uvs;
-            mesh.colors = cols;
-            mesh.triangles = tris;
-            mesh.RecalculateBounds();
-            return mesh;
-        }
-
-        private static void ConfigureParticleSystem(ParticleSystem ps)
-        {
-            ps.Stop(false, ParticleSystemStopBehavior.StopEmittingAndClear);
-            {
-                var main = ps.main;
-                main.simulationSpace = ParticleSystemSimulationSpace.World;
-                main.startLifetime = new ParticleSystem.MinMaxCurve(0.5f, 1.2f);
-                main.startSize = new ParticleSystem.MinMaxCurve(0.03f, 0.12f);
-                main.startSpeed = new ParticleSystem.MinMaxCurve(5f, 15f);
-                main.gravityModifier = 0f;
-                main.maxParticles = 256;
-                main.loop = true;
-                main.playOnAwake = false;
-                main.startColor = new ParticleSystem.MinMaxGradient(Color.white);
-            }
-            { var em = ps.emission; em.enabled = true; em.rateOverTime = 60f; }
-            {
-                var shape = ps.shape;
-                shape.enabled = true;
-                shape.shapeType = ParticleSystemShapeType.Cone;
-                shape.angle = 25f;
-                shape.radius = 1.0f;
-            }
-            {
-                var vel = ps.velocityOverLifetime;
-                vel.enabled = true;
-                vel.space = ParticleSystemSimulationSpace.World;
-                // Downstream drift along -Y (airflow) with mild jitter.
-                vel.x = new ParticleSystem.MinMaxCurve(-1.5f, 1.5f);
-                vel.y = new ParticleSystem.MinMaxCurve(-10f, -6f);
-                vel.z = new ParticleSystem.MinMaxCurve(-1.5f, 1.5f);
-            }
-            {
-                var col = ps.colorOverLifetime;
-                col.enabled = true;
-                var g = new Gradient();
-                g.SetKeys(
-                    new[]
-                    {
-                        new GradientColorKey(new Color(1.0f, 0.95f, 0.75f), 0.0f),
-                        new GradientColorKey(new Color(1.0f, 0.55f, 0.15f), 0.35f),
-                        new GradientColorKey(new Color(0.8f, 0.15f, 0.05f), 0.75f),
-                        new GradientColorKey(new Color(0.1f, 0.02f, 0.0f), 1.0f),
-                    },
-                    new[]
-                    {
-                        new GradientAlphaKey(1.0f, 0.0f),
-                        new GradientAlphaKey(0.8f, 0.4f),
-                        new GradientAlphaKey(0.3f, 0.8f),
-                        new GradientAlphaKey(0.0f, 1.0f),
-                    });
-                col.color = new ParticleSystem.MinMaxGradient(g);
-            }
-            {
-                var sz = ps.sizeOverLifetime;
-                sz.enabled = true;
-                var c = new AnimationCurve(new Keyframe(0f, 1f), new Keyframe(0.6f, 0.7f), new Keyframe(1f, 0.3f));
-                sz.size = new ParticleSystem.MinMaxCurve(1f, c);
-            }
-        }
-
-        private static Gradient MakeEmberGradient()
-        {
-            var g = new Gradient();
-            g.SetKeys(
-                new[]
-                {
-                    new GradientColorKey(new Color(1.0f, 0.95f, 0.75f), 0.0f),
-                    new GradientColorKey(new Color(1.0f, 0.55f, 0.15f), 0.35f),
-                    new GradientColorKey(new Color(0.8f, 0.15f, 0.05f), 0.75f),
-                    new GradientColorKey(new Color(0.1f, 0.02f, 0.0f), 1.0f),
-                },
-                new[]
-                {
-                    new GradientAlphaKey(1.0f, 0.0f),
-                    new GradientAlphaKey(0.8f, 0.4f),
-                    new GradientAlphaKey(0.3f, 0.8f),
-                    new GradientAlphaKey(0.0f, 1.0f),
-                });
-            return g;
+            cam.AddCommandBuffer(CameraEvent.AfterForwardAlpha, cb);
         }
 
         // ------------------------------------------------------------------
@@ -511,10 +360,15 @@ namespace KerbcamCI
         {
             if (inputs == null) return;
             mat.SetFloat("_Intensity", inputs.intensity);
-            // Shader-specific: only Plasma has _FxState and _FxRadiusMul.
-            if (shaderId == "plasma")
+            // Plasma + ember both consume _FxState for the
+            // Condensation→Reentry colour blend. Plasma additionally has
+            // _FxRadiusMul for lateral spread.
+            if (shaderId == "plasma" || shaderId == "ember")
             {
                 mat.SetFloat("_FxState", inputs.fxState);
+            }
+            if (shaderId == "plasma")
+            {
                 mat.SetFloat("_FxRadiusMul", inputs.fxRadiusMul > 0f ? inputs.fxRadiusMul : 1.6f);
             }
             mat.SetVector("_WindDirWorld", ToVec4(inputs.windDirWorld, new Vector4(0f, 1f, 0f, 0f)));
