@@ -71,23 +71,27 @@ Shader "Kerbcam/Ember"
 
             fixed4 frag(v2f i) : SV_Target
             {
-                // Soft-circle sprite: distance from UV centre → alpha falloff
-                // via smoothstep. _SoftEdge controls where the fade begins;
-                // it always reaches zero at the unit-disc boundary (r=0.5).
+                // Two-tier radial falloff: a soft halo from _SoftEdge to the
+                // disc boundary (general glow) AND a bright tight core
+                // (sub-quarter-radius) that boosts the centre well above the
+                // halo brightness. Without the core the spark reads as a
+                // uniformly-dim disc rather than a hot pinpoint with bloom.
                 float r = length(i.uv - 0.5);
-                float a = saturate(1.0 - smoothstep(_SoftEdge, 0.5, r));
+                float halo = saturate(1.0 - smoothstep(_SoftEdge, 0.5, r));
+                float core = saturate(1.0 - smoothstep(0.0, 0.16, r));
+                float brightness = halo + core * 1.6;
 
-                // Per-particle colour (from ColorOverLifetime) tinted by the
+                // Per-particle colour (mesh vertex colour) tinted by the
                 // material's _Color and lightly warmed by KSP's stock heating
                 // colour (_FXColor) so sparks read hotter as real heating
                 // climbs. Additive blend means the final RGB is the emitted
-                // brightness; we encode the alpha-shaped falloff into RGB
-                // rather than relying on the alpha channel (Blend One One
+                // brightness; we drive falloff via RGB scaling (Blend One One
                 // ignores src alpha).
                 float fxHeat = saturate(_FXColor.a);
                 fixed3 tint = lerp(fixed3(1, 1, 1), _FXColor.rgb * 1.4, fxHeat * 0.6);
-                fixed3 rgb = i.color.rgb * _Color.rgb * tint * (a * i.color.a * _Intensity);
-                return fixed4(rgb, a);
+                fixed3 rgb = i.color.rgb * _Color.rgb * tint
+                             * (brightness * i.color.a * _Intensity);
+                return fixed4(rgb, halo);
             }
             ENDCG
         }

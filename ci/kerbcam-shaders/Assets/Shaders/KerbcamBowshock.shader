@@ -110,24 +110,20 @@ Shader "Kerbcam/Bowshock"
                 float3 viewDir = toCam / max(distToCam, 1e-3);
 
                 // Fresnel-style silhouette glow. abs(dot()) keeps the rim
-                // correct on the backside since Cull Off draws both faces;
-                // flipped backface normals would otherwise punch out the
-                // interior view.
+                // correct on the backside since Cull Off draws both faces.
+                // The rim contribution is BOOSTED so the silhouette pops,
+                // and combined with a smooth (not linear) face-on dampener
+                // so the interior reads as a hint rather than a wash.
                 float ndv = abs(dot(n, viewDir));
-                float rim = pow(1.0 - saturate(ndv), _RimPower);
+                float rim = pow(1.0 - saturate(ndv), _RimPower) * 2.0;
+                float face = pow(saturate(ndv), 2.0);
+                float faceFade = 1.0 - face * 0.75;
 
                 // Near-camera distance fade — when a fragment is closer than
                 // _NearFadeDist the contribution drops to 0 by the time it
                 // crosses the near clip. Without this, looking into the cone
                 // from inside or just outside paints the whole frame.
                 float nearFade = saturate(distToCam / _NearFadeDist);
-
-                // Face-on dampener: an extra suppression on the interior
-                // surface contribution so even very-shallow ndv directions
-                // can't dominate. Combined with the rim it produces a tight
-                // edge glow rather than a continuous surface wash.
-                float faceOn = saturate(ndv);
-                float faceDamp = 1.0 - faceOn * 0.85;
 
                 // Sample KSP's tuned plasma noise texture, scrolled along the
                 // cone axis toward -Z (toward the vessel — air rushing through
@@ -138,12 +134,9 @@ Shader "Kerbcam/Bowshock"
                 float shimmer = 0.7 + 0.6 * fxNoise;
 
                 // Soft interior glow so the cone isn't pure silhouette; the
-                // rim still dominates by a wide margin. Lowered vs. v1 because
-                // the smoothed-normal change makes the rim itself broader,
-                // and we no longer need the constant glow to fill in the
-                // (formerly polygonal) interior.
-                float baseGlow = 0.08;
-                float glow = (baseGlow + rim) * shimmer * faceDamp * nearFade * _Intensity;
+                // rim still dominates by a wide margin.
+                float baseGlow = 0.10;
+                float glow = (baseGlow + rim) * shimmer * faceFade * nearFade * _Intensity;
 
                 // Wind→plasma colour ramp, then tinted toward KSP's stock
                 // heating colour (_FXColor) at high real heating. Stays

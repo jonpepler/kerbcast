@@ -563,12 +563,12 @@ namespace KerbcamCI
             return go;
         }
 
-        // Mirrors BowshockEffect.BuildConeMesh: 16 radial segments, flat-shaded
-        // per-face normals, apex at +Z, base at -Z. Both faces drawn (Cull Off
-        // in shader). Same proportions: baseRadius=3, length=6.
+        // Higher-segment cone (32 radial faces) for the preview so the
+        // polygonal silhouette outline disappears against the camera frame.
+        // Runtime BowshockEffect uses 16 — same generator, more faces.
         private static Mesh BuildConeMesh()
         {
-            const int faces = 16;
+            const int faces = 32;
             const float baseRadius = 3f;
             const float length = 6f;
             var verts = new Vector3[faces * 2];
@@ -608,14 +608,13 @@ namespace KerbcamCI
             return mesh;
         }
 
-        // Mirrors TrailEffect tapered-tube layout: 24 length × 12 radial,
-        // 25 rings × 13 verts (seam-duplicated on the radial loop). Starts
-        // wide (radius=4) at the vessel-end (+Z=0), collapses to ~0 at the
-        // tail (+Z=length). uv.y = 0→1 along length, uv.x = 0→1 around.
+        // Higher-segment tapered tube (24 radial × 32 length) for the
+        // preview so radial silhouette and length banding aren't visible.
+        // Runtime TrailEffect uses 12 × 24 — same generator, more faces.
         private static Mesh BuildTaperedTubeMesh()
         {
-            const int lengthSeg = 24;
-            const int radialSeg = 12;
+            const int lengthSeg = 32;
+            const int radialSeg = 24;
             const float startR = 4f;
             const float length = 20f;
             int ringVerts = radialSeg + 1;
