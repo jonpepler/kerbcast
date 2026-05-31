@@ -45,15 +45,44 @@ namespace Kerbcam
 
         // Intensity used by ForceAtmosphericFx — moderate, flight-like.
         private const float _forcedIntensity = 0.6f;
-        // Intensity-gating thresholds (C#-side, fast to tune).
+        // Intensity-gating thresholds (C#-side, fast to tune). _machLow
+        // lowered to 0.3 (sub-transonic) so streaks appear as the vessel
+        // first accelerates into the atmosphere proper; _activeIntensityFloor
+        // keeps the low-mach output fainter than the mid-ramp.
         private const float _minQ = 0.1f;       // kPa
-        private const float _machLow = 0.8f;
-        private const float _machHigh = 5.0f;
+        private const float _machLow = 0.3f;
+        private const float _machHigh = 6.0f;
         // Mach bracket for the Condensation → ReentryHeat preset blend.
-        // Approximates PhysicsGlobals.AeroFXStartThermalFX /
-        // AeroFXFullThermalFX (not dumpable cheaply).
+        // Modest widening over the original 2.0–6.0 so the plasma colour
+        // eases in across mid-ascent rather than slamming in.
         private const float _fxStateMachStart = 2.0f;
-        private const float _fxStateMachFull = 6.0f;
+        private const float _fxStateMachFull = 7.0f;
+        // Cold-condensation cap. White wind-streak output (fxState=0)
+        // never exceeds this fraction of full intensity, so cold wind is
+        // visible but never fully opaque. Plasma (fxState=1) has no cap —
+        // at true reentry the effect is allowed to reach 1.0 (full
+        // screen-fill). Linear lerp between them.
+        private const float _coldIntensityCap = 0.5f;
+        // Active-intensity floor. Once mach > _machLow and q > _minQ the
+        // effect "activates"; raw intensity jumps to this floor immediately
+        // instead of starting at zero, so the streaks are above the
+        // shader's extrusion-length threshold even at sub-transonic
+        // speeds. Lowered to 0.25 so the early streaks are visible but
+        // very faint (the user wants wind coming in early and faint, then
+        // brightening as the ramp continues).
+        private const float _activeIntensityFloor = 0.25f;
+
+        // Cold-condensation density fade (stock-equivalent). White wind
+        // streaks fade out as atmDensity drops from this start → end,
+        // which on Kerbin maps to roughly 5.5 km → 14 km altitude.
+        // Values from PhysicsGlobals.AeroFXMachFXFadeStart / End.
+        private const float _coldAtmFadeStart = 0.25f;
+        private const float _coldAtmFadeEnd = 0.0875f;
+
+        // Stock AerodynamicsFX FxScalar gate constants (Physics.cfg).
+        // heatFlux below p0 → FxScalar=0 (effect off); above 6×p0 → 1.
+        private const double _fxScalarP0 = 8_000_000.0;
+        private const double _fxScalarRange = 5.0 * _fxScalarP0;
 
         // Diagnostics — throttle so the per-frame log doesn't spam.
         private int _drawCount;
@@ -84,7 +113,28 @@ namespace Kerbcam
                 : ComputeIntensity(state.Mach, state.DynamicPressure);
             float fxState = KerbcamSettings.ForceAtmosphericFx
                 ? 0.5f
-                : Mathf.Clamp01(Mathf.InverseLerp(_fxStateMachStart, _fxStateMachFull, state.Mach));
+                : Mathf.SmoothStep(0f, 1f,
+                    Mathf.Clamp01(Mathf.InverseLerp(_fxStateMachStart, _fxStateMachFull, state.Mach)));
+
+            // Stock-like fade-out: mirror AerodynamicsFX's FxScalar gate so
+            // we fade out naturally at high altitude (heatFlux < 8e6 N/W
+            // → FX off). Drives the 30 km ascent fade-out the user
+            // observes in stock. See local_docs/kerbcam/stock_plasma_research.md.
+            float fxScalar = ComputeStockFxScalar(state.Vessel);
+            intensity *= fxScalar;
+
+            // Stock-style condensation-only density fade: white wind streaks
+            // fade out as atmDensity drops from 0.25 → 0.0875 (~5.5 km to
+            // ~14 km on Kerbin), only orange plasma persists above. We bake
+            // it into the cold cap so the cold-multiplier collapses to zero
+            // at low density — high mach in thin air shows pure plasma.
+            float coldDensityFade = state.Vessel != null
+                ? Mathf.SmoothStep(_coldAtmFadeEnd, _coldAtmFadeStart, (float)state.Vessel.atmDensity)
+                : 1f;
+
+            // Cold wind streaks are capped at _coldIntensityCap × density fade;
+            // plasma is uncapped (multiplier reaches 1.0 at fxState=1).
+            intensity *= Mathf.Lerp(_coldIntensityCap * coldDensityFade, 1f, fxState);
 
             if (KerbcamSettings.DebugCameraLogging && Time.time - _lastLogTime > 1.5f)
             {
@@ -94,6 +144,8 @@ namespace Kerbcam
                     $"vessel={(v != null ? v.vesselName : "null")} " +
                     $"srfSpd={state.VelocityWorld.magnitude:F0} mach={state.Mach:F2} " +
                     $"q={state.DynamicPressure:F2} alt={(v != null ? v.altitude : 0):F0} " +
+                    $"atmRho={(v != null ? v.atmDensity : 0):F4} " +
+                    $"fxScalar={fxScalar:F2} coldFade={coldDensityFade:F2} " +
                     $"sit={(v != null ? v.situation.ToString() : "?")} " +
                     $"intensity={intensity:F2} fxState={fxState:F2} draws={_drawCount} " +
                     $"attached={_attached} path={_cam.actualRenderingPath}");
@@ -127,8 +179,42 @@ namespace Kerbcam
 
         private static float ComputeIntensity(float mach, float dynamicPressure)
         {
-            if (dynamicPressure < _minQ) return 0f;
-            return Mathf.Clamp01(Mathf.InverseLerp(_machLow, _machHigh, mach));
+            if (dynamicPressure < _minQ || mach < _machLow) return 0f;
+            // SmoothStep for soft bracket edges, then Lerp from the
+            // active-floor so intensity is visible from the moment the
+            // effect activates rather than ramping from 0 (which would
+            // leave geometry-shader extrusion length below threshold for
+            // the first half of the bracket).
+            float t = Mathf.SmoothStep(0f, 1f,
+                Mathf.Clamp01(Mathf.InverseLerp(_machLow, _machHigh, mach)));
+            return Mathf.Lerp(_activeIntensityFloor, 1f, t);
+        }
+
+        // Mirror AerodynamicsFX.LateUpdate's FxScalar gate (stock KSP).
+        // Stock disables the FXCamera when this returns 0 → effect is off;
+        // we use it as an intensity multiplier so our effect fades to zero
+        // when stock would. Drives the natural ~30 km ascent fade-out and
+        // correct reentry fade-in. Numeric values from PhysicsGlobals /
+        // Physics.cfg; see local_docs/kerbcam/stock_plasma_research.md.
+        private static float ComputeStockFxScalar(Vessel vessel)
+        {
+            if (vessel == null) return 0f;
+            double rho = vessel.atmDensity;
+            if (rho <= 0.0) return 0f;
+            double densityFactor = rho;
+            double fadeStart = PhysicsGlobals.AeroFXDensityFadeStart;
+            if (fadeStart > 0.0 && densityFactor < fadeStart)
+            {
+                densityFactor = UtilMath.Lerp(0.0, densityFactor,
+                    densityFactor * System.Math.Ceiling(1.0 / fadeStart));
+            }
+            densityFactor =
+                System.Math.Pow(densityFactor, PhysicsGlobals.AeroFXDensityExponent1) * PhysicsGlobals.AeroFXDensityScalar1 +
+                System.Math.Pow(densityFactor, PhysicsGlobals.AeroFXDensityExponent2) * PhysicsGlobals.AeroFXDensityScalar2;
+            double heatFlux = 0.5 * densityFactor *
+                System.Math.Pow(vessel.srfSpeed, PhysicsGlobals.AeroFXVelocityExponent);
+            double scalar = (heatFlux - _fxScalarP0) / _fxScalarRange;
+            return (float)System.Math.Max(0.0, System.Math.Min(1.0, scalar));
         }
 
         // Rebuild the part-renderer draw list. ModuleDeployablePart is skipped
@@ -159,6 +245,22 @@ namespace Kerbcam
                     {
                         _cb.DrawRenderer(rend, _material, s);
                         _drawCount++;
+                    }
+                    // Diagnostic for stray-flare investigation. The geom shader's
+                    // side vector goes degenerate when a renderer triangle has an
+                    // edge nearly parallel to airflow — long/thin renderers
+                    // (engine nozzles, antennas, ladders, decoupler skirts) emit
+                    // an off-to-the-side flare. Logging bounds aspect lets us
+                    // correlate the offending part with the screenshot.
+                    if (KerbcamSettings.DebugCameraLogging)
+                    {
+                        var b = rend.bounds.size;
+                        float lo = Mathf.Max(0.01f, Mathf.Min(b.x, Mathf.Min(b.y, b.z)));
+                        float hi = Mathf.Max(b.x, Mathf.Max(b.y, b.z));
+                        if (hi / lo > 8f)
+                        {
+                            Debug.Log($"[Kerbcam-fx-geom] part={part.partInfo?.name} rend={rend.name} bounds={b.x:F2}x{b.y:F2}x{b.z:F2} aspect={hi / lo:F1}");
+                        }
                     }
                 }
             }

@@ -65,13 +65,17 @@ namespace Kerbcam
 
         // Master toggle for kerbcam's own atmospheric FX (a pluggable overlay
         // — see atmospheric_fx_parked.md for why the stock-FX replication was
-        // abandoned). Default OFF; set true (or per-camera) to opt in.
-        public bool EnableAtmosphericFx { get; private set; } = false;
+        // abandoned). Default ON since v0.7.0; set false (or per-camera) to
+        // disable.
+        public bool EnableAtmosphericFx { get; private set; } = true;
 
         // Which FX layers are active when the master is on — individually
         // toggleable. settings.cfg token list: CORE, BOWSHOCK, TRAIL, EMBERS
-        // (or ALL). Defaults to ALL. Per-camera override via the Camera node.
-        public AtmoFxLayers AtmosphericFxLayers { get; private set; } = AtmoFxLayers.All;
+        // (or ALL). Defaults to CORE only — Bowshock, Trail and Embers all
+        // parked while Core is being tuned (see
+        // local_docs/kerbcam/bowshock_parked.md and the trail/embers park
+        // note). Per-camera override via the Camera node.
+        public AtmoFxLayers AtmosphericFxLayers { get; private set; } = AtmoFxLayers.Core;
 
         // Apply Hullcam VDS's per-part shader filters (NightVision green
         // grain, MovieTime film effect, CRT/TV scanlines, etc — 9 modes
