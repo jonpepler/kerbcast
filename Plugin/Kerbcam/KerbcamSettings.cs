@@ -71,11 +71,12 @@ namespace Kerbcam
 
         // Which FX layers are active when the master is on — individually
         // toggleable. settings.cfg token list: CORE, BOWSHOCK, TRAIL, EMBERS
-        // (or ALL). Defaults to CORE only — Bowshock, Trail and Embers all
-        // parked while Core is being tuned (see
-        // local_docs/kerbcam/bowshock_parked.md and the trail/embers park
-        // note). Per-camera override via the Camera node.
-        public AtmoFxLayers AtmosphericFxLayers { get; private set; } = AtmoFxLayers.Core;
+        // (or ALL). Defaults to all four — bowshock now uses an oblate dome
+        // (replaces the polygonal cone), embers are a geom-shader extrusion
+        // off windward surfaces (replaces ParticleSystem), trail and
+        // bowshock both adapt position+size from a per-frame windward
+        // profile so they correctly track vessel orientation.
+        public AtmoFxLayers AtmosphericFxLayers { get; private set; } = AtmoFxLayers.All;
 
         // Apply Hullcam VDS's per-part shader filters (NightVision green
         // grain, MovieTime film effect, CRT/TV scanlines, etc — 9 modes

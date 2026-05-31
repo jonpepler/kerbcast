@@ -119,13 +119,24 @@ namespace Kerbcam
                 return;
             }
 
-            // Place the tube: vessel end at CoM, +Z aligned with -velocity so
-            // the tube streams astern. LookRotation aligns its forward (+Z)
-            // with the given direction.
+            // Place the tube: head at the vessel's AFT windward edge (pulled
+            // IN slightly so the cylinder/parts occlude the top ring of the
+            // tube — combined with the shader's headFade this hides the
+            // hard mesh edge), +Z aligned with -velocity so the tube
+            // streams astern. Radius scales with the vessel's WINDWARD
+            // PROFILE so the wake matches the actual cross-section the
+            // vessel presents to the airflow (broadside flight → wide
+            // wake; end-on → narrower).
             Vector3 windDir = vel / Mathf.Sqrt(velSqr);
-            Vector3 worldPos = state.Vessel.CoM;
+            var profile = WindwardProfile.Compute(state.Vessel, windDir);
+            // Bury head inside the vessel by 0.5 m. Mesh's natural start
+            // radius is _tubeStartRadius (4 m); scale to match the actual
+            // windward radius, capped at 1.0× so the wake doesn't engulf
+            // nearby hullcams.
+            Vector3 worldPos = state.Vessel.CoM - windDir * Mathf.Max(profile.AftStandoff - 0.5f, 0f);
+            float radiusScale = Mathf.Clamp(profile.WindwardRadius / _tubeStartRadius, 0.25f, 1.0f);
             Quaternion rot = Quaternion.LookRotation(-windDir);
-            Matrix4x4 m = Matrix4x4.TRS(worldPos, rot, Vector3.one);
+            Matrix4x4 m = Matrix4x4.TRS(worldPos, rot, new Vector3(radiusScale, radiusScale, 1f));
 
             _material.SetFloat(_IntensityId, intensity);
             _material.SetVector(_WindDirId, windDir);
