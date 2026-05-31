@@ -240,9 +240,12 @@ namespace KerbcamCI
             Vector3 helperUp = Mathf.Abs(windDir.y) < 0.99f ? Vector3.up : Vector3.right;
             go.transform.rotation = Quaternion.LookRotation(-windDir, helperUp);
             // Scale the tube's start radius to vessel windward radius so the
-            // wake is wide enough to match the vessel's profile. Length stays
-            // at the mesh's natural 40 m (already long enough to fade).
-            float radiusScale = Mathf.Max(profile.WindwardRadius / 0.6f, 0.5f);
+            // wake matches the vessel's profile, but CAP at 1.0× — the
+            // close aft_hullcam camera sits about 0.9 m from the trail
+            // head, so a tube wider than ~0.6 m starts filling the near
+            // plane and LLVMpipe hangs on the resulting near-fullscreen
+            // additive triangles.
+            float radiusScale = Mathf.Clamp(profile.WindwardRadius / 0.6f, 0.5f, 1.0f);
             go.transform.localScale = new Vector3(radiusScale, radiusScale, 1f);
             var mf = go.AddComponent<MeshFilter>();
             var mr = go.AddComponent<MeshRenderer>();
