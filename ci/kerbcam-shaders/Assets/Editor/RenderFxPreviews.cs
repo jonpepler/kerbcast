@@ -1,24 +1,19 @@
 // Headless preview renderer for the kerbcam FX shaders.
 //
 // Invoked from CI by:
-//   "$UNITY_EDITOR_PATH" -batchmode -nographics -quit \
+//   "$UNITY_EDITOR_PATH" -batchmode -quit \
 //      -projectPath . \
 //      -executeMethod KerbcamCI.RenderFxPreviews.RenderAll \
 //      -buildTarget Linux64 -logFile -
 //
-// For each *.json under ci/kerbcam-shaders/Fixtures/, build a proxy "rocket"
-// (cylinder body + cone nose), set the camera per the fixture, apply the
-// KerbcamPlasma material via a CommandBuffer at CameraEvent.AfterForwardAlpha
-// (mirroring CoreSheathEffect.cs runtime path), set shader globals + material
-// uniforms from the fixture, render once to a 1024×576 RenderTexture, encode
-// to PNG, and save under Previews/{fixtureName}.png. The PNGs are uploaded
-// as a CI artifact.
-//
-// Placeholders are deliberate: `fxMainTex`/`fxDepthMap` in fixtures default
-// to procedural noise / flat depth when their path is empty. The same
-// fixture format will be emitted by the in-game FxCapture hotkey once that
-// lands; at that point we drop captured JSON + texture PNGs into Fixtures/
-// and the renderer picks them up unchanged.
+// For each *.json under ci/kerbcam-shaders/Fixtures/, and for each of the
+// four FX shaders (Plasma/Core, Bowshock, Trail, Ember), and for each of
+// the three camera viewpoints (external, nose_up, body_out), render the
+// shader on a proxy vessel and save a PNG keyed
+// {fixture}_{shader}_{view}.png. Per-shader scene setup mirrors what the
+// plugin does at runtime: CommandBuffer.DrawRenderer on proxy renderers
+// for plasma, procedural cone ahead of vessel for bowshock, procedural
+// tapered tube behind vessel for trail, ParticleSystem for embers.
 
 using System.Collections.Generic;
 using System.IO;
@@ -35,19 +30,24 @@ namespace KerbcamCI
         private const string _fixturesDir = "Fixtures";
         private const string _outputDir = "Previews";
 
-        // CI entry point — same -executeMethod pattern as BuildKerbcamShaders.
+        private static readonly string[] _shaderIds = { "plasma", "bowshock", "trail", "ember" };
+        private static readonly string[] _viewIds = { "external", "nose_up", "body_out" };
+
         public static void RenderAll()
         {
             if (!Directory.Exists(_outputDir)) Directory.CreateDirectory(_outputDir);
 
             var fixtureFiles = Directory.GetFiles(_fixturesDir, "*.json");
             System.Array.Sort(fixtureFiles);
-            Debug.Log($"[Kerbcam-CI] RenderFxPreviews: {fixtureFiles.Length} fixture(s)");
+            Debug.Log($"[Kerbcam-CI] RenderFxPreviews: {fixtureFiles.Length} fixture(s), {_shaderIds.Length} shader(s), {_viewIds.Length} view(s)");
 
-            var shader = Shader.Find("Kerbcam/Plasma");
-            if (shader == null)
+            var plasmaShader = Shader.Find("Kerbcam/Plasma");
+            var bowshockShader = Shader.Find("Kerbcam/Bowshock");
+            var trailShader = Shader.Find("Kerbcam/Trail");
+            var emberShader = Shader.Find("Kerbcam/Ember");
+            if (plasmaShader == null || bowshockShader == null || trailShader == null || emberShader == null)
             {
-                Debug.LogError("[Kerbcam-CI] Kerbcam/Plasma shader not found. Did the shader compile?");
+                Debug.LogError("[Kerbcam-CI] one or more Kerbcam shaders not found — did the bundle compile?");
                 EditorApplication.Exit(2);
                 return;
             }
@@ -61,47 +61,36 @@ namespace KerbcamCI
                     Debug.LogWarning($"[Kerbcam-CI] skipping unparseable fixture: {path}");
                     continue;
                 }
-                Debug.Log($"[Kerbcam-CI] rendering {fx.name} (intensity={fx.inputs.intensity:F2} fxState={fx.inputs.fxState:F2} radiusMul={fx.inputs.fxRadiusMul:F2})");
-                RenderOne(fx, shader, Path.GetDirectoryName(path));
+                var fixtureDir = Path.GetDirectoryName(path);
+                foreach (var shaderId in _shaderIds)
+                {
+                    Shader sh =
+                        shaderId == "plasma"   ? plasmaShader :
+                        shaderId == "bowshock" ? bowshockShader :
+                        shaderId == "trail"    ? trailShader :
+                        emberShader;
+                    foreach (var viewId in _viewIds)
+                    {
+                        RenderOne(fx, shaderId, sh, viewId, fixtureDir);
+                    }
+                }
             }
-
             Debug.Log("[Kerbcam-CI] RenderFxPreviews: done");
         }
 
-        private static void RenderOne(FxFixture fx, Shader shader, string fixtureDir)
+        // Single (fixture, shader, view) render. New scene root per render so
+        // state can't leak between passes.
+        private static void RenderOne(FxFixture fx, string shaderId, Shader shader, string viewId, string fixtureDir)
         {
-            // Build the scene fresh per fixture so leaked state can't bleed between renders.
-            var sceneRoot = new GameObject("__fx_preview_root");
+            var sceneRoot = new GameObject($"__fx_preview_{fx.name}_{shaderId}_{viewId}");
             try
             {
-                // Proxy vessel: cylinder body + cone nose, axis along +Y so that
-                // wind blowing along -Y in our fixtures runs from nose to tail
-                // (matches a vertical-ascent KSP convention).
-                var body = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
-                body.transform.SetParent(sceneRoot.transform, false);
-                body.transform.localPosition = Vector3.zero;
-                body.transform.localScale = new Vector3(0.6f, 1.2f, 0.6f);
-                var nose = MakeCone();
-                nose.transform.SetParent(sceneRoot.transform, false);
-                nose.transform.localPosition = new Vector3(0f, 1.5f, 0f);
-                nose.transform.localScale = new Vector3(0.6f, 0.6f, 0.6f);
+                BuildProxyVessel(sceneRoot.transform);
+                AddDirectionalLight(sceneRoot.transform);
 
-                // Directional light so the underlying proxy silhouette is
-                // legibly lit — without one the body renders as a near-black
-                // shape against the dark camera clear colour and we can't
-                // tell where the FX overlay sits relative to the vessel.
-                var lightGo = new GameObject("__fx_preview_light");
-                lightGo.transform.SetParent(sceneRoot.transform, false);
-                lightGo.transform.rotation = Quaternion.Euler(45f, -30f, 0f);
-                var light = lightGo.AddComponent<Light>();
-                light.type = LightType.Directional;
-                light.intensity = 1.2f;
-                light.color = new Color(1f, 0.96f, 0.9f, 1f);
-
-                // Camera setup
                 var camGo = new GameObject("__fx_preview_camera");
                 camGo.transform.SetParent(sceneRoot.transform, false);
-                ApplyCameraPose(camGo.transform, fx.camera);
+                ApplyCameraPose(camGo.transform, fx.camera, viewId);
                 var cam = camGo.AddComponent<Camera>();
                 cam.clearFlags = CameraClearFlags.SolidColor;
                 cam.backgroundColor = new Color(0.05f, 0.07f, 0.12f, 1f);
@@ -111,29 +100,24 @@ namespace KerbcamCI
                 cam.allowMSAA = false;
                 cam.allowHDR = true;
 
-                // Plasma material + per-fixture uniforms
-                var mat = new Material(shader);
-                ApplyMaterialInputs(mat, fx.inputs);
-
-                // Globals + textures
                 ApplyGlobals(fx.globals, fixtureDir, fx.textures);
 
-                // CommandBuffer: draw both proxy renderers with our material at
-                // CameraEvent.AfterForwardAlpha — same hook the runtime uses.
-                var cb = new CommandBuffer { name = $"Kerbcam Preview FX [{fx.name}]" };
-                foreach (var rend in sceneRoot.GetComponentsInChildren<Renderer>())
+                Material mat = new Material(shader);
+                ApplyMaterialInputs(mat, fx.inputs, shaderId);
+
+                // Shader-specific scene attachments.
+                switch (shaderId)
                 {
-                    if (rend == null || rend is ParticleSystemRenderer) continue;
-                    int subMeshes = rend.sharedMaterials != null ? rend.sharedMaterials.Length : 1;
-                    if (subMeshes < 1) subMeshes = 1;
-                    for (int s = 0; s < subMeshes; s++) cb.DrawRenderer(rend, mat, s);
+                    case "plasma": SetupPlasma(sceneRoot.transform, cam, mat); break;
+                    case "bowshock": SetupBowshock(sceneRoot.transform, mat); break;
+                    case "trail": SetupTrail(sceneRoot.transform, mat, fx.inputs); break;
+                    case "ember": SetupEmber(sceneRoot.transform, mat); break;
                 }
-                cam.AddCommandBuffer(CameraEvent.AfterForwardAlpha, cb);
 
                 // Render to RT
                 var rt = new RenderTexture(_outWidth, _outHeight, 24, RenderTextureFormat.ARGB32)
                 {
-                    name = $"FxPreviewRT_{fx.name}",
+                    name = $"FxPreviewRT_{fx.name}_{shaderId}_{viewId}",
                     antiAliasing = 1
                 };
                 cam.targetTexture = rt;
@@ -147,9 +131,9 @@ namespace KerbcamCI
                 tex.Apply();
                 RenderTexture.active = prev;
 
-                var outPath = Path.Combine(_outputDir, fx.name + ".png");
+                var outName = $"{fx.name}_{shaderId}_{viewId}.png";
+                var outPath = Path.Combine(_outputDir, outName);
                 File.WriteAllBytes(outPath, tex.EncodeToPNG());
-                Debug.Log($"[Kerbcam-CI]   wrote {outPath} ({new FileInfo(outPath).Length} bytes)");
 
                 cam.targetTexture = null;
                 Object.DestroyImmediate(tex);
@@ -162,22 +146,218 @@ namespace KerbcamCI
             }
         }
 
-        private static void ApplyCameraPose(Transform t, FxFixture.CameraPose pose)
+        // ------------------------------------------------------------------
+        // Shader-specific scene setups
+        // ------------------------------------------------------------------
+
+        // Plasma: apply material via CommandBuffer.DrawRenderer on the proxy
+        // vessel's renderers, attached at AfterForwardAlpha — the runtime path.
+        private static void SetupPlasma(Transform root, Camera cam, Material mat)
         {
-            if (pose == null) { t.localPosition = new Vector3(3.5f, 0f, 0f); t.LookAt(Vector3.zero, Vector3.up); return; }
-            t.localPosition = ToVec3(pose.position, new Vector3(3.5f, 0f, 0f));
-            if (pose.rotation != null && pose.rotation.Length >= 4)
-                t.localRotation = new Quaternion(pose.rotation[0], pose.rotation[1], pose.rotation[2], pose.rotation[3]);
-            else
-                t.LookAt(Vector3.zero, Vector3.up);
+            var cb = new CommandBuffer { name = "Kerbcam Preview FX Plasma" };
+            foreach (var rend in root.GetComponentsInChildren<Renderer>())
+            {
+                if (rend == null || rend is ParticleSystemRenderer) continue;
+                int subMeshes = rend.sharedMaterials != null ? rend.sharedMaterials.Length : 1;
+                if (subMeshes < 1) subMeshes = 1;
+                for (int s = 0; s < subMeshes; s++) cb.DrawRenderer(rend, mat, s);
+            }
+            cam.AddCommandBuffer(CameraEvent.AfterForwardAlpha, cb);
         }
 
-        private static void ApplyMaterialInputs(Material mat, FxFixture.Inputs inputs)
+        // Bowshock: place a procedural hollow cone above the vessel (apex
+        // points +Y = along velocity). 16 radial segments, flat-shaded —
+        // mirrors BowshockEffect.BuildConeMesh.
+        private static void SetupBowshock(Transform root, Material mat)
+        {
+            var go = new GameObject("bowshock_cone");
+            go.transform.SetParent(root, false);
+            go.transform.localPosition = new Vector3(0f, 2.6f, 0f); // ahead of cone tip (~+1.5+1.1)
+            go.transform.localRotation = Quaternion.LookRotation(Vector3.up, Vector3.forward);
+            var mf = go.AddComponent<MeshFilter>();
+            var mr = go.AddComponent<MeshRenderer>();
+            mf.sharedMesh = BuildConeMesh();
+            mr.sharedMaterial = mat;
+            mr.shadowCastingMode = ShadowCastingMode.Off;
+            mr.receiveShadows = false;
+        }
+
+        // Trail: procedural tapered tube behind the vessel along airflow.
+        // axis +Z = downstream (Quaternion.LookRotation(-windDir) below points
+        // the tube's +Z along -wind = the wake direction).
+        private static void SetupTrail(Transform root, Material mat, FxFixture.Inputs inputs)
+        {
+            var go = new GameObject("trail_tube");
+            go.transform.SetParent(root, false);
+            go.transform.localPosition = new Vector3(0f, -1.3f, 0f); // just below cylinder base
+            Vector3 windDir = inputs != null && inputs.windDirWorld != null && inputs.windDirWorld.Length >= 3
+                ? new Vector3(inputs.windDirWorld[0], inputs.windDirWorld[1], inputs.windDirWorld[2]).normalized
+                : Vector3.up;
+            if (windDir.sqrMagnitude < 1e-3f) windDir = Vector3.up;
+            Vector3 helperUp = Mathf.Abs(windDir.y) < 0.99f ? Vector3.up : Vector3.right;
+            go.transform.localRotation = Quaternion.LookRotation(-windDir, helperUp);
+            var mf = go.AddComponent<MeshFilter>();
+            var mr = go.AddComponent<MeshRenderer>();
+            mf.sharedMesh = BuildTaperedTubeMesh();
+            mr.sharedMaterial = mat;
+            mr.shadowCastingMode = ShadowCastingMode.Off;
+            mr.receiveShadows = false;
+        }
+
+        // Ember: a ParticleSystem mirroring EmbersEffect.ConfigureParticleSystem.
+        // ParticleSystem.Simulate() is called to advance into a steady-state
+        // distribution before the camera render — without that, render time =
+        // 0 = no particles spawned yet.
+        private static void SetupEmber(Transform root, Material mat)
+        {
+            var go = new GameObject("ember_system");
+            go.transform.SetParent(root, false);
+            go.transform.localPosition = new Vector3(0f, -0.5f, 0f);
+            // Emitter axis = downstream; airflow is -Y in our fixtures.
+            go.transform.localRotation = Quaternion.LookRotation(Vector3.down, Vector3.forward);
+            var ps = go.AddComponent<ParticleSystem>();
+            var psr = go.GetComponent<ParticleSystemRenderer>();
+            ConfigureParticleSystem(ps);
+            psr.renderMode = ParticleSystemRenderMode.Billboard;
+            psr.sharedMaterial = mat;
+            psr.alignment = ParticleSystemRenderSpace.View;
+            psr.shadowCastingMode = ShadowCastingMode.Off;
+            psr.receiveShadows = false;
+            ps.Play();
+            ps.Simulate(1.2f, withChildren: true, restart: false, fixedTimeStep: true);
+        }
+
+        private static void ConfigureParticleSystem(ParticleSystem ps)
+        {
+            ps.Stop(false, ParticleSystemStopBehavior.StopEmittingAndClear);
+            {
+                var main = ps.main;
+                main.simulationSpace = ParticleSystemSimulationSpace.World;
+                main.startLifetime = new ParticleSystem.MinMaxCurve(0.5f, 1.2f);
+                main.startSize = new ParticleSystem.MinMaxCurve(0.03f, 0.12f);
+                main.startSpeed = new ParticleSystem.MinMaxCurve(5f, 15f);
+                main.gravityModifier = 0f;
+                main.maxParticles = 256;
+                main.loop = true;
+                main.playOnAwake = false;
+                main.startColor = new ParticleSystem.MinMaxGradient(Color.white);
+            }
+            { var em = ps.emission; em.enabled = true; em.rateOverTime = 60f; }
+            {
+                var shape = ps.shape;
+                shape.enabled = true;
+                shape.shapeType = ParticleSystemShapeType.Cone;
+                shape.angle = 25f;
+                shape.radius = 1.0f;
+            }
+            {
+                var vel = ps.velocityOverLifetime;
+                vel.enabled = true;
+                vel.space = ParticleSystemSimulationSpace.World;
+                // Downstream drift along -Y (airflow) with mild jitter.
+                vel.x = new ParticleSystem.MinMaxCurve(-1.5f, 1.5f);
+                vel.y = new ParticleSystem.MinMaxCurve(-10f, -6f);
+                vel.z = new ParticleSystem.MinMaxCurve(-1.5f, 1.5f);
+            }
+            {
+                var col = ps.colorOverLifetime;
+                col.enabled = true;
+                var g = new Gradient();
+                g.SetKeys(
+                    new[]
+                    {
+                        new GradientColorKey(new Color(1.0f, 0.95f, 0.75f), 0.0f),
+                        new GradientColorKey(new Color(1.0f, 0.55f, 0.15f), 0.35f),
+                        new GradientColorKey(new Color(0.8f, 0.15f, 0.05f), 0.75f),
+                        new GradientColorKey(new Color(0.1f, 0.02f, 0.0f), 1.0f),
+                    },
+                    new[]
+                    {
+                        new GradientAlphaKey(1.0f, 0.0f),
+                        new GradientAlphaKey(0.8f, 0.4f),
+                        new GradientAlphaKey(0.3f, 0.8f),
+                        new GradientAlphaKey(0.0f, 1.0f),
+                    });
+                col.color = new ParticleSystem.MinMaxGradient(g);
+            }
+            {
+                var sz = ps.sizeOverLifetime;
+                sz.enabled = true;
+                var c = new AnimationCurve(new Keyframe(0f, 1f), new Keyframe(0.6f, 0.7f), new Keyframe(1f, 0.3f));
+                sz.size = new ParticleSystem.MinMaxCurve(1f, c);
+            }
+        }
+
+        // ------------------------------------------------------------------
+        // Proxy vessel + camera viewpoints
+        // ------------------------------------------------------------------
+
+        private static void BuildProxyVessel(Transform root)
+        {
+            var body = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
+            body.transform.SetParent(root, false);
+            body.transform.localPosition = Vector3.zero;
+            body.transform.localScale = new Vector3(0.6f, 1.2f, 0.6f);
+            var nose = MakeCone();
+            nose.transform.SetParent(root, false);
+            nose.transform.localPosition = new Vector3(0f, 1.5f, 0f);
+            nose.transform.localScale = new Vector3(0.6f, 0.6f, 0.6f);
+        }
+
+        private static void AddDirectionalLight(Transform root)
+        {
+            var lightGo = new GameObject("__fx_preview_light");
+            lightGo.transform.SetParent(root, false);
+            lightGo.transform.rotation = Quaternion.Euler(45f, -30f, 0f);
+            var light = lightGo.AddComponent<Light>();
+            light.type = LightType.Directional;
+            light.intensity = 1.2f;
+            light.color = new Color(1f, 0.96f, 0.9f, 1f);
+        }
+
+        // Three camera presets. external = current default (outside, looking
+        // at vessel). nose_up = camera at base looking up the long axis past
+        // the cone — bowshock-view, where the disc artifact was worst.
+        // body_out = camera mounted on the cylinder body looking outward
+        // perpendicular to the vessel axis — Hullcam-style internal view.
+        private static void ApplyCameraPose(Transform t, FxFixture.CameraPose pose, string viewId)
+        {
+            switch (viewId)
+            {
+                case "nose_up":
+                    t.localPosition = new Vector3(0.7f, -1.0f, 0.7f);
+                    t.localRotation = Quaternion.LookRotation(
+                        (new Vector3(0f, 2.5f, 0f) - t.localPosition).normalized, Vector3.forward);
+                    return;
+                case "body_out":
+                    t.localPosition = new Vector3(0.85f, 0.3f, 0f);
+                    t.localRotation = Quaternion.LookRotation(Vector3.right, Vector3.up);
+                    return;
+                case "external":
+                default:
+                    if (pose == null) { t.localPosition = new Vector3(3.5f, 0f, 0f); t.LookAt(Vector3.zero, Vector3.up); return; }
+                    t.localPosition = ToVec3(pose.position, new Vector3(3.5f, 0f, 0f));
+                    if (pose.rotation != null && pose.rotation.Length >= 4)
+                        t.localRotation = new Quaternion(pose.rotation[0], pose.rotation[1], pose.rotation[2], pose.rotation[3]);
+                    else t.LookAt(Vector3.zero, Vector3.up);
+                    return;
+            }
+        }
+
+        // ------------------------------------------------------------------
+        // Material uniforms + global state
+        // ------------------------------------------------------------------
+
+        private static void ApplyMaterialInputs(Material mat, FxFixture.Inputs inputs, string shaderId)
         {
             if (inputs == null) return;
             mat.SetFloat("_Intensity", inputs.intensity);
-            mat.SetFloat("_FxState", inputs.fxState);
-            mat.SetFloat("_FxRadiusMul", inputs.fxRadiusMul > 0f ? inputs.fxRadiusMul : 1.6f);
+            // Shader-specific: only Plasma has _FxState and _FxRadiusMul.
+            if (shaderId == "plasma")
+            {
+                mat.SetFloat("_FxState", inputs.fxState);
+                mat.SetFloat("_FxRadiusMul", inputs.fxRadiusMul > 0f ? inputs.fxRadiusMul : 1.6f);
+            }
             mat.SetVector("_WindDirWorld", ToVec4(inputs.windDirWorld, new Vector4(0f, 1f, 0f, 0f)));
         }
 
@@ -195,9 +375,6 @@ namespace KerbcamCI
                 Shader.SetGlobalFloat("_FXProjectionNear", g.fxProjectionNear > 0f ? g.fxProjectionNear : 0.5f);
                 Shader.SetGlobalFloat("_FXProjectionFar", g.fxProjectionFar > 0f ? g.fxProjectionFar : 80f);
             }
-
-            // Textures: load from disk if a path is set; otherwise generate a
-            // placeholder so the shader has something to sample.
             Shader.SetGlobalTexture("_FXMainTex",
                 LoadOrPlaceholder(textures != null ? textures.fxMainTex : null, fixtureDir, MakeNoiseTexture));
             Shader.SetGlobalTexture("_FXDepthMap",
@@ -223,7 +400,6 @@ namespace KerbcamCI
 
         private static Texture2D MakeNoiseTexture()
         {
-            // 256×256 Perlin-noise placeholder for _FXMainTex.
             const int size = 256;
             var t = new Texture2D(size, size, TextureFormat.RGBA32, false) { name = "PlaceholderFXMainTex" };
             var px = new Color[size * size];
@@ -242,7 +418,6 @@ namespace KerbcamCI
 
         private static Texture2D MakeFlatDepthTexture()
         {
-            // 4×4 flat depth=1.0 placeholder for _FXDepthMap.
             var t = new Texture2D(4, 4, TextureFormat.RGBA32, false) { name = "PlaceholderFXDepthMap" };
             var px = new Color[16];
             for (int i = 0; i < 16; i++) px[i] = Color.white;
@@ -251,23 +426,23 @@ namespace KerbcamCI
             return t;
         }
 
-        // Build a simple cone mesh (8 radial segments, apex at +Y) so the
-        // proxy vessel has both flat sides (cylinder) and a tapered nose.
-        // UVs included because KerbcamPlasma.shader's vert stage reads
-        // v.uv — missing UVs would feed (0,0) and collapse trailUV.
+        // ------------------------------------------------------------------
+        // Mesh builders (proxies)
+        // ------------------------------------------------------------------
+
         private static GameObject MakeCone()
         {
             var go = new GameObject("nose_cone");
             var mf = go.AddComponent<MeshFilter>();
             var mr = go.AddComponent<MeshRenderer>();
-            var stdShader = Shader.Find("Standard");
-            if (stdShader != null) mr.sharedMaterial = new Material(stdShader);
-            const int seg = 8;
+            var std = Shader.Find("Standard");
+            if (std != null) mr.sharedMaterial = new Material(std);
+            const int seg = 12;
             const float r = 1f;
             const float h = 1.5f;
             var verts = new Vector3[seg + 2];
             var uvs = new Vector2[seg + 2];
-            verts[0] = new Vector3(0f, h, 0f); // apex
+            verts[0] = new Vector3(0f, h, 0f);
             uvs[0] = new Vector2(0.5f, 1f);
             for (int i = 0; i < seg; i++)
             {
@@ -276,7 +451,7 @@ namespace KerbcamCI
                 verts[1 + i] = new Vector3(Mathf.Cos(a) * r, 0f, Mathf.Sin(a) * r);
                 uvs[1 + i] = new Vector2(u, 0f);
             }
-            verts[seg + 1] = Vector3.zero; // base centre
+            verts[seg + 1] = Vector3.zero;
             uvs[seg + 1] = new Vector2(0.5f, 0f);
             var tris = new List<int>();
             for (int i = 0; i < seg; i++) { tris.Add(0); tris.Add(1 + i); tris.Add(1 + ((i + 1) % seg)); }
@@ -291,7 +466,105 @@ namespace KerbcamCI
             return go;
         }
 
-        // --- helpers -------------------------------------------------------
+        // Mirrors BowshockEffect.BuildConeMesh: 16 radial segments, flat-shaded
+        // per-face normals, apex at +Z, base at -Z. Both faces drawn (Cull Off
+        // in shader). Same proportions: baseRadius=3, length=6.
+        private static Mesh BuildConeMesh()
+        {
+            const int faces = 16;
+            const float baseRadius = 3f;
+            const float length = 6f;
+            var verts = new Vector3[faces * 2];
+            var normals = new Vector3[faces * 2];
+            var tris = new int[faces * 3];
+            float apexZ = length * 0.5f;
+            float baseZ = -length * 0.5f;
+            Vector3 apex = new Vector3(0f, 0f, apexZ);
+            for (int f = 0; f < faces; f++)
+            {
+                float angMid = (f + 0.5f) / faces * Mathf.PI * 2f;
+                float angA = (float)f / faces * Mathf.PI * 2f;
+                float angB = (float)(f + 1) / faces * Mathf.PI * 2f;
+                Vector3 baseA = new Vector3(Mathf.Cos(angA) * baseRadius, Mathf.Sin(angA) * baseRadius, baseZ);
+                Vector3 baseB = new Vector3(Mathf.Cos(angB) * baseRadius, Mathf.Sin(angB) * baseRadius, baseZ);
+                Vector3 e1 = baseA - apex;
+                Vector3 e2 = baseB - apex;
+                Vector3 n = Vector3.Cross(e1, e2).normalized;
+                Vector3 outwardXY = new Vector3(Mathf.Cos(angMid), Mathf.Sin(angMid), 0f);
+                if (Vector3.Dot(n, outwardXY) < 0f) n = -n;
+                int vBase = f * 2;
+                verts[vBase + 0] = apex;
+                verts[vBase + 1] = baseA;
+                normals[vBase + 0] = n;
+                normals[vBase + 1] = n;
+                int next = (f + 1) % faces;
+                int tBase = f * 3;
+                tris[tBase + 0] = vBase + 0;
+                tris[tBase + 1] = vBase + 1;
+                tris[tBase + 2] = next * 2 + 1;
+            }
+            var mesh = new Mesh { name = "Kerbcam Bowshock Cone" };
+            mesh.vertices = verts;
+            mesh.normals = normals;
+            mesh.triangles = tris;
+            mesh.RecalculateBounds();
+            return mesh;
+        }
+
+        // Mirrors TrailEffect tapered-tube layout: 24 length × 12 radial,
+        // 25 rings × 13 verts (seam-duplicated on the radial loop). Starts
+        // wide (radius=4) at the vessel-end (+Z=0), collapses to ~0 at the
+        // tail (+Z=length). uv.y = 0→1 along length, uv.x = 0→1 around.
+        private static Mesh BuildTaperedTubeMesh()
+        {
+            const int lengthSeg = 24;
+            const int radialSeg = 12;
+            const float startR = 4f;
+            const float length = 20f;
+            int ringVerts = radialSeg + 1;
+            int totalVerts = (lengthSeg + 1) * ringVerts;
+            var verts = new Vector3[totalVerts];
+            var uvs = new Vector2[totalVerts];
+            for (int yi = 0; yi <= lengthSeg; yi++)
+            {
+                float v = yi / (float)lengthSeg;
+                float r = startR * (1f - v);
+                float z = v * length;
+                for (int xi = 0; xi <= radialSeg; xi++)
+                {
+                    float u = xi / (float)radialSeg;
+                    float a = u * Mathf.PI * 2f;
+                    int idx = yi * ringVerts + xi;
+                    verts[idx] = new Vector3(Mathf.Cos(a) * r, Mathf.Sin(a) * r, z);
+                    uvs[idx] = new Vector2(u, v);
+                }
+            }
+            var tris = new List<int>();
+            for (int yi = 0; yi < lengthSeg; yi++)
+            {
+                for (int xi = 0; xi < radialSeg; xi++)
+                {
+                    int a = yi * ringVerts + xi;
+                    int b = a + 1;
+                    int c = (yi + 1) * ringVerts + xi;
+                    int d = c + 1;
+                    tris.Add(a); tris.Add(c); tris.Add(b);
+                    tris.Add(b); tris.Add(c); tris.Add(d);
+                }
+            }
+            var mesh = new Mesh { name = "Kerbcam Trail Tube" };
+            if (totalVerts > 65535) mesh.indexFormat = UnityEngine.Rendering.IndexFormat.UInt32;
+            mesh.vertices = verts;
+            mesh.uv = uvs;
+            mesh.triangles = tris.ToArray();
+            mesh.RecalculateNormals();
+            mesh.RecalculateBounds();
+            return mesh;
+        }
+
+        // ------------------------------------------------------------------
+        // Helpers
+        // ------------------------------------------------------------------
 
         private static Vector3 ToVec3(float[] a, Vector3 fallback)
         {
