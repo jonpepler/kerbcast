@@ -83,6 +83,7 @@ jobs:
 
       - name: Render FX preview PNGs
         working-directory: ci/kerbcam-shaders
+        timeout-minutes: 8
         run: |
           xvfb-run -a "$UNITY_EDITOR_PATH" \
             -batchmode -quit \

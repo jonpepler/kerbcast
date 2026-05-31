@@ -378,11 +378,21 @@ namespace KerbcamCI
             switch (viewId)
             {
                 case "nose_up":
-                    t.localPosition = new Vector3(0.7f, -1.0f, 0.7f);
+                    // Mounted on the body side, near the top, looking up
+                    // along +Y toward the cone tip. Critically the camera
+                    // sits WINDWARD of the airflow extrusion (which goes
+                    // downward from windward surfaces) so plasma strips
+                    // don't pass through the near-clipping plane and trip
+                    // LLVMpipe's near-fullscreen-triangle deadlock.
+                    t.localPosition = new Vector3(0.85f, 1.0f, 0f);
                     t.localRotation = Quaternion.LookRotation(
-                        (new Vector3(0f, 2.5f, 0f) - t.localPosition).normalized, Vector3.forward);
+                        new Vector3(-0.85f, 1.5f, 0f).normalized, Vector3.forward);
                     return;
                 case "body_out":
+                    // Same body-side mount but looking radially outward.
+                    // Airflow extrusion is along the body axis (Y), so a
+                    // camera looking along X never has extrusion crossing
+                    // its near plane.
                     t.localPosition = new Vector3(0.85f, 0.3f, 0f);
                     t.localRotation = Quaternion.LookRotation(Vector3.right, Vector3.up);
                     return;
