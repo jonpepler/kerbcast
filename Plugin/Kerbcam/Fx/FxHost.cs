@@ -93,14 +93,24 @@ namespace Kerbcam
 
         public void Render(in FxFrameState state)
         {
-            // Skip when the vessel is physics-unloaded (KSP "packs" vessels
+            // Gate when the vessel is physics-unloaded (KSP "packs" vessels
             // outside the 2.5km physics range and switches them onto rails).
             // Their part renderers' state is stale, so the CB's DrawRenderer
             // calls — and the geometry-shader extrusion on top — emit
             // garbage triangles into the frame.
+            //
+            // Don't early-return: each effect owns its own attached
+            // CommandBuffer / GameObject. If we skip Render() entirely the CB
+            // stays attached to the camera and keeps drawing the stale parts
+            // every frame. Instead synthesise a Vessel=null state and dispatch
+            // it — every effect's existing "vessel-null / zero-intensity"
+            // branch detaches its CB and gracefully stops rendering.
             var v = state.Vessel;
-            if (v == null || !v.loaded || v.packed) return;
-            for (int i = 0; i < _effects.Count; i++) _effects[i].Render(state);
+            bool gated = v == null || !v.loaded || v.packed;
+            var dispatched = gated
+                ? new FxFrameState(null, state.NearCam, Vector3.zero, 0f, 0f, state.Dt, state.Time)
+                : state;
+            for (int i = 0; i < _effects.Count; i++) _effects[i].Render(dispatched);
         }
 
         public void Dispose()
