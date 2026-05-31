@@ -65,29 +65,22 @@ namespace Kerbcam
             _material = KerbcamFxAssets.LoadMaterial("KerbcamBowshock");
             if (_material == null) return false; // bundle/shader missing → unavailable
             _cb = new CommandBuffer { name = "Kerbcam FX Bowshock" };
-            _mesh = BuildConeMesh();
-            Debug.Log($"[Kerbcam] FX bowshock initialized on {nearCam.name}");
+            // Oblate dome (flat hemisphere) — replaces the original cone mesh.
+            // The shader auto-detects which shape via length(localPos) < 1.3
+            // and uses a spherical normal for the dome / cylindrical for the
+            // cone. Dome matches real blunt-body bowshock physics better
+            // than a cone (a paraboloidal/spherical-cap detached shock).
+            _mesh = BuildDomeMesh();
+            Debug.Log($"[Kerbcam] FX bowshock initialized on {nearCam.name} (dome mesh)");
             return true;
         }
 
         public void OnVesselChanged(Vessel vessel)
         {
-            // Bowshock placement reads state.Vessel each Render, and the mesh
-            // is vessel-independent — no per-vessel rebuild needed.
+            // Bowshock sizing reads the WindwardProfile in Render() so it
+            // adapts to vessel orientation per-frame — no cached per-vessel
+            // state to compute here.
             _vessel = vessel;
-            // Cache the vessel's furthest-part distance from CoM so we can
-            // place the cone just past the leading edge and scale it to suit.
-            _vesselExtent = 5f;
-            if (vessel != null && vessel.parts != null)
-            {
-                Vector3 com = vessel.CoM;
-                foreach (var part in vessel.parts)
-                {
-                    if (part == null) continue;
-                    float d = Vector3.Distance(part.transform.position, com);
-                    if (d > _vesselExtent) _vesselExtent = d;
-                }
-            }
         }
 
         public void Render(in FxFrameState state)
@@ -136,19 +129,19 @@ namespace Kerbcam
             }
 
             Vector3 windDir = vel.normalized;
-            // Place the cone JUST past the vessel's leading edge along wind and
-            // scale it relative to vessel extent — so a small probe gets a
-            // small cone and a big stack gets a proportionally large one,
-            // without ever sitting inside a nose-mounted camera. The cone mesh
-            // is built at 6 m × 3 m (length × base radius); scale shrinks/grows
-            // it. Apex (+Z) points along velocity.
-            float coneScale = Mathf.Clamp(_vesselExtent * 0.35f / 3f, 0.25f, 1.5f);
-            // Offset by vessel extent + half the (now-scaled) cone length so the
-            // base ring sits just past the windward extreme of the vessel.
-            float offset = _vesselExtent + 3f * coneScale; // 3f ≈ scaled half-length
-            Vector3 worldPos = state.Vessel.CoM + windDir * offset;
+            // Dome mesh is unit-sized: base ring at z=0 (faces vessel), apex
+            // at z=+1 (faces airflow). Adapt to the vessel's WINDWARD profile
+            // so the dome's radius matches what the vessel actually presents
+            // to the airflow — broadside flight → wide dome; end-on → narrow.
+            var profile = WindwardProfile.Compute(state.Vessel, windDir);
+            float domeRadius = profile.WindwardRadius * 1.5f; // shock wider than body
+            float domeDepth = domeRadius * 0.55f;             // flat oblate (~real bowshock)
+
+            // Base of the dome sits at the vessel's windward extreme along
+            // the wind axis; the curved surface bulges further forward.
+            Vector3 worldPos = state.Vessel.CoM + windDir * profile.ForwardStandoff;
             Quaternion rot = Quaternion.LookRotation(windDir);
-            Matrix4x4 m = Matrix4x4.TRS(worldPos, rot, Vector3.one * coneScale);
+            Matrix4x4 m = Matrix4x4.TRS(worldPos, rot, new Vector3(domeRadius, domeRadius, domeDepth));
 
             _material.SetFloat(_IntensityId, intensity);
 
@@ -167,11 +160,64 @@ namespace Kerbcam
             return Mathf.Clamp01(Mathf.InverseLerp(_machLow, _machHigh, mach));
         }
 
-        // Procedural hollow cone, flat-shaded per face. 16 radial segments × 2
-        // verts/face (apex copy + base copy) = 32 verts, 16 triangles, no caps.
-        // Each face carries a single outward-radial normal so fresnel reads
-        // cleanly at the silhouette; a shared-vertex/averaged-normal cone would
-        // smear the rim into a muddy gradient.
+        // Oblate dome (flattened hemisphere). Unit-sized: base ring at z=0
+        // (faces vessel), apex at z=+1 (faces airflow). The GameObject's
+        // TRS matrix scales (radius, radius, depth) to produce the actual
+        // flat-dome dimensions in world space. Smooth-normal mesh — the
+        // shader uses position-based spherical normals (auto-detected via
+        // length(localPos)<1.3) so the rim glow flows continuously around
+        // the cap without polygonal banding.
+        private static Mesh BuildDomeMesh()
+        {
+            const int latSeg = 10;
+            const int lonSeg = 32;
+            int ringVerts = lonSeg + 1; // seam-duplicated for UV continuity
+            int totalVerts = latSeg * ringVerts + 1; // + apex pole
+            var verts = new Vector3[totalVerts];
+            var uvs = new Vector2[totalVerts];
+            verts[0] = new Vector3(0f, 0f, 1f);
+            uvs[0] = new Vector2(0.5f, 1f);
+            for (int lat = 1; lat <= latSeg; lat++)
+            {
+                float phi = (lat / (float)latSeg) * Mathf.PI * 0.5f;
+                float sp = Mathf.Sin(phi);
+                float cp = Mathf.Cos(phi);
+                for (int lon = 0; lon < ringVerts; lon++)
+                {
+                    float th = (lon / (float)lonSeg) * Mathf.PI * 2f;
+                    int idx = 1 + (lat - 1) * ringVerts + lon;
+                    verts[idx] = new Vector3(sp * Mathf.Cos(th), sp * Mathf.Sin(th), cp);
+                    uvs[idx] = new Vector2(lon / (float)lonSeg, 1f - lat / (float)latSeg);
+                }
+            }
+            var tris = new System.Collections.Generic.List<int>();
+            for (int lon = 0; lon < lonSeg; lon++)
+            {
+                tris.Add(0); tris.Add(1 + lon); tris.Add(1 + lon + 1);
+            }
+            for (int lat = 1; lat < latSeg; lat++)
+            {
+                int rowA = 1 + (lat - 1) * ringVerts;
+                int rowB = 1 + lat * ringVerts;
+                for (int lon = 0; lon < lonSeg; lon++)
+                {
+                    tris.Add(rowA + lon);     tris.Add(rowB + lon);     tris.Add(rowA + lon + 1);
+                    tris.Add(rowA + lon + 1); tris.Add(rowB + lon);     tris.Add(rowB + lon + 1);
+                }
+            }
+            var mesh = new Mesh { name = "Kerbcam Bowshock Dome" };
+            mesh.vertices = verts;
+            mesh.uv = uvs;
+            mesh.triangles = tris.ToArray();
+            mesh.RecalculateNormals();
+            mesh.RecalculateBounds();
+            return mesh;
+        }
+
+        // Procedural hollow cone (legacy — kept for reference; no longer
+        // used now that the dome mesh is the primary). 16 radial segments
+        // × 2 verts/face. Each face carries a single outward-radial normal
+        // so fresnel reads cleanly at the silhouette.
         private static Mesh BuildConeMesh()
         {
             int faces = _radialSegments;
