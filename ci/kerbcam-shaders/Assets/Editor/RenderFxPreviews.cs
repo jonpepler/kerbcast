@@ -120,7 +120,7 @@ namespace KerbcamCI
                     case "plasma": SetupPlasma(sceneRoot.transform, cam, mat); break;
                     case "bowshock": SetupBowshock(sceneRoot.transform, mat); break;
                     case "trail": SetupTrail(sceneRoot.transform, mat, fx.inputs); break;
-                    case "ember": SetupEmber(sceneRoot.transform, mat); break;
+                    case "ember": SetupEmber(sceneRoot.transform, cam, mat); break;
                 }
 
                 // Render to RT
@@ -175,14 +175,16 @@ namespace KerbcamCI
         }
 
         // Bowshock: place a procedural hollow cone above the vessel (apex
-        // points +Y = along velocity). 16 radial segments, flat-shaded —
-        // mirrors BowshockEffect.BuildConeMesh.
+        // points +Y = along velocity). Scaled down to vessel-relative size
+        // — the runtime BowshockEffect picks a scale of vesselExtent*0.35,
+        // which for our 4 m proxy works out to ≈0.3× of the default mesh.
         private static void SetupBowshock(Transform root, Material mat)
         {
             var go = new GameObject("bowshock_cone");
             go.transform.SetParent(root, false);
-            go.transform.localPosition = new Vector3(0f, 2.6f, 0f); // ahead of cone tip (~+1.5+1.1)
+            go.transform.localPosition = new Vector3(0f, 3.2f, 0f);
             go.transform.localRotation = Quaternion.LookRotation(Vector3.up, Vector3.forward);
+            go.transform.localScale = new Vector3(0.3f, 0.3f, 0.3f);
             var mf = go.AddComponent<MeshFilter>();
             var mr = go.AddComponent<MeshRenderer>();
             mf.sharedMesh = BuildConeMesh();
@@ -193,7 +195,10 @@ namespace KerbcamCI
 
         // Trail: procedural tapered tube behind the vessel along airflow.
         // axis +Z = downstream (Quaternion.LookRotation(-windDir) below points
-        // the tube's +Z along -wind = the wake direction).
+        // the tube's +Z along -wind = the wake direction). Scaled down to
+        // vessel-relative size — the 20 m × 4 m runtime mesh would dominate
+        // the preview frame, so apply a 0.25× scale so it reads as a wake
+        // not a wall.
         private static void SetupTrail(Transform root, Material mat, FxFixture.Inputs inputs)
         {
             var go = new GameObject("trail_tube");
@@ -205,6 +210,7 @@ namespace KerbcamCI
             if (windDir.sqrMagnitude < 1e-3f) windDir = Vector3.up;
             Vector3 helperUp = Mathf.Abs(windDir.y) < 0.99f ? Vector3.up : Vector3.right;
             go.transform.localRotation = Quaternion.LookRotation(-windDir, helperUp);
+            go.transform.localScale = new Vector3(0.25f, 0.25f, 0.25f);
             var mf = go.AddComponent<MeshFilter>();
             var mr = go.AddComponent<MeshRenderer>();
             mf.sharedMesh = BuildTaperedTubeMesh();
@@ -213,50 +219,78 @@ namespace KerbcamCI
             mr.receiveShadows = false;
         }
 
-        // Ember: a ParticleSystem mirroring EmbersEffect.ConfigureParticleSystem,
-        // pre-populated with manually-placed particles via Emit(EmitParams).
-        // We do NOT call ParticleSystem.Simulate() — known to deadlock in
-        // headless batchmode on Linux. Manual Emit gives us a snapshot worth
-        // rendering without time-stepping.
-        private static void SetupEmber(Transform root, Material mat)
+        // Ember: a pre-baked mesh of N billboarded quads with per-vertex
+        // colour. We do NOT use ParticleSystem in the preview — in headless
+        // batchmode the PS renderer doesn't tick (no frame advance), so
+        // particles emitted via Emit() don't render. Plain MeshRenderer
+        // bypasses that entirely. Each quad is manually oriented to face
+        // the camera at mesh-build time (the ember shader vert stage does
+        // a vanilla ObjectToClipPos and doesn't billboard internally), so
+        // we rebuild per render to track the active camera.
+        private static void SetupEmber(Transform root, Camera cam, Material mat)
         {
-            var go = new GameObject("ember_system");
+            var go = new GameObject("ember_quads");
             go.transform.SetParent(root, false);
-            go.transform.localPosition = new Vector3(0f, -0.5f, 0f);
-            go.transform.localRotation = Quaternion.LookRotation(Vector3.down, Vector3.forward);
-            var ps = go.AddComponent<ParticleSystem>();
-            var psr = go.GetComponent<ParticleSystemRenderer>();
-            ConfigureParticleSystem(ps);
-            psr.renderMode = ParticleSystemRenderMode.Billboard;
-            psr.sharedMaterial = mat;
-            psr.alignment = ParticleSystemRenderSpace.View;
-            psr.shadowCastingMode = ShadowCastingMode.Off;
-            psr.receiveShadows = false;
-            // Spawn a snapshot of particles scattered along the wake. We can't
-            // rely on ColorOverLifetime — without Simulate, all particles are
-            // at t=0 of their lifetime, so the gradient gives the same hot
-            // colour to every spark. Instead sample the ember gradient
-            // manually per-particle so the snapshot shows the full hot→cool
-            // progression as a spatial distribution along the wake.
-            var emberGradient = MakeEmberGradient();
+            go.transform.localPosition = Vector3.zero;
+            var mf = go.AddComponent<MeshFilter>();
+            var mr = go.AddComponent<MeshRenderer>();
+            mf.sharedMesh = BuildEmberQuadMesh(cam);
+            mr.sharedMaterial = mat;
+            mr.shadowCastingMode = ShadowCastingMode.Off;
+            mr.receiveShadows = false;
+        }
+
+        // Build N camera-facing quads spread along the wake (-Y from vessel
+        // base), with per-vertex colour sampled from the ember gradient so
+        // the spatial distribution reads hot→cool from front to tail.
+        private static Mesh BuildEmberQuadMesh(Camera cam)
+        {
             const int count = 80;
+            const float wakeLen = 4.5f;
+            var gradient = MakeEmberGradient();
+            // Camera-aligned right/up so each quad is screen-facing for the
+            // current view. Computed once in world space then converted to
+            // mesh-local (mesh sits at root origin so they're equivalent).
+            Vector3 camRight = cam.transform.right;
+            Vector3 camUp = cam.transform.up;
+
+            var verts = new Vector3[count * 4];
+            var uvs = new Vector2[count * 4];
+            var cols = new Color[count * 4];
+            var tris = new int[count * 6];
             for (int i = 0; i < count; i++)
             {
-                float along01 = (float)i / count;
-                float along = along01 * 6f + Random.Range(-0.4f, 0.4f); // m downstream
-                float radius = (along / 6f) * Random.Range(0.2f, 1.4f);
+                float along01 = i / (float)(count - 1);
+                float along = -0.5f - along01 * wakeLen + Random.Range(-0.2f, 0.2f);
+                float spread = Mathf.Lerp(0.05f, 0.7f, along01) * Random.Range(0.2f, 1.4f);
                 float theta = Random.Range(0f, Mathf.PI * 2f);
-                var ep = new ParticleSystem.EmitParams();
-                ep.position = go.transform.TransformPoint(new Vector3(
-                    Mathf.Cos(theta) * radius,
-                    Mathf.Sin(theta) * radius,
-                    along));
-                ep.startSize = Mathf.Lerp(0.14f, 0.04f, along01);
-                ep.startLifetime = 1f;
-                ep.startColor = emberGradient.Evaluate(along01);
-                ep.applyShapeToPosition = false;
-                ps.Emit(ep, 1);
+                Vector3 centre = new Vector3(
+                    Mathf.Cos(theta) * spread,
+                    along,
+                    Mathf.Sin(theta) * spread);
+                float size = Mathf.Lerp(0.10f, 0.04f, along01);
+                Color col = gradient.Evaluate(along01);
+                int v = i * 4;
+                verts[v + 0] = centre + (-camRight - camUp) * size;
+                verts[v + 1] = centre + ( camRight - camUp) * size;
+                verts[v + 2] = centre + (-camRight + camUp) * size;
+                verts[v + 3] = centre + ( camRight + camUp) * size;
+                uvs[v + 0] = new Vector2(0, 0);
+                uvs[v + 1] = new Vector2(1, 0);
+                uvs[v + 2] = new Vector2(0, 1);
+                uvs[v + 3] = new Vector2(1, 1);
+                cols[v + 0] = cols[v + 1] = cols[v + 2] = cols[v + 3] = col;
+                int t = i * 6;
+                tris[t + 0] = v + 0; tris[t + 1] = v + 2; tris[t + 2] = v + 1;
+                tris[t + 3] = v + 1; tris[t + 4] = v + 2; tris[t + 5] = v + 3;
             }
+            var mesh = new Mesh { name = "ember_quads_mesh" };
+            mesh.vertices = verts;
+            mesh.uv = uvs;
+            mesh.colors = cols;
+            mesh.triangles = tris;
+            mesh.RecalculateBounds();
+            return mesh;
         }
 
         private static void ConfigureParticleSystem(ParticleSystem ps)
