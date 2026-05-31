@@ -83,7 +83,11 @@ jobs:
 
       - name: Render FX preview PNGs
         working-directory: ci/kerbcam-shaders
-        timeout-minutes: 12
+        # A clean render of the full fixture × shader × view matrix takes
+        # ~30s. 5 min is comfortable headroom — anything longer means we've
+        # hit an LLVMpipe near-fullscreen-triangle hang and the loop should
+        # fail fast rather than burn runner minutes.
+        timeout-minutes: 5
         run: |
           xvfb-run -a "$UNITY_EDITOR_PATH" \
             -batchmode -quit \
