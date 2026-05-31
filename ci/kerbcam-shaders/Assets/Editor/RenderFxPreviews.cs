@@ -426,12 +426,12 @@ namespace KerbcamCI
                 case "side_profile":
                     // Original close (3.5 m) position — pulling back even to
                     // 5 m makes LLVMpipe spend minutes per render on the
-                    // plasma extrusion (more fragments fit in frame).
-                    // Slight downward tilt so the trail extends visibly
-                    // below the vessel.
+                    // plasma extrusion. Look-at centred at origin so both
+                    // bowshock (above vessel) and trail (below) get partial
+                    // visibility — neither is fully framed but both register.
                     t.localPosition = new Vector3(3.5f, 0f, 0f);
                     t.localRotation = Quaternion.LookRotation(
-                        (new Vector3(0f, -0.3f, 0f) - t.localPosition).normalized, Vector3.up);
+                        (new Vector3(0f, 0f, 0f) - t.localPosition).normalized, Vector3.up);
                     return;
                 case "aft_hullcam":
                     t.localPosition = new Vector3(0.85f, -0.5f, 0.3f);
