@@ -194,6 +194,23 @@ export class MockSidecar {
     this._sendToClient({ type: "camera-state-changed", content: { state: updated } });
   }
 
+  /**
+   * Replace the entire camera registry and push a fresh `camera-snapshot` to
+   * the client. Models a vessel change / scene switch where the set of
+   * available cameras changes (cameras appear or disappear) — distinct from
+   * {@link destroyCamera}, which keeps the camera present but `Destroyed`.
+   */
+  setCameras(inits: MockCameraInit[]): void {
+    this._cameras.clear();
+    for (const init of inits) {
+      this._cameras.set(init.flightId, buildCamera(init));
+    }
+    this._sendToClient({
+      type: "camera-snapshot",
+      content: { cameras: Array.from(this._cameras.values()) },
+    });
+  }
+
   /** Send a `ping` from the sidecar; the client should respond with `pong`. */
   firePing(): void {
     this._sendToClient({ type: "ping" });
