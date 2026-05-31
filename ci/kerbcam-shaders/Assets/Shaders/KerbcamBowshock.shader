@@ -96,14 +96,20 @@ Shader "Kerbcam/Bowshock"
 
                 // Smoothed (radial-from-axis) normal in world space. Local +Z
                 // is the cone axis; the inward radial direction in local
-                // space is (-x, -y, 0)/|.| which we transform back to world.
+                // space is (lpXY)/|lpXY| which we transform back to world.
                 // Using this instead of i.worldNormal removes the discrete
                 // per-face brightness rings that produced the polygonal
                 // "disc" artifact viewed near-axis.
+                //
+                // Near the apex (lpLen → 0) the smoothed normal is degenerate
+                // — at the literal tip there is no well-defined radial
+                // direction. apexFade smoothly suppresses rim contribution
+                // in that region so the cone tip doesn't blow out.
                 float2 lpXY = i.localPos.xy;
-                float lpLen = max(length(lpXY), 1e-3);
-                float3 nLocal = float3(lpXY / lpLen, 0.0);
+                float lpLen = length(lpXY);
+                float3 nLocal = float3(lpXY / max(lpLen, 1e-3), 0.0);
                 float3 n = normalize(mul((float3x3)unity_ObjectToWorld, nLocal));
+                float apexFade = saturate(lpLen / 0.4);
 
                 float3 toCam = _WorldSpaceCameraPos - i.worldPos;
                 float distToCam = length(toCam);
@@ -111,11 +117,8 @@ Shader "Kerbcam/Bowshock"
 
                 // Fresnel-style silhouette glow. abs(dot()) keeps the rim
                 // correct on the backside since Cull Off draws both faces.
-                // The rim contribution is BOOSTED so the silhouette pops,
-                // and combined with a smooth (not linear) face-on dampener
-                // so the interior reads as a hint rather than a wash.
                 float ndv = abs(dot(n, viewDir));
-                float rim = pow(1.0 - saturate(ndv), _RimPower) * 2.0;
+                float rim = pow(1.0 - saturate(ndv), _RimPower);
                 float face = pow(saturate(ndv), 2.0);
                 float faceFade = 1.0 - face * 0.75;
 
@@ -134,9 +137,12 @@ Shader "Kerbcam/Bowshock"
                 float shimmer = 0.7 + 0.6 * fxNoise;
 
                 // Soft interior glow so the cone isn't pure silhouette; the
-                // rim still dominates by a wide margin.
-                float baseGlow = 0.10;
-                float glow = (baseGlow + rim) * shimmer * faceFade * nearFade * _Intensity;
+                // rim still dominates by a wide margin. Total brightness is
+                // capped so even at peak fresnel * peak intensity the cone
+                // can't paint the frame as a wash.
+                float baseGlow = 0.08;
+                float raw = (baseGlow + rim * apexFade) * shimmer * faceFade * nearFade;
+                float glow = saturate(raw * 0.7) * _Intensity;
 
                 // Wind→plasma colour ramp, then tinted toward KSP's stock
                 // heating colour (_FXColor) at high real heating. Stays
