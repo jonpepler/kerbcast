@@ -1,0 +1,40 @@
+{
+  "name": "04_full_plasma",
+  "note": "Mach 7 / q≈0.5 kPa / 28 km — full reentry plasma. fxState=1, intensity peak, cold-density-fade has zeroed white streaks (only orange).",
+  "scalars": {
+    "mach": 7.0,
+    "dynamicPressureKPa": 0.5,
+    "atmDensity": 0.025,
+    "altitude": 28000.0,
+    "srfSpeed": 2050.0,
+    "srfVelocity": [0.0, 2050.0, 0.0]
+  },
+  "globals": {
+    "lightDirection0": [0.0, -1.0, 0.0, 0.0],
+    "fxColor": [1.0, 0.42, 0.12, 1.0],
+    "fxLength": 1.8,
+    "fxWobble": 1.3,
+    "fxFalloff": 0.7,
+    "fxDepthCamMatrix": [1,0,0,0, 0,0,-1,0, 0,1,0,0, 0,0,0,1],
+    "fxDepthProjMatrix": [1.2,0,0,0, 0,1.2,0,0, 0,0,-1.001,-1, 0,0,-0.5,0],
+    "fxProjectionNear": 0.5,
+    "fxProjectionFar": 80.0
+  },
+  "inputs": {
+    "intensity": 1.0,
+    "fxState": 1.0,
+    "fxRadiusMul": 1.6,
+    "windDirWorld": [0.0, 1.0, 0.0, 0.0]
+  },
+  "camera": {
+    "fov": 60.0,
+    "near": 0.3,
+    "far": 200.0,
+    "position": [3.5, 0.0, 0.0],
+    "rotation": [0.0, -0.7071068, 0.0, 0.7071068]
+  },
+  "textures": {
+    "fxMainTex": "",
+    "fxDepthMap": ""
+  }
+}

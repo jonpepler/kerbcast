@@ -1,0 +1,40 @@
+{
+  "name": "02_supersonic_midramp",
+  "note": "Mach 3 / q≈5 kPa / 10 km — mid-ramp. fxState ≈ 0.15 (still mostly cold), intensity climbing.",
+  "scalars": {
+    "mach": 3.0,
+    "dynamicPressureKPa": 5.0,
+    "atmDensity": 0.41,
+    "altitude": 10000.0,
+    "srfSpeed": 900.0,
+    "srfVelocity": [0.0, 900.0, 0.0]
+  },
+  "globals": {
+    "lightDirection0": [0.0, -1.0, 0.0, 0.0],
+    "fxColor": [0.85, 0.7, 0.55, 0.5],
+    "fxLength": 1.1,
+    "fxWobble": 0.6,
+    "fxFalloff": 1.1,
+    "fxDepthCamMatrix": [1,0,0,0, 0,0,-1,0, 0,1,0,0, 0,0,0,1],
+    "fxDepthProjMatrix": [1.2,0,0,0, 0,1.2,0,0, 0,0,-1.001,-1, 0,0,-0.5,0],
+    "fxProjectionNear": 0.5,
+    "fxProjectionFar": 80.0
+  },
+  "inputs": {
+    "intensity": 0.55,
+    "fxState": 0.15,
+    "fxRadiusMul": 1.6,
+    "windDirWorld": [0.0, 1.0, 0.0, 0.0]
+  },
+  "camera": {
+    "fov": 60.0,
+    "near": 0.3,
+    "far": 200.0,
+    "position": [3.5, 0.0, 0.0],
+    "rotation": [0.0, -0.7071068, 0.0, 0.7071068]
+  },
+  "textures": {
+    "fxMainTex": "",
+    "fxDepthMap": ""
+  }
+}

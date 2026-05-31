@@ -1,0 +1,40 @@
+{
+  "name": "05_above_stock_cutoff",
+  "note": "Mach 4 / q≈0.05 kPa / 40 km — above the stock heatFlux gate. C# ComputeStockFxScalar should drive intensity to 0; renderer should produce a near-black PNG. Sanity check that our gating works against real numbers.",
+  "scalars": {
+    "mach": 4.0,
+    "dynamicPressureKPa": 0.05,
+    "atmDensity": 0.0035,
+    "altitude": 40000.0,
+    "srfSpeed": 1100.0,
+    "srfVelocity": [0.0, 1100.0, 0.0]
+  },
+  "globals": {
+    "lightDirection0": [0.0, -1.0, 0.0, 0.0],
+    "fxColor": [1.0, 0.5, 0.2, 0.05],
+    "fxLength": 0.6,
+    "fxWobble": 0.4,
+    "fxFalloff": 1.5,
+    "fxDepthCamMatrix": [1,0,0,0, 0,0,-1,0, 0,1,0,0, 0,0,0,1],
+    "fxDepthProjMatrix": [1.2,0,0,0, 0,1.2,0,0, 0,0,-1.001,-1, 0,0,-0.5,0],
+    "fxProjectionNear": 0.5,
+    "fxProjectionFar": 80.0
+  },
+  "inputs": {
+    "intensity": 0.02,
+    "fxState": 1.0,
+    "fxRadiusMul": 1.6,
+    "windDirWorld": [0.0, 1.0, 0.0, 0.0]
+  },
+  "camera": {
+    "fov": 60.0,
+    "near": 0.3,
+    "far": 200.0,
+    "position": [3.5, 0.0, 0.0],
+    "rotation": [0.0, -0.7071068, 0.0, 0.7071068]
+  },
+  "textures": {
+    "fxMainTex": "",
+    "fxDepthMap": ""
+  }
+}

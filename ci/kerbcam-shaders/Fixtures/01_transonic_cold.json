@@ -1,0 +1,40 @@
+{
+  "name": "01_transonic_cold",
+  "note": "Mach 1.2 / q≈2 kPa / 4 km — cold wind onset. fxState=0 (pure condensation), intensity in active-floor regime.",
+  "scalars": {
+    "mach": 1.2,
+    "dynamicPressureKPa": 2.0,
+    "atmDensity": 0.78,
+    "altitude": 4000.0,
+    "srfSpeed": 380.0,
+    "srfVelocity": [0.0, 380.0, 0.0]
+  },
+  "globals": {
+    "lightDirection0": [0.0, -1.0, 0.0, 0.0],
+    "fxColor": [0.7, 0.8, 1.0, 0.15],
+    "fxLength": 0.7,
+    "fxWobble": 0.35,
+    "fxFalloff": 1.4,
+    "fxDepthCamMatrix": [1,0,0,0, 0,0,-1,0, 0,1,0,0, 0,0,0,1],
+    "fxDepthProjMatrix": [1.2,0,0,0, 0,1.2,0,0, 0,0,-1.001,-1, 0,0,-0.5,0],
+    "fxProjectionNear": 0.5,
+    "fxProjectionFar": 80.0
+  },
+  "inputs": {
+    "intensity": 0.27,
+    "fxState": 0.0,
+    "fxRadiusMul": 1.6,
+    "windDirWorld": [0.0, 1.0, 0.0, 0.0]
+  },
+  "camera": {
+    "fov": 60.0,
+    "near": 0.3,
+    "far": 200.0,
+    "position": [3.5, 0.0, 0.0],
+    "rotation": [0.0, -0.7071068, 0.0, 0.7071068]
+  },
+  "textures": {
+    "fxMainTex": "",
+    "fxDepthMap": ""
+  }
+}
