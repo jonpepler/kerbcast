@@ -180,16 +180,18 @@ namespace KerbcamCI
         }
 
         // Bowshock: place a procedural hollow cone above the vessel (apex
-        // points +Y = along velocity). Scaled down to vessel-relative size
-        // — the runtime BowshockEffect picks a scale of vesselExtent*0.35,
-        // which for our 4 m proxy works out to ≈0.3× of the default mesh.
+        // points +Y = along velocity). Scaled to 0.6× — twice as big as
+        // the previous 0.3× iteration, matching what real bowshocks look
+        // like (wide, diffuse). The wide base ring sinks slightly into the
+        // vessel nose so the cone wraps the windward end rather than
+        // floating ahead of it.
         private static void SetupBowshock(Transform root, Material mat)
         {
             var go = new GameObject("bowshock_cone");
             go.transform.SetParent(root, false);
             go.transform.localPosition = new Vector3(0f, 3.2f, 0f);
             go.transform.localRotation = Quaternion.LookRotation(Vector3.up, Vector3.forward);
-            go.transform.localScale = new Vector3(0.3f, 0.3f, 0.3f);
+            go.transform.localScale = new Vector3(0.6f, 0.6f, 0.6f);
             var mf = go.AddComponent<MeshFilter>();
             var mr = go.AddComponent<MeshRenderer>();
             mf.sharedMesh = BuildConeMesh();

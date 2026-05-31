@@ -31,7 +31,7 @@ Shader "Kerbcam/Bowshock"
         _WindColor   ("Wind Colour (low intensity)", Color) = (0.55, 0.65, 1.0, 1)
         _PlasmaColor ("Plasma Colour (high intensity)", Color) = (1.0, 0.40, 0.20, 1)
         _Intensity   ("Intensity", Range(0,4)) = 0
-        _RimPower    ("Rim Power", Range(0.5,12)) = 2.5
+        _RimPower    ("Rim Power", Range(0.5,12)) = 1.5
         _ScrollSpeed ("Scroll Speed", Float) = 1.5
         // Plasma colour only blends in above this intensity (reserved for
         // heavy reentry); below it stays wind-blue. Matches KerbcamPlasma.
@@ -123,7 +123,12 @@ Shader "Kerbcam/Bowshock"
                 // the alpha drop-off"). Half-length of cone is 3 in mesh
                 // local; fading begins at the outer ~17 % of the cone.
                 float apexFade = saturate(lpLen / 0.4);
-                float baseFade = smoothstep(-3.0, -2.5, i.localPos.z);
+                // Widened base fade — fades over ~1.5 units of local Z
+                // instead of 0.5. The much softer transition makes the
+                // outer half of the cone progressively dimmer, which
+                // matches "more diffuse" — the shock smears out into
+                // empty space rather than terminating at a defined edge.
+                float baseFade = smoothstep(-3.0, -1.5, i.localPos.z);
                 float endsFade = apexFade * baseFade;
 
                 float3 toCam = _WorldSpaceCameraPos - i.worldPos;
@@ -161,7 +166,10 @@ Shader "Kerbcam/Bowshock"
                 // boundaries instead of hard polygon outlines.
                 float baseGlow = 0.02;
                 float raw = (baseGlow + rim * endsFade) * shimmer * nearFade;
-                float glow = saturate(raw * 0.45) * _Intensity;
+                // Brightness cap dropped from 0.45 → 0.30 (≈33 % less peak)
+                // so the bowshock reads as a wide diffuse haze rather than
+                // a concentrated glow.
+                float glow = saturate(raw * 0.30) * _Intensity;
 
                 // Wind→plasma colour ramp, then tinted toward KSP's stock
                 // heating colour (_FXColor) at high real heating. Stays
