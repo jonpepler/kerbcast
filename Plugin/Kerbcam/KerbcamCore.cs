@@ -132,6 +132,22 @@ namespace Kerbcam
             GameEvents.onVesselChange.Add(OnVesselChange);
             GameEvents.onPartDestroyed.Add(OnPartDestroyed);
             GameEvents.onVesselWasModified.Add(OnVesselWasModified);
+
+            // Defensive: at Awake time the scene's source cameras (Camera 00,
+            // ScaledSpace, GalaxyCamera, FXCamera) may already be disabled —
+            // e.g. loading a save that was last in IVA, or a save where the
+            // previous session's throttle state was preserved by KSP. Sync
+            // our _mainCamerasDisabled flag from reality so the first
+            // RebuildCameraList correctly does the restore-rebuild-reapply
+            // dance and SetCameras sees enabled sources. Without this, the
+            // first per-camera SetCameras call would CopyFrom(null) and
+            // inherit Unity's default cullingMask (~0 — including the IVA
+            // layer 16), producing the "pod interior leak" symptom on the
+            // streams.
+            _mainCamerasDisabled = AreAnySourceCamerasDisabled();
+            if (_mainCamerasDisabled)
+                Debug.Log("[Kerbcam] source cameras already disabled at Awake — RebuildCameraList will restore before SetCameras");
+
             RebuildCameraList(FlightGlobals.ActiveVessel);
 
             // Throttle state seeded from the per-save Difficulty Setting
@@ -748,6 +764,46 @@ namespace Kerbcam
             {
                 Debug.LogWarning($"[Kerbcam] LogAllCameras failed: {ex.Message}");
             }
+        }
+
+        // Probe whether ANY of the four main source cameras KSP uses for
+        // its in-flight composite (Camera 00, Camera ScaledSpace,
+        // GalaxyCamera, FXCamera) are currently disabled. Returns true
+        // even if only one is. Used at Awake to sync our
+        // _mainCamerasDisabled flag from reality before the first
+        // RebuildCameraList — needed for load-from-IVA-save / similar
+        // paths where KSP brings the scene up with some cams off.
+        //
+        // Uses Object.FindObjectsOfType<Camera> rather than
+        // Camera.allCameras because the latter only enumerates ENABLED
+        // cameras — useless for detecting disabled ones.
+        private static bool AreAnySourceCamerasDisabled()
+        {
+            bool anyDisabled = false;
+            try
+            {
+                var all = UnityEngine.Object.FindObjectsOfType<Camera>();
+                foreach (var c in all)
+                {
+                    if (c == null) continue;
+                    if (c.name == "Camera 00"
+                        || c.name == "Camera ScaledSpace"
+                        || c.name == "GalaxyCamera"
+                        || c.name == "FXCamera")
+                    {
+                        if (!c.enabled)
+                        {
+                            Debug.Log($"[Kerbcam] AreAnySourceCamerasDisabled: '{c.name}' is disabled");
+                            anyDisabled = true;
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"[Kerbcam] AreAnySourceCamerasDisabled probe failed: {ex.Message}");
+            }
+            return anyDisabled;
         }
 
         // Camera.allCameras snapshots every active Camera, so this is
