@@ -229,24 +229,32 @@ async fn consume_loop(
         // Before forgetting the peer, wipe its SetDegrade entries from
         // every camera it was subscribed to so the noisiest-consumer
         // max relaxes when a degrade-requesting peer leaves.
-        let dropped_peers: Vec<(u32, Vec<u32>)> = {
+        let dropped_peers: Vec<Arc<KerbcamPeer>> = {
             let mut guard = peers.write().await;
             let mut dropped = Vec::new();
             guard.retain(|p| {
                 if p.is_alive() {
                     true
                 } else {
-                    dropped.push((p.peer_id, p.subscribed.clone()));
+                    dropped.push(p.clone());
                     false
                 }
             });
             dropped
         };
-        for (peer_id, subscribed) in dropped_peers {
-            for flight_id in subscribed {
-                if let Some(cam) = registry.get(flight_id).await {
-                    cam.forget_degrade(peer_id).await;
+        for peer in dropped_peers {
+            for flight_id in &peer.subscribed {
+                if let Some(cam) = registry.get(*flight_id).await {
+                    cam.forget_degrade(peer.peer_id).await;
                 }
+            }
+            // Deadman: a browser that dropped mid-hold must not leave a
+            // camera drifting to its travel limit. Zero the persistent
+            // pan/zoom rates on every camera this peer was driving — using
+            // the live slot bindings (dynamic Subscribe keeps them current),
+            // not the stale construction-time `subscribed` list.
+            for flight_id in peer.bound_flight_ids().await {
+                registry.zero_rates(flight_id).await;
             }
         }
 

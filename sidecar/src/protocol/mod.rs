@@ -175,6 +175,33 @@ pub struct SetPanPayload {
 #[typeshare]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SetPanRatePayload {
+    pub flight_id: u32,
+    /// Normalised yaw velocity, -1..=1. +1 = pan right at the part's
+    /// full `PanRateDegPerSec`. Persistent until superseded (a new rate,
+    /// including zero, replaces it); the plugin integrates it into the
+    /// pan target every frame.
+    pub yaw_rate: f32,
+    /// Normalised pitch velocity, -1..=1. +1 = pan up. Persistent until
+    /// superseded.
+    pub pitch_rate: f32,
+}
+
+#[typeshare]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetZoomRatePayload {
+    pub flight_id: u32,
+    /// Normalised zoom velocity, -1..=1. +1 = zoom IN (FoV decreasing)
+    /// at the part's full `ZoomRateDegPerSec`. Persistent until
+    /// superseded; the plugin integrates it into the FoV target every
+    /// frame.
+    pub rate: f32,
+}
+
+#[typeshare]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SetDegradePayload {
     pub flight_id: u32,
     /// 0.0 = perfect quality, 1.0 = maximum degradation. Caps and
@@ -284,6 +311,23 @@ pub enum ClientMessage {
     /// adds steerable mounts to specific parts. Clients should hide
     /// pan controls until `supportsPan == true` for the camera.
     SetPan(SetPanPayload),
+    /// Set a *persistent* pan/tilt velocity (normalised yaw + pitch,
+    /// -1..=1). Unlike `SetPan` (a one-shot absolute target), the rate
+    /// holds until a new rate — including zero, which stops — supersedes
+    /// it; the plugin integrates it into the pan target every frame so
+    /// smoothness lives in KSP's frame loop rather than the control-poll
+    /// cadence. +yaw = pan right, +pitch = pan up. Ignored (sidecar
+    /// replies `Error`) when `supportsPan == false`. Composes with
+    /// `SetPan`: an absolute command jumps the target, integration then
+    /// continues from there.
+    SetPanRate(SetPanRatePayload),
+    /// Set a *persistent* zoom velocity (normalised, -1..=1). +1 = zoom
+    /// IN (FoV decreasing). Holds until a new rate — including zero —
+    /// supersedes it; the plugin integrates it into the FoV target every
+    /// frame. Ignored (sidecar replies `Error`) when `supportsZoom ==
+    /// false`. Composes with the absolute `SetFov` the same way
+    /// `SetPanRate` composes with `SetPan`.
+    SetZoomRate(SetZoomRatePayload),
     /// Request artificial signal degradation. 0.0 = perfect quality,
     /// 1.0 = maximum degradation. Per-subscriber: the sidecar
     /// applies max across active subscribers (slowest consumer
@@ -453,6 +497,49 @@ mod tests {
             ClientMessage::SetFov(p) => {
                 assert_eq!(p.flight_id, 42);
                 assert!((p.fov - 35.5).abs() < f32::EPSILON);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn set_pan_rate_roundtrips() {
+        let msg = ClientMessage::SetPanRate(SetPanRatePayload {
+            flight_id: 42,
+            yaw_rate: 0.5,
+            pitch_rate: -1.0,
+        });
+        let s = serde_json::to_string(&msg).unwrap();
+        assert!(s.contains("\"type\":\"set-pan-rate\""));
+        assert!(s.contains("\"flightId\":42"));
+        assert!(s.contains("\"yawRate\":0.5"));
+        assert!(s.contains("\"pitchRate\":-1"));
+        let back: ClientMessage = serde_json::from_str(&s).unwrap();
+        match back {
+            ClientMessage::SetPanRate(p) => {
+                assert_eq!(p.flight_id, 42);
+                assert!((p.yaw_rate - 0.5).abs() < f32::EPSILON);
+                assert!((p.pitch_rate - -1.0).abs() < f32::EPSILON);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn set_zoom_rate_roundtrips() {
+        let msg = ClientMessage::SetZoomRate(SetZoomRatePayload {
+            flight_id: 7,
+            rate: 1.0,
+        });
+        let s = serde_json::to_string(&msg).unwrap();
+        assert!(s.contains("\"type\":\"set-zoom-rate\""));
+        assert!(s.contains("\"flightId\":7"));
+        assert!(s.contains("\"rate\":1"));
+        let back: ClientMessage = serde_json::from_str(&s).unwrap();
+        match back {
+            ClientMessage::SetZoomRate(p) => {
+                assert_eq!(p.flight_id, 7);
+                assert!((p.rate - 1.0).abs() < f32::EPSILON);
             }
             _ => panic!("wrong variant"),
         }

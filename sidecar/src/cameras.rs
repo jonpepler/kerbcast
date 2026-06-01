@@ -109,6 +109,32 @@ pub struct ControlState {
     pub pan_yaw: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pan_pitch: Option<f32>,
+    /// Persistent pan velocity, normalised -1..=1 per axis. `None` =
+    /// unchanged (the plugin keeps the last rate); `Some(0.0)` = stop.
+    /// The plugin integrates these into `pan_yaw`/`pan_pitch` every frame.
+    /// Sign matches the absolute pan: +yaw = right, +pitch = up.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pan_yaw_rate: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pan_pitch_rate: Option<f32>,
+    /// Persistent zoom velocity, normalised -1..=1. +1 = zoom in (FoV
+    /// decreasing). `None` = unchanged; `Some(0.0)` = stop. The plugin
+    /// integrates this into the FoV target every frame.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub zoom_rate: Option<f32>,
+    /// Monotonic counter bumped on every *absolute* pan command
+    /// (`apply_pan_change`). control.json is a full-state snapshot
+    /// re-serialised on every command, so the stale `pan_yaw`/`pan_pitch`
+    /// ride along on unrelated writes (and on the rate-stop flush itself).
+    /// While a rate integrates the plugin's target away from that stale
+    /// absolute, re-applying it would snap the camera back. The plugin
+    /// therefore applies the absolute pan only when `pan_seq` *changes*,
+    /// so a re-serialised stale value is idempotent but a genuine new
+    /// absolute (even one re-issuing the same value) still lands. Rate
+    /// commands and the disconnect deadman do NOT bump it.
+    pub pan_seq: u32,
+    /// As `pan_seq`, for absolute FoV (`apply_fov_change`).
+    pub fov_seq: u32,
 }
 
 /// Public shape returned by `GET /cameras` — what a browser sees before
@@ -858,6 +884,37 @@ impl CameraRegistry {
         }
     }
 
+    /// Zero a camera's persistent pan/zoom rates (the disconnect deadman).
+    /// Called from the dead-peer cleanup so a browser that dropped mid-hold
+    /// doesn't leave the camera drifting to its travel limit. Writes
+    /// `Some(0.0)` (an explicit stop) rather than `None` (which the plugin
+    /// reads as "unchanged" and would leave the last non-zero rate running).
+    /// Leaves the absolute `pan_yaw`/`fov` untouched so the camera holds its
+    /// last framed position. No-op + no flush if all three are already
+    /// stopped (`Some(0.0)` or `None`).
+    pub async fn zero_rates(&self, flight_id: u32) {
+        let Some(cam) = self.get(flight_id).await else {
+            return;
+        };
+        let snapshot = {
+            let mut ctrl = cam.control.lock().await;
+            let already_stopped = |r: Option<f32>| r.unwrap_or(0.0) == 0.0;
+            if already_stopped(ctrl.pan_yaw_rate)
+                && already_stopped(ctrl.pan_pitch_rate)
+                && already_stopped(ctrl.zoom_rate)
+            {
+                return; // nothing to stop, no flush
+            }
+            ctrl.pan_yaw_rate = Some(0.0);
+            ctrl.pan_pitch_rate = Some(0.0);
+            ctrl.zoom_rate = Some(0.0);
+            ctrl.clone()
+        };
+        if let Err(e) = self.flush_control(flight_id, &snapshot).await {
+            warn!(flight_id, error = %e, "zero_rates flush failed");
+        }
+    }
+
     /// Snapshot of all camera Arcs — used by the consume loop to iterate
     /// without holding the registry's RwLock while encoding.
     pub async fn snapshot(&self) -> Vec<Arc<CameraState>> {
@@ -1021,5 +1078,84 @@ mod tests {
             0,
             "removing an unbound track is a no-op"
         );
+    }
+
+    /// The persistent rate fields serialise to the camelCase keys the
+    /// plugin parses (`panYawRate`/`panPitchRate`/`zoomRate`), and `None`
+    /// (the "unchanged" sentinel) is omitted so the plugin keeps the last
+    /// rate rather than reading a spurious zero.
+    #[test]
+    fn control_state_serialises_rate_fields_camel_case() {
+        let ctrl = ControlState {
+            subscribed: true,
+            pan_yaw_rate: Some(0.5),
+            pan_pitch_rate: Some(-1.0),
+            zoom_rate: Some(0.0),
+            ..Default::default()
+        };
+        let s = serde_json::to_string(&ctrl).unwrap();
+        assert!(s.contains("\"panYawRate\":0.5"), "got {s}");
+        assert!(s.contains("\"panPitchRate\":-1"), "got {s}");
+        assert!(s.contains("\"zoomRate\":0"), "got {s}");
+
+        // None on every rate => keys omitted (plugin treats absence as
+        // "rate unchanged"). The seq counters are always present (the
+        // plugin keys absolute-apply off their *change*, so absence would
+        // be ambiguous).
+        let blank = ControlState::default();
+        let s = serde_json::to_string(&blank).unwrap();
+        assert!(!s.contains("panYawRate"), "got {s}");
+        assert!(!s.contains("zoomRate"), "got {s}");
+        assert!(s.contains("\"panSeq\":0"), "got {s}");
+        assert!(s.contains("\"fovSeq\":0"), "got {s}");
+    }
+
+    /// The disconnect deadman: `zero_rates` writes an explicit `Some(0.0)`
+    /// stop on every rate axis (not `None`, which the plugin would read as
+    /// "unchanged" and keep running), flushes it to the control file, and
+    /// leaves the absolute pan/fov targets untouched.
+    #[tokio::test]
+    async fn zero_rates_writes_explicit_stop() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cfg = MmapRingConfig {
+            slot_count: 4,
+            max_width: 64,
+            max_height: 64,
+        };
+        MmapFrameRing::create(&dir.path().join("1.ring"), cfg).expect("create ring");
+        let registry = CameraRegistry::new(dir.path().to_path_buf(), cfg);
+        registry.rescan().await;
+        let cam = registry.get(1).await.expect("camera attached from ring");
+
+        // Arrange: a camera mid-hold with a non-zero rate and a framed
+        // absolute pan we expect to survive the deadman.
+        {
+            let mut ctrl = cam.control.lock().await;
+            ctrl.pan_yaw_rate = Some(0.8);
+            ctrl.zoom_rate = Some(-0.5);
+            ctrl.pan_yaw = Some(12.0);
+            ctrl.pan_seq = 3;
+            ctrl.fov_seq = 4;
+        }
+
+        registry.zero_rates(1).await;
+
+        let ctrl = cam.control.lock().await;
+        assert_eq!(ctrl.pan_yaw_rate, Some(0.0));
+        assert_eq!(ctrl.pan_pitch_rate, Some(0.0));
+        assert_eq!(ctrl.zoom_rate, Some(0.0));
+        assert_eq!(ctrl.pan_yaw, Some(12.0), "absolute pan must be untouched");
+        // The deadman must NOT bump the absolute seqs — otherwise the plugin
+        // would re-apply the stale absolute and snap back to it on the very
+        // stop the deadman is issuing.
+        assert_eq!(ctrl.pan_seq, 3, "deadman must not bump pan_seq");
+        assert_eq!(ctrl.fov_seq, 4, "deadman must not bump fov_seq");
+
+        // The stop reached disk (the plugin only sees the control file).
+        let on_disk = tokio::fs::read_to_string(dir.path().join("1.control.json"))
+            .await
+            .expect("control file flushed");
+        assert!(on_disk.contains("\"panYawRate\": 0"), "got {on_disk}");
+        assert!(on_disk.contains("\"zoomRate\": 0"), "got {on_disk}");
     }
 }

@@ -28,6 +28,21 @@ export interface KerbcamCameraHandle {
   setRenderSize(width: number, height: number): Promise<void>;
   setFov(fov: number): Promise<void>;
   setPan(yaw: number, pitch: number): Promise<void>;
+  /**
+   * Set a persistent pan/tilt velocity (normalised, -1..1 per axis;
+   * +yaw = right, +pitch = up). Holds until superseded — send
+   * `setPanRate(0, 0)` to stop. Smoothing happens in the plugin's frame
+   * loop, so call this only when the input changes (e.g. arrow down /
+   * release), not on a timer.
+   */
+  setPanRate(yawRate: number, pitchRate: number): Promise<void>;
+  /**
+   * Set a persistent zoom velocity (normalised, -1..1; +1 = zoom in,
+   * FoV decreasing). Holds until superseded — send `setZoomRate(0)` to
+   * stop. Like {@link setPanRate}, call on input change (press-and-hold),
+   * not on a timer.
+   */
+  setZoomRate(rate: number): Promise<void>;
   setDegrade(level: number): Promise<void>;
   requestKeyframe(): Promise<void>;
 
@@ -390,6 +405,20 @@ class CameraHandle
     await this.client._send({
       type: "set-pan",
       content: { flightId: this.flightId, yaw, pitch },
+    });
+  }
+
+  async setPanRate(yawRate: number, pitchRate: number): Promise<void> {
+    await this.client._send({
+      type: "set-pan-rate",
+      content: { flightId: this.flightId, yawRate, pitchRate },
+    });
+  }
+
+  async setZoomRate(rate: number): Promise<void> {
+    await this.client._send({
+      type: "set-zoom-rate",
+      content: { flightId: this.flightId, rate },
     });
   }
 

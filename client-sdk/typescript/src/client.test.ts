@@ -454,6 +454,30 @@ describe("KerbcamClient", () => {
     );
   });
 
+  it("setPanRate and setZoomRate route correct JSON onto the control channel", async () => {
+    const { transport, captured } = makeFakeTransport();
+    const client = new KerbcamClient({ host: "h", port: 1 }, transport);
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(fakeAnswer());
+
+    await client.connect();
+    captured.dc?._open();
+    captured.dc!.sent.length = 0;
+
+    const cam = client.camera(5);
+    await cam.setPanRate(0.5, -1);
+    await cam.setZoomRate(1);
+
+    expect(captured.dc?.sent[0]).toBe(
+      JSON.stringify({
+        type: "set-pan-rate",
+        content: { flightId: 5, yawRate: 0.5, pitchRate: -1 },
+      }),
+    );
+    expect(captured.dc?.sent[1]).toBe(
+      JSON.stringify({ type: "set-zoom-rate", content: { flightId: 5, rate: 1 } }),
+    );
+  });
+
   it("peer failed state emits failed and tears down streams", async () => {
     const { transport, captured } = makeFakeTransport();
     const client = new KerbcamClient({ host: "h", port: 1 }, transport);

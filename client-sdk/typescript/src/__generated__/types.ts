@@ -183,10 +183,37 @@ export interface SetPanPayload {
 	pitch: number;
 }
 
+export interface SetPanRatePayload {
+	flightId: number;
+	/**
+	 * Normalised yaw velocity, -1..=1. +1 = pan right at the part's
+	 * full `PanRateDegPerSec`. Persistent until superseded (a new rate,
+	 * including zero, replaces it); the plugin integrates it into the
+	 * pan target every frame.
+	 */
+	yawRate: number;
+	/**
+	 * Normalised pitch velocity, -1..=1. +1 = pan up. Persistent until
+	 * superseded.
+	 */
+	pitchRate: number;
+}
+
 export interface SetRenderSizePayload {
 	flightId: number;
 	width: number;
 	height: number;
+}
+
+export interface SetZoomRatePayload {
+	flightId: number;
+	/**
+	 * Normalised zoom velocity, -1..=1. +1 = zoom IN (FoV decreasing)
+	 * at the part's full `ZoomRateDegPerSec`. Persistent until
+	 * superseded; the plugin integrates it into the FoV target every
+	 * frame.
+	 */
+	rate: number;
 }
 
 /**
@@ -243,6 +270,27 @@ export type ClientMessage =
 	 * pan controls until `supportsPan == true` for the camera.
 	 */
 	| { type: "set-pan", content: SetPanPayload }
+	/**
+	 * Set a *persistent* pan/tilt velocity (normalised yaw + pitch,
+	 * -1..=1). Unlike `SetPan` (a one-shot absolute target), the rate
+	 * holds until a new rate — including zero, which stops — supersedes
+	 * it; the plugin integrates it into the pan target every frame so
+	 * smoothness lives in KSP's frame loop rather than the control-poll
+	 * cadence. +yaw = pan right, +pitch = pan up. Ignored (sidecar
+	 * replies `Error`) when `supportsPan == false`. Composes with
+	 * `SetPan`: an absolute command jumps the target, integration then
+	 * continues from there.
+	 */
+	| { type: "set-pan-rate", content: SetPanRatePayload }
+	/**
+	 * Set a *persistent* zoom velocity (normalised, -1..=1). +1 = zoom
+	 * IN (FoV decreasing). Holds until a new rate — including zero —
+	 * supersedes it; the plugin integrates it into the FoV target every
+	 * frame. Ignored (sidecar replies `Error`) when `supportsZoom ==
+	 * false`. Composes with the absolute `SetFov` the same way
+	 * `SetPanRate` composes with `SetPan`.
+	 */
+	| { type: "set-zoom-rate", content: SetZoomRatePayload }
 	/**
 	 * Request artificial signal degradation. 0.0 = perfect quality,
 	 * 1.0 = maximum degradation. Per-subscriber: the sidecar

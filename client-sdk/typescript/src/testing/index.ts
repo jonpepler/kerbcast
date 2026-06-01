@@ -390,6 +390,12 @@ export class MockSidecar {
         }
         break;
       }
+      // Persistent velocities are integrated frame-by-frame by the plugin;
+      // the mock has no frame clock, so it doesn't model their *effect* on
+      // panYaw/fov. They're still recorded in `_commands`, so consumer tests
+      // can assert the command was sent via `lastCommand("set-pan-rate")`.
+      case "set-pan-rate":
+      case "set-zoom-rate":
       case "hello":
       case "pong":
       case "request-keyframe":

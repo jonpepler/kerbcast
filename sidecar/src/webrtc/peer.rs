@@ -50,8 +50,8 @@ use crate::encoder::selected_backend_name;
 use crate::protocol::{
     CameraLifecycle, CameraSnapshotPayload, CameraState, CameraStateChangedPayload, ClientMessage,
     ErrorPayload, ErrorSource, FlightIdPayload, HelloPayload, Layer, ServerMessage,
-    SetDegradePayload, SetFovPayload, SetLayersPayload, SetPanPayload, SetRenderSizePayload,
-    SlotMapPayload,
+    SetDegradePayload, SetFovPayload, SetLayersPayload, SetPanPayload, SetPanRatePayload,
+    SetRenderSizePayload, SetZoomRatePayload, SlotMapPayload,
 };
 
 const CONTROL_CHANNEL_LABEL: &str = "kerbcam-control";
@@ -284,6 +284,20 @@ impl KerbcamPeer {
         self.alive.load(Ordering::Acquire)
     }
 
+    /// Flight IDs currently bound to this peer's slots. Unlike the
+    /// construction-time `subscribed` list, this reflects dynamic
+    /// `Subscribe`/`Unsubscribe` (which mutate the slots, not that list),
+    /// so the dead-peer cleanup can zero rates on exactly the cameras this
+    /// peer was driving when it dropped.
+    pub async fn bound_flight_ids(&self) -> Vec<u32> {
+        self.slots
+            .lock()
+            .await
+            .iter()
+            .filter_map(|s| s.bound)
+            .collect()
+    }
+
     /// Server-initiated push to the browser. No-op if the control
     /// channel hasn't been opened yet (we drop the message rather than
     /// queue — pushes from the consume loop are state snapshots, so a
@@ -381,6 +395,16 @@ async fn handle_client_message(
             pitch,
         }) => {
             apply_pan_change(&registry, &dc, flight_id, yaw, pitch).await;
+        }
+        ClientMessage::SetPanRate(SetPanRatePayload {
+            flight_id,
+            yaw_rate,
+            pitch_rate,
+        }) => {
+            apply_pan_rate_change(&registry, &dc, flight_id, yaw_rate, pitch_rate).await;
+        }
+        ClientMessage::SetZoomRate(SetZoomRatePayload { flight_id, rate }) => {
+            apply_zoom_rate_change(&registry, &dc, flight_id, rate).await;
         }
         ClientMessage::SetDegrade(SetDegradePayload { flight_id, level }) => {
             apply_degrade_change(&registry, &dc, peer_id, flight_id, level).await;
@@ -703,6 +727,11 @@ async fn apply_fov_change(
     let snapshot = {
         let mut ctrl = cam.control.lock().await;
         ctrl.fov = Some(clamped);
+        // Bump so the plugin applies this absolute even mid zoom-rate hold
+        // (and distinguishes it from the same value re-serialised on an
+        // unrelated write). Wrapping is fine — the plugin compares for
+        // change, not magnitude.
+        ctrl.fov_seq = ctrl.fov_seq.wrapping_add(1);
         ctrl.clone()
     };
 
@@ -765,6 +794,9 @@ async fn apply_pan_change(
         let mut ctrl = cam.control.lock().await;
         ctrl.pan_yaw = Some(yaw_clamped);
         ctrl.pan_pitch = Some(pitch_clamped);
+        // Bump so the plugin applies this absolute even mid pan-rate hold
+        // (see `ControlState::pan_seq`). Covers both yaw and pitch.
+        ctrl.pan_seq = ctrl.pan_seq.wrapping_add(1);
         ctrl.clone()
     };
 
@@ -786,6 +818,140 @@ async fn apply_pan_change(
         yaw = yaw_clamped,
         pitch = pitch_clamped,
         "data-channel set-pan applied"
+    );
+    push_camera_state(registry, dc, flight_id).await;
+}
+
+/// Persistent pan velocity. Mirrors `apply_pan_change` but stores a
+/// normalised rate the plugin integrates per frame rather than an absolute
+/// target. A rate holds until superseded (including by zero), so the on-disk
+/// `pan_yaw_rate`/`pan_pitch_rate` carry the last command.
+async fn apply_pan_rate_change(
+    registry: &Arc<CameraRegistry>,
+    dc: &Arc<RTCDataChannel>,
+    flight_id: u32,
+    yaw_rate: f32,
+    pitch_rate: f32,
+) {
+    let cam = match registry.get(flight_id).await {
+        Some(c) => c,
+        None => {
+            send_server_message(
+                dc,
+                &ServerMessage::Error(ErrorPayload {
+                    message: format!("no camera with flight_id={flight_id}"),
+                    source: ErrorSource::Sidecar,
+                }),
+            )
+            .await;
+            return;
+        }
+    };
+    if !cam.supports_pan {
+        send_server_message(
+            dc,
+            &ServerMessage::Error(ErrorPayload {
+                message: format!(
+                    "camera {flight_id} does not support pan/tilt (yet — \
+                     planned mod extension)"
+                ),
+                source: ErrorSource::Sidecar,
+            }),
+        )
+        .await;
+        return;
+    }
+    let yaw_clamped = yaw_rate.clamp(-1.0, 1.0);
+    let pitch_clamped = pitch_rate.clamp(-1.0, 1.0);
+
+    let snapshot = {
+        let mut ctrl = cam.control.lock().await;
+        ctrl.pan_yaw_rate = Some(yaw_clamped);
+        ctrl.pan_pitch_rate = Some(pitch_clamped);
+        ctrl.clone()
+    };
+
+    if let Err(e) = registry.flush_control(flight_id, &snapshot).await {
+        warn!(flight_id, error = %e, "control file flush failed");
+        send_server_message(
+            dc,
+            &ServerMessage::Error(ErrorPayload {
+                message: format!("control file flush failed: {e}"),
+                source: ErrorSource::Sidecar,
+            }),
+        )
+        .await;
+        return;
+    }
+
+    info!(
+        flight_id,
+        yaw_rate = yaw_clamped,
+        pitch_rate = pitch_clamped,
+        "data-channel set-pan-rate applied"
+    );
+    push_camera_state(registry, dc, flight_id).await;
+}
+
+/// Persistent zoom velocity. Mirrors `apply_fov_change` but stores a
+/// normalised rate (+1 = zoom in) the plugin integrates into the FoV target
+/// per frame, rather than an absolute FoV. Holds until superseded.
+async fn apply_zoom_rate_change(
+    registry: &Arc<CameraRegistry>,
+    dc: &Arc<RTCDataChannel>,
+    flight_id: u32,
+    rate: f32,
+) {
+    let cam = match registry.get(flight_id).await {
+        Some(c) => c,
+        None => {
+            send_server_message(
+                dc,
+                &ServerMessage::Error(ErrorPayload {
+                    message: format!("no camera with flight_id={flight_id}"),
+                    source: ErrorSource::Sidecar,
+                }),
+            )
+            .await;
+            return;
+        }
+    };
+    if !cam.supports_zoom {
+        send_server_message(
+            dc,
+            &ServerMessage::Error(ErrorPayload {
+                message: format!("camera {flight_id} does not support zoom"),
+                source: ErrorSource::Sidecar,
+            }),
+        )
+        .await;
+        return;
+    }
+    let clamped = rate.clamp(-1.0, 1.0);
+
+    let snapshot = {
+        let mut ctrl = cam.control.lock().await;
+        ctrl.zoom_rate = Some(clamped);
+        ctrl.clone()
+    };
+
+    if let Err(e) = registry.flush_control(flight_id, &snapshot).await {
+        warn!(flight_id, error = %e, "control file flush failed");
+        send_server_message(
+            dc,
+            &ServerMessage::Error(ErrorPayload {
+                message: format!("control file flush failed: {e}"),
+                source: ErrorSource::Sidecar,
+            }),
+        )
+        .await;
+        return;
+    }
+
+    info!(
+        flight_id,
+        rate = clamped,
+        "data-channel set-zoom-rate applied"
     );
     push_camera_state(registry, dc, flight_id).await;
 }

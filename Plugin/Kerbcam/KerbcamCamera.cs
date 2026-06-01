@@ -123,6 +123,40 @@ namespace Kerbcam
         private float _panPitchTarget;
         private float _panYawCurrent;
         private float _panPitchCurrent;
+        // Persistent velocities from set-pan-rate / set-zoom-rate, normalised
+        // -1..1. Each holds its last value until a new rate supersedes it
+        // (a missing JSON field leaves the rate unchanged; only an explicit 0
+        // stops). Integrated every Refresh() into the pan/fov targets.
+        //   +panYawRate   = pan right    (matches absolute panYaw sign)
+        //   +panPitchRate = pan up       (matches absolute panPitch sign)
+        //   +zoomRate     = zoom IN      (FoV DECREASES — subtracted from target)
+        private float _panYawRate;
+        private float _panPitchRate;
+        private float _zoomRate;
+        // Smoothed FoV target. SetFov and the zoom-rate integrator write this;
+        // Fov slews toward it each Refresh() at _zoomCap.FovSlewDegPerSec so both
+        // discrete set-fov and hold-to-zoom animate rather than snap. Initialised
+        // to the camera's starting FoV in the constructor (snapped, not slewed).
+        private float _fovTarget;
+        // Last-seen absolute-command sequence numbers (panSeq / fovSeq in
+        // control.json). control.json is a full-state snapshot the sidecar
+        // re-serialises on *every* command, so the stale absolute panYaw /
+        // panPitch / fov rides along on unrelated writes — and on the
+        // rate-stop flush itself. While a rate has integrated the target away
+        // from that stale absolute, re-applying it would snap the camera back
+        // (e.g. every release slews back to the last preset). The sidecar
+        // bumps these seqs ONLY on an absolute set-pan / set-fov (never on a
+        // rate command or the disconnect deadman), so we apply the absolute
+        // only when its seq changes — a re-serialised stale value is then
+        // idempotent, while a genuine new absolute (even re-issuing the same
+        // value, e.g. re-clicking a preset after drift) still lands. Init to
+        // -1 (no real seq) so the first snapshot carrying an absolute applies.
+        private long _lastPanSeq = -1;
+        private long _lastFovSeq = -1;
+        // Zoom rate caps. No per-part table — every camera carries the default
+        // rates; they only matter when SupportsZoom. Must NOT be left as
+        // default(ZoomCapability): all-zero would freeze the FoV slew.
+        private readonly ZoomCapability _zoomCap = ZoomCapability.Default;
         // Base rotation of the near camera at part-attach time. Pan is applied
         // as baseRot * Euler(-pitch, yaw, 0) so the camera's natural forward
         // direction is the zero point.
@@ -236,7 +270,10 @@ namespace Kerbcam
                 FovMin = hullcam.cameraFoV;
                 FovMax = hullcam.cameraFoV;
             }
-            Fov = hullcam.cameraFoV;
+            // Snap both the displayed FoV and the slew target so a fresh camera
+            // starts settled (SetFov now only moves _fovTarget; the constructor
+            // is the one place that snaps Fov directly).
+            Fov = _fovTarget = hullcam.cameraFoV;
 
             // Cache identity fields now while the Part is guaranteed live.
             // WriteDestroyedManifest (called from Dispose, which may be
@@ -738,21 +775,23 @@ namespace Kerbcam
         }
 
         /// <summary>
-        /// Apply an operator-driven FoV change. Updates the Hullcam
-        /// module (so its right-click GUI stays in sync) and every
-        /// active Unity Camera in our layered triple. Silently no-ops
-        /// for parts where `SupportsZoom == false`.
+        /// Apply an operator-driven (discrete) FoV change. Sets the slew
+        /// *target* rather than snapping `Fov` directly — Refresh() animates
+        /// the displayed FoV (and the Hullcam module + Unity cameras) toward
+        /// the target at `_zoomCap.FovSlewDegPerSec`, so a discrete `set-fov`
+        /// now reads as a smooth zoom instead of a hard step. Composes with
+        /// the zoom rate: an absolute set-fov jumps the target, then any active
+        /// rate continues integrating from there. Silently no-ops for parts
+        /// where `SupportsZoom == false`.
         /// </summary>
         public void SetFov(float fov)
         {
             if (!SupportsZoom) return;
             float clamped = Mathf.Clamp(fov, FovMin, FovMax);
-            if (Mathf.Abs(clamped - Fov) < 0.01f) return;
-            Fov = clamped;
-            Hullcam.cameraFoV = clamped;
-            if (_nearCam != null) _nearCam.fieldOfView = clamped;
-            if (_scaledCam != null) _scaledCam.fieldOfView = clamped;
-            if (_galaxyCam != null) _galaxyCam.fieldOfView = clamped;
+            // Compare against the target, not Fov: Fov lags as it slews, so a
+            // Fov-based early-out would misfire mid-animation.
+            if (Mathf.Abs(clamped - _fovTarget) < 0.01f) return;
+            _fovTarget = clamped;
         }
 
         /// <summary>
@@ -841,6 +880,18 @@ namespace Kerbcam
                         // instead of a phantom pan-back from the last rest position.
                         _panYawCurrent = _panYawTarget;
                         _panPitchCurrent = _panPitchTarget;
+                        // Mirror the snap for FoV: jump the displayed FoV to its
+                        // commanded target (and apply to the cameras + Hullcam GUI)
+                        // so a resubscribing peer sees the commanded zoom at once
+                        // rather than slewing from a stale value.
+                        if (SupportsZoom)
+                        {
+                            Fov = _fovTarget;
+                            Hullcam.cameraFoV = Fov;
+                            if (_nearCam != null) _nearCam.fieldOfView = Fov;
+                            if (_scaledCam != null) _scaledCam.fieldOfView = Fov;
+                            if (_galaxyCam != null) _galaxyCam.fieldOfView = Fov;
+                        }
                     }
                     Debug.Log($"[Kerbcam] cam={FlightId} subscribed → {_subscribed}");
                     ApplyLayers();
@@ -851,10 +902,25 @@ namespace Kerbcam
                     SetOperatorLayers(layers.Value);
                     Debug.Log($"[Kerbcam] cam={FlightId} operator layers → {_operatorLayers}");
                 }
+                // Absolute FoV is applied only when its seq changes (see
+                // _lastFovSeq) so the stale fov re-serialised on unrelated
+                // writes / the zoom-rate-stop flush doesn't snap a drifting
+                // _fovTarget back. A genuine set-fov bumps fovSeq.
                 var fov = ParseFloatField(raw, "fov");
-                if (fov.HasValue && SupportsZoom)
+                var fovSeqF = ParseFloatField(raw, "fovSeq");
+                long fovSeq = fovSeqF.HasValue ? (long)fovSeqF.Value : 0L;
+                if (fov.HasValue && SupportsZoom && fovSeq != _lastFovSeq)
                 {
                     SetFov(fov.Value);
+                }
+                _lastFovSeq = fovSeq;
+                // Zoom rate (guarded by SupportsZoom, with the absolute fov read).
+                // Persistent: field-missing leaves the current rate unchanged; an
+                // explicit 0 stops zooming. +rate = zoom IN (FoV decreases).
+                if (SupportsZoom)
+                {
+                    var zoomRate = ParseFloatField(raw, "zoomRate");
+                    if (zoomRate.HasValue) _zoomRate = Mathf.Clamp(zoomRate.Value, -1f, 1f);
                 }
                 // Field-missing leaves the construction-time value untouched.
                 var enableFx = ParseBoolField(raw, "enableAtmosphericFx");
@@ -865,12 +931,30 @@ namespace Kerbcam
                 }
                 if (SupportsPan)
                 {
+                    // Absolute pan is applied only when panSeq changes (see
+                    // _lastPanSeq) so the stale panYaw/panPitch re-serialised
+                    // on unrelated writes / the rate-stop flush doesn't snap a
+                    // drifting target back. panSeq covers both yaw and pitch.
                     var panYaw = ParseFloatField(raw, "panYaw");
                     var panPitch = ParseFloatField(raw, "panPitch");
-                    if (panYaw.HasValue)
-                        _panYawTarget = Mathf.Clamp(panYaw.Value, _panCap.YawMin, _panCap.YawMax);
-                    if (panPitch.HasValue)
-                        _panPitchTarget = Mathf.Clamp(panPitch.Value, _panCap.PitchMin, _panCap.PitchMax);
+                    var panSeqF = ParseFloatField(raw, "panSeq");
+                    long panSeq = panSeqF.HasValue ? (long)panSeqF.Value : 0L;
+                    if (panSeq != _lastPanSeq)
+                    {
+                        if (panYaw.HasValue)
+                            _panYawTarget = Mathf.Clamp(panYaw.Value, _panCap.YawMin, _panCap.YawMax);
+                        if (panPitch.HasValue)
+                            _panPitchTarget = Mathf.Clamp(panPitch.Value, _panCap.PitchMin, _panCap.PitchMax);
+                    }
+                    _lastPanSeq = panSeq;
+                    // Pan rates (guarded by SupportsPan, with the absolute reads).
+                    // Persistent: field-missing leaves the current rate unchanged;
+                    // an explicit 0 stops that axis. +yawRate = pan right,
+                    // +pitchRate = pan up (matches the absolute pan sign).
+                    var panYawRate = ParseFloatField(raw, "panYawRate");
+                    if (panYawRate.HasValue) _panYawRate = Mathf.Clamp(panYawRate.Value, -1f, 1f);
+                    var panPitchRate = ParseFloatField(raw, "panPitchRate");
+                    if (panPitchRate.HasValue) _panPitchRate = Mathf.Clamp(panPitchRate.Value, -1f, 1f);
                 }
             }
             catch (Exception ex)
@@ -1042,6 +1126,21 @@ namespace Kerbcam
             // transform consistent for the frame when subscription resumes.
             if (SupportsPan)
             {
+                // Velocity integration: advance the pan TARGET by the persistent
+                // rate before the slew runs, so the existing MoveTowards (the
+                // fast final smoothing filter) tracks the advancing target.
+                // Bounds-clamped so a stuck rate parks at the travel limit rather
+                // than running away. +yawRate = pan right, +pitchRate = pan up.
+                if (_panYawRate != 0f || _panPitchRate != 0f)
+                {
+                    _panYawTarget = Mathf.Clamp(
+                        _panYawTarget + _panYawRate * _panCap.PanRateDegPerSec * Time.deltaTime,
+                        _panCap.YawMin, _panCap.YawMax);
+                    _panPitchTarget = Mathf.Clamp(
+                        _panPitchTarget + _panPitchRate * _panCap.PanRateDegPerSec * Time.deltaTime,
+                        _panCap.PitchMin, _panCap.PitchMax);
+                }
+
                 float maxDelta = _panCap.SlewDegPerSec * Time.deltaTime;
                 _panYawCurrent = Mathf.MoveTowards(_panYawCurrent, _panYawTarget, maxDelta);
                 _panPitchCurrent = Mathf.MoveTowards(_panPitchCurrent, _panPitchTarget, maxDelta);
@@ -1101,6 +1200,33 @@ namespace Kerbcam
                     if (_pitchTransform != null)
                         _pitchTransform.localRotation = _pitchRestRot
                             * Quaternion.Euler(-_panPitchCurrent, 0f, 0f);
+                }
+            }
+
+            // Zoom: integrate the persistent zoom rate into the FoV target, then
+            // slew the displayed FoV toward it. Runs every tick (BEFORE the
+            // subscription gate) for the same reason as the pan slew — so a
+            // resubscribing peer finds Fov already tracking its commanded target
+            // rather than mid-step. +rate = zoom IN, so SUBTRACT from FoV.
+            // Bounds-clamped to [FovMin, FovMax] so a stuck rate parks at the
+            // limit. This makes BOTH discrete set-fov and set-zoom-rate smooth.
+            if (SupportsZoom)
+            {
+                if (_zoomRate != 0f)
+                    _fovTarget = Mathf.Clamp(
+                        _fovTarget - _zoomRate * _zoomCap.ZoomRateDegPerSec * Time.deltaTime,
+                        FovMin, FovMax);
+                if (Mathf.Abs(Fov - _fovTarget) > 0.001f)
+                {
+                    Fov = Mathf.MoveTowards(Fov, _fovTarget, _zoomCap.FovSlewDegPerSec * Time.deltaTime);
+                    // Keep the Hullcam module's FoV (right-click GUI) in sync with
+                    // the actually-displayed FoV — this assignment used to live in
+                    // SetFov but now tracks the slewing value, including rate-driven
+                    // zoom, so the GUI matches the stream throughout the animation.
+                    Hullcam.cameraFoV = Fov;
+                    if (_nearCam != null) _nearCam.fieldOfView = Fov;
+                    if (_scaledCam != null) _scaledCam.fieldOfView = Fov;
+                    if (_galaxyCam != null) _galaxyCam.fieldOfView = Fov;
                 }
             }
 

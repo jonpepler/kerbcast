@@ -8,8 +8,16 @@ namespace Kerbcam
         public float YawMax;
         public float PitchMin;
         public float PitchMax;
-        /// <summary>Degrees per second during interpolation slew.</summary>
+        /// <summary>Degrees per second during interpolation slew. This is the
+        /// fast mesh-follow rate (90–180°/s) the Current value chases the
+        /// Target at — it is the final smoothing filter, NOT the framing speed.</summary>
         public float SlewDegPerSec;
+        /// <summary>Full-deflection framing speed (degrees/sec) applied to a
+        /// normalised pan rate from `set-pan-rate`. Deliberately distinct from
+        /// (and slower than) the mesh `SlewDegPerSec`: this is how fast the
+        /// operator-commanded *target* advances when holding a pan input; the
+        /// slew then tracks that advancing target. 0 disables hold-to-pan.</summary>
+        public float PanRateDegPerSec;
         /// <summary>Named transform in the part mesh that rotates for yaw.
         /// Empty string means no mesh animation for yaw.</summary>
         public string YawTransformName;
@@ -31,6 +39,37 @@ namespace Kerbcam
         public float CameraRollDeg;
 
         public bool SupportsPan => YawMin != YawMax || PitchMin != PitchMax;
+    }
+
+    /// <summary>
+    /// Zoom (FoV) rate capability. Independent of <see cref="PanCapability"/>:
+    /// pan and zoom are gated separately (zoom support is runtime-detected from
+    /// the <c>MuMechModuleHullCameraZoom</c> subclass, not from a part-name
+    /// table), so this is a small dedicated struct rather than an extension of
+    /// the pan caps. There is no per-part zoom table — every zoom-capable
+    /// camera uses <see cref="Default"/>.
+    /// </summary>
+    internal struct ZoomCapability
+    {
+        /// <summary>Full-deflection zoom speed in FoV degrees/sec applied to a
+        /// normalised zoom rate from `set-zoom-rate`. +rate zooms IN (FoV
+        /// decreases) so this is subtracted from the FoV target. 0 disables
+        /// hold-to-zoom.</summary>
+        public float ZoomRateDegPerSec;
+        /// <summary>Discrete-zoom smoothing rate (degrees/sec) the displayed
+        /// FoV slews toward its target at. Drives BOTH discrete `set-fov` and
+        /// `set-zoom-rate`. Must be non-zero or FoV freezes (MoveTowards by 0).</summary>
+        public float FovSlewDegPerSec;
+
+        /// <summary>Default zoom rates. Must be used in place of
+        /// <c>default(ZoomCapability)</c> for any zoom-capable camera — an
+        /// all-zero struct would freeze FoV slew (MoveTowards by 0) and disable
+        /// hold-to-zoom.</summary>
+        public static ZoomCapability Default => new ZoomCapability
+        {
+            ZoomRateDegPerSec = 20f,
+            FovSlewDegPerSec = 60f,
+        };
     }
 
     // Hardcoded capability table keyed by KSP part name (partInfo.name).
@@ -58,6 +97,7 @@ namespace Kerbcam
                 YawMin = -135f, YawMax = 135f,
                 PitchMin = 0f,  PitchMax = 0f,
                 SlewDegPerSec = 180f,
+                PanRateDegPerSec = 25f,
                 YawTransformName = "TopJoint",
                 PitchTransformName = "",
             },
@@ -75,6 +115,7 @@ namespace Kerbcam
                 YawMin = -180f, YawMax = 180f,
                 PitchMin = -45f, PitchMax = 60f,
                 SlewDegPerSec = 90f,
+                PanRateDegPerSec = 25f,
                 YawTransformName = "hc_launchcam",
                 PitchTransformName = "hc_launchcam",
                 YawBaseTransformName = "hc_launchbase",
