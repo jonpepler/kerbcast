@@ -264,11 +264,14 @@ namespace Kerbcam
 
         private static string ResolveSidecarBinary()
         {
-            // Bundled location: GameData/Kerbcam/sidecar/kerbcam-sidecar
+            // Bundled location: GameData/Kerbcam/Sidecar/kerbcam-sidecar
+            // Casing matters — the Deck's filesystem is case-sensitive and the
+            // release workflow (.github/workflows/release.yml) packages into
+            // "Sidecar" (capital S). Keep this in lockstep with release.yml.
             // KSPUtil.ApplicationRootPath is the KSP install root.
             var bundled = Path.Combine(
                 KSPUtil.ApplicationRootPath,
-                "GameData", "Kerbcam", "sidecar", "kerbcam-sidecar");
+                "GameData", "Kerbcam", "Sidecar", "kerbcam-sidecar");
             if (File.Exists(bundled)) return bundled;
             return null;
         }
