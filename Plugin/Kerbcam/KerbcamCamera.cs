@@ -112,7 +112,13 @@ namespace Kerbcam
         private readonly string _ringPath;
         private readonly string _infoPath;
         private readonly string _controlPath;
-        private DateTime _lastControlMtime = DateTime.MinValue;
+        // Last control-file CONTENTS we acted on. Change detection compares the
+        // raw bytes, NOT mtime: the sidecar can flush twice within one
+        // filesystem mtime tick (a drag move immediately followed by the rate=0
+        // stop on release), and an mtime-equality guard silently drops the
+        // second write — the camera then pans forever because the stop is never
+        // read. Content comparison is collision-proof.
+        private string _lastControlRaw;
         private int _controlCheckCountdown;
 
         // Pan/tilt interpolation state. Target is written by PollControlFile
@@ -859,11 +865,12 @@ namespace Kerbcam
             try
             {
                 if (!File.Exists(_controlPath)) return;
-                var mtime = File.GetLastWriteTimeUtc(_controlPath);
-                if (mtime == _lastControlMtime) return;
-                _lastControlMtime = mtime;
-
                 var raw = File.ReadAllText(_controlPath);
+                // Skip only when the contents are byte-identical to what we last
+                // applied. Reading every poll is cheap (tmpfs, a few hundred
+                // bytes); this is what makes the rate=0 stop impossible to miss.
+                if (raw == _lastControlRaw) return;
+                _lastControlRaw = raw;
                 // Subscriber flag drives the per-layer Camera.enabled
                 // state via ApplyLayers. Default (field missing) is
                 // false — safer to leave a cam asleep than to render
@@ -1109,15 +1116,13 @@ namespace Kerbcam
 
         public void Refresh()
         {
-            // Control-file poll every frame (~60Hz at 60fps). The only cost is
-            // one File.GetLastWriteTimeUtc stat() per frame — a single syscall
-            // (<1µs on Linux ext4/tmpfs); the file is only re-read when mtime
-            // changes. At the previous 20Hz cadence (countdown=3), a released
-            // pan-rate command could go unacknowledged for up to 50ms, causing
-            // ~1.25° overshoot at full deflection (25°/s × 0.05s). At 60Hz the
-            // worst-case command pickup latency drops to ~16ms and overshoot to
-            // ~0.42°, making stop-accuracy and start-responsiveness noticeably
-            // better with zero meaningful runtime cost.
+            // Control-file poll every frame (~60Hz at 60fps). PollControlFile
+            // reads the (tiny, tmpfs-backed) file and compares its contents, so
+            // the cost is one small read + a string compare per frame — the work
+            // of applying state only runs when the contents actually change. At
+            // the previous 20Hz cadence (countdown=3), a released pan-rate command
+            // could go unacknowledged for up to 50ms (~1.25° overshoot at 25°/s);
+            // at 60Hz pickup latency drops to ~16ms and overshoot to ~0.42°.
             if (--_controlCheckCountdown <= 0)
             {
                 _controlCheckCountdown = 1;
