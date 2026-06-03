@@ -112,13 +112,12 @@ namespace Kerbcam
         private readonly string _ringPath;
         private readonly string _infoPath;
         private readonly string _controlPath;
-        // Last control-file CONTENTS we acted on. Change detection compares the
-        // raw bytes, NOT mtime: the sidecar can flush twice within one
-        // filesystem mtime tick (a drag move immediately followed by the rate=0
-        // stop on release), and an mtime-equality guard silently drops the
-        // second write — the camera then pans forever because the stop is never
-        // read. Content comparison is collision-proof.
-        private string _lastControlRaw;
+        // Shared-memory control block written by the sidecar (replaces the
+        // <flight_id>.control.json poll). Opened lazily once the file appears.
+        // Its monotonic seqlock counter is the change detector — collision-proof,
+        // unlike the mtime/content compare it replaces, so a rate=0 stop right
+        // after a drag can never be silently dropped.
+        private ControlBlock _controlBlock;
         private int _controlCheckCountdown;
 
         // Pan/tilt interpolation state. Target is written by PollControlFile
@@ -292,7 +291,7 @@ namespace Kerbcam
 
             _ringPath = Path.Combine(ringDir, $"{FlightId}.ring");
             _infoPath = Path.Combine(ringDir, $"{FlightId}.info.json");
-            _controlPath = Path.Combine(ringDir, $"{FlightId}.control.json");
+            _controlPath = Path.Combine(ringDir, $"{FlightId}.control.bin");
             // Ring is allocated at the global max — adaptive resolution
             // shrinks the rendered frame but the ring's slot capacity
             // stays the same. Each slot's header carries the actual
@@ -879,31 +878,38 @@ namespace Kerbcam
             // additional needed here.
         }
 
-        // Sidecar→plugin control channel. The sidecar's data-channel
-        // handlers (SetLayers / SetRenderSize / SetFov / SetPan) write
-        // the full operator-requested state into <FlightId>.control.json
-        // via atomic rename. The plugin only re-parses when the file's
-        // mtime moves — cheap stat-based check.
+        // Sidecar→plugin control channel. The sidecar's data-channel handlers
+        // (SetLayers / SetRenderSize / SetFov / SetPan / *-rate) write the full
+        // operator-requested state into the <FlightId>.control.bin shared-memory
+        // block under a seqlock. The plugin reads it here each frame; the block's
+        // monotonic seq is the change detector, so a skip is cheap and a rate=0
+        // stop can never be missed.
         private void PollControlFile()
         {
             try
             {
-                if (!File.Exists(_controlPath)) return;
-                var raw = File.ReadAllText(_controlPath);
-                // Skip only when the contents are byte-identical to what we last
-                // applied. Reading every poll is cheap (tmpfs, a few hundred
-                // bytes); this is what makes the rate=0 stop impossible to miss.
-                if (raw == _lastControlRaw) return;
-                _lastControlRaw = raw;
-                // Subscriber flag drives the per-layer Camera.enabled
-                // state via ApplyLayers. Default (field missing) is
-                // false — safer to leave a cam asleep than to render
-                // for nothing because the sidecar shipped an older
-                // ControlState shape.
-                var subscribed = ParseBoolField(raw, "subscribed") ?? false;
-                if (subscribed != _subscribed)
+                if (_controlBlock == null)
                 {
-                    _subscribed = subscribed;
+                    _controlBlock = ControlBlock.Open(_controlPath, out var openRes);
+                    if (openRes == ControlBlock.OpenResult.VersionMismatch)
+                    {
+                        Debug.LogError(
+                            $"[Kerbcam] cam={FlightId} control-block layout version mismatch — "
+                            + "sidecar and plugin are out of sync; control is disabled until they match");
+                    }
+                    if (_controlBlock == null) return; // file not ready yet
+                }
+
+                // Returns false when nothing has changed since the last applied
+                // write / the writer is mid-write / nothing has been written.
+                if (!_controlBlock.TryReadChanged(out var snap)) return;
+
+                // Subscriber flag drives the per-layer Camera.enabled state via
+                // ApplyLayers. Always present in the block (sidecar always writes
+                // it); defaults safe-asleep on a brand-new block.
+                if (snap.Subscribed != _subscribed)
+                {
+                    _subscribed = snap.Subscribed;
                     if (_subscribed)
                     {
                         // Snap interpolation to target on peer reconnect so the
@@ -927,134 +933,60 @@ namespace Kerbcam
                     Debug.Log($"[Kerbcam] cam={FlightId} subscribed → {_subscribed}");
                     ApplyLayers();
                 }
-                var layers = ParseLayersJson(raw);
-                if (layers.HasValue)
+
+                if (snap.HasLayers)
                 {
-                    SetOperatorLayers(layers.Value);
+                    // layers_mask uses the same bit values as CameraLayers
+                    // (Near=1, Scaled=2, Galaxy=4).
+                    SetOperatorLayers((CameraLayers)snap.LayersMask);
                     Debug.Log($"[Kerbcam] cam={FlightId} operator layers → {_operatorLayers}");
                 }
+
                 // Absolute FoV is applied only when its seq changes (see
-                // _lastFovSeq) so the stale fov re-serialised on unrelated
-                // writes / the zoom-rate-stop flush doesn't snap a drifting
-                // _fovTarget back. A genuine set-fov bumps fovSeq.
-                var fov = ParseFloatField(raw, "fov");
-                var fovSeqF = ParseFloatField(raw, "fovSeq");
-                long fovSeq = fovSeqF.HasValue ? (long)fovSeqF.Value : 0L;
-                if (fov.HasValue && SupportsZoom && fovSeq != _lastFovSeq)
+                // _lastFovSeq) so the stale fov re-published on unrelated writes /
+                // the zoom-rate-stop write doesn't snap a drifting _fovTarget back.
+                long fovSeq = snap.FovSeq;
+                if (snap.Fov.HasValue && SupportsZoom && fovSeq != _lastFovSeq)
                 {
-                    SetFov(fov.Value);
+                    SetFov(snap.Fov.Value);
                 }
                 _lastFovSeq = fovSeq;
-                // Zoom rate (guarded by SupportsZoom, with the absolute fov read).
-                // Persistent: field-missing leaves the current rate unchanged; an
-                // explicit 0 stops zooming. +rate = zoom IN (FoV decreases).
-                if (SupportsZoom)
+                // Zoom rate. Absent leaves the current rate unchanged; an explicit
+                // 0 stops zooming. +rate = zoom IN (FoV decreases).
+                if (SupportsZoom && snap.ZoomRate.HasValue)
                 {
-                    var zoomRate = ParseFloatField(raw, "zoomRate");
-                    if (zoomRate.HasValue) _zoomRate = Mathf.Clamp(zoomRate.Value, -1f, 1f);
+                    _zoomRate = Mathf.Clamp(snap.ZoomRate.Value, -1f, 1f);
                 }
-                // Field-missing leaves the construction-time value untouched.
-                var enableFx = ParseBoolField(raw, "enableAtmosphericFx");
-                if (enableFx.HasValue && enableFx.Value != _enableFx)
-                {
-                    SetEnableAtmosphericFx(enableFx.Value);
-                    Debug.Log($"[Kerbcam] cam={FlightId} atmospheric FX → {_enableFx}");
-                }
+
                 if (SupportsPan)
                 {
-                    // Absolute pan is applied only when panSeq changes (see
-                    // _lastPanSeq) so the stale panYaw/panPitch re-serialised
-                    // on unrelated writes / the rate-stop flush doesn't snap a
-                    // drifting target back. panSeq covers both yaw and pitch.
-                    var panYaw = ParseFloatField(raw, "panYaw");
-                    var panPitch = ParseFloatField(raw, "panPitch");
-                    var panSeqF = ParseFloatField(raw, "panSeq");
-                    long panSeq = panSeqF.HasValue ? (long)panSeqF.Value : 0L;
+                    // Absolute pan is applied only when panSeq changes (covers
+                    // both yaw and pitch) for the same reason as fov above.
+                    long panSeq = snap.PanSeq;
                     if (panSeq != _lastPanSeq)
                     {
-                        if (panYaw.HasValue)
-                            _panYawTarget = Mathf.Clamp(panYaw.Value, _panCap.YawMin, _panCap.YawMax);
-                        if (panPitch.HasValue)
-                            _panPitchTarget = Mathf.Clamp(panPitch.Value, _panCap.PitchMin, _panCap.PitchMax);
+                        if (snap.PanYaw.HasValue)
+                            _panYawTarget = Mathf.Clamp(snap.PanYaw.Value, _panCap.YawMin, _panCap.YawMax);
+                        if (snap.PanPitch.HasValue)
+                            _panPitchTarget = Mathf.Clamp(snap.PanPitch.Value, _panCap.PitchMin, _panCap.PitchMax);
                     }
                     _lastPanSeq = panSeq;
-                    // Pan rates (guarded by SupportsPan, with the absolute reads).
-                    // Persistent: field-missing leaves the current rate unchanged;
-                    // an explicit 0 stops that axis. +yawRate = pan right,
-                    // +pitchRate = pan up (matches the absolute pan sign).
-                    var panYawRate = ParseFloatField(raw, "panYawRate");
-                    if (panYawRate.HasValue) _panYawRate = Mathf.Clamp(panYawRate.Value, -1f, 1f);
-                    var panPitchRate = ParseFloatField(raw, "panPitchRate");
-                    if (panPitchRate.HasValue) _panPitchRate = Mathf.Clamp(panPitchRate.Value, -1f, 1f);
+                    // Pan rates. Absent leaves the current rate unchanged; an
+                    // explicit 0 stops that axis. +yawRate = right, +pitchRate = up.
+                    if (snap.PanYawRate.HasValue)
+                        _panYawRate = Mathf.Clamp(snap.PanYawRate.Value, -1f, 1f);
+                    if (snap.PanPitchRate.HasValue)
+                        _panPitchRate = Mathf.Clamp(snap.PanPitchRate.Value, -1f, 1f);
                 }
             }
             catch (Exception ex)
             {
-                Debug.LogWarning($"[Kerbcam] cam={FlightId} control file read failed: {ex.Message}");
+                Debug.LogWarning($"[Kerbcam] cam={FlightId} control block read failed: {ex.Message}");
             }
         }
 
-        // Minimal JSON parsers tailored to the control file's shape:
-        //   { "layers": [...], "width": N, "height": N, "fov": F, ... }
-        // Return null on parse failure (caller leaves field unchanged).
-        // Hand-rolled because pulling Newtonsoft.Json in for one tiny
-        // file with a fixed schema isn't worth the dependency.
-        private static CameraLayers? ParseLayersJson(string body)
-        {
-            int keyIdx = body.IndexOf("\"layers\"", StringComparison.Ordinal);
-            if (keyIdx < 0) return null;
-            int openBracket = body.IndexOf('[', keyIdx);
-            if (openBracket < 0) return null;
-            int closeBracket = body.IndexOf(']', openBracket);
-            if (closeBracket < 0) return null;
-
-            var inside = body.Substring(openBracket + 1, closeBracket - openBracket - 1);
-            var tokens = inside.Split(',');
-            var mask = CameraLayers.None;
-            foreach (var tok in tokens)
-            {
-                var trimmed = tok.Trim().Trim('"').Trim();
-                if (trimmed.Equals("NEAR", StringComparison.OrdinalIgnoreCase)) mask |= CameraLayers.Near;
-                else if (trimmed.Equals("SCALED", StringComparison.OrdinalIgnoreCase)) mask |= CameraLayers.Scaled;
-                else if (trimmed.Equals("GALAXY", StringComparison.OrdinalIgnoreCase)) mask |= CameraLayers.Galaxy;
-            }
-            return mask;
-        }
-
-        // Tiny bool reader for the control file. Returns null when the
-        // field is missing or unparseable; caller decides the default.
-        private static bool? ParseBoolField(string body, string key)
-        {
-            int keyIdx = body.IndexOf($"\"{key}\"", StringComparison.Ordinal);
-            if (keyIdx < 0) return null;
-            int colon = body.IndexOf(':', keyIdx);
-            if (colon < 0) return null;
-            int end = colon + 1;
-            while (end < body.Length && (body[end] == ' ' || body[end] == '\t' || body[end] == '\n' || body[end] == '\r')) end++;
-            // serde_json emits lowercase true / false.
-            if (end + 4 <= body.Length && body.Substring(end, 4) == "true") return true;
-            if (end + 5 <= body.Length && body.Substring(end, 5) == "false") return false;
-            return null;
-        }
-
-        private static float? ParseFloatField(string body, string key)
-        {
-            int keyIdx = body.IndexOf($"\"{key}\"", StringComparison.Ordinal);
-            if (keyIdx < 0) return null;
-            int colon = body.IndexOf(':', keyIdx);
-            if (colon < 0) return null;
-            int end = colon + 1;
-            while (end < body.Length && (body[end] == ' ' || body[end] == '\t' || body[end] == '\n' || body[end] == '\r')) end++;
-            int start = end;
-            while (end < body.Length && (char.IsDigit(body[end]) || body[end] == '.' || body[end] == '-' || body[end] == 'e' || body[end] == 'E' || body[end] == '+')) end++;
-            if (end == start) return null;
-            var raw = body.Substring(start, end - start);
-            if (float.TryParse(raw, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float v))
-            {
-                return v;
-            }
-            return null;
-        }
+        // (The control file's hand-rolled JSON parsers were removed when the
+        // control channel moved to the binary ControlBlock — see ControlBlock.cs.)
 
         // Static-per-life-of-camera metadata the sidecar serves via
         // GET /cameras. The plugin owns this file; the sidecar reads it
@@ -1553,6 +1485,7 @@ namespace Kerbcam
             UnityEngine.Object.Destroy(_scratchTex);
 
             _ring?.Dispose();
+            _controlBlock?.Dispose();
             try
             {
                 if (File.Exists(_ringPath)) File.Delete(_ringPath);

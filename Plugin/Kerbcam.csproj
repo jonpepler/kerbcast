@@ -106,6 +106,12 @@
   </ItemGroup>
 
   <!-- SDK-style csproj auto-includes all .cs files under the project
-       directory — no explicit <Compile Include> needed. -->
+       directory — no explicit <Compile Include> needed. But the default glob
+       reaches the sibling ControlBlock.Tests/ harness too; exclude it so its
+       net10 console Main never leaks into the net48 plugin DLL. (ControlBlock.cs
+       itself lives under Kerbcam/ and is still included.) -->
+  <ItemGroup>
+    <Compile Remove="ControlBlock.Tests/**/*.cs" />
+  </ItemGroup>
 
 </Project>

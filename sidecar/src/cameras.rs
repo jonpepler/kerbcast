@@ -25,7 +25,7 @@ use webrtc::track::track_local::track_local_static_sample::TrackLocalStaticSampl
 
 use crate::encoder::EncoderBackend;
 use crate::protocol::{CameraLifecycle, CameraState as ProtocolCameraState, Layer};
-use crate::shared_mem::{MmapFrameRing, MmapRingConfig};
+use crate::shared_mem::{ControlBlock, MmapFrameRing, MmapRingConfig};
 
 /// On-disk shape of `global.status.json` — the plugin → sidecar push
 /// half of the IPC. The plugin rewrites this file at ~1Hz with the
@@ -73,11 +73,12 @@ pub struct StatusDelta {
     pub changed_cameras: Vec<ProtocolCameraState>,
 }
 
-/// In-memory mirror of the plugin's `<flight_id>.control.json` file.
-/// The data-channel message handlers mutate this struct and the
-/// registry's `flush_control` flushes the full state to disk, so
-/// independent setters (SetLayers, SetRenderSize, SetFov) compose
-/// cleanly without clobbering each other.
+/// In-memory mirror of a camera's control state. The data-channel message
+/// handlers mutate this struct and the registry's `flush_control` publishes the
+/// full state to the camera's shared-memory control block
+/// (`<flight_id>.control.bin`, read by the plugin), so independent setters
+/// (SetLayers, SetRenderSize, SetFov, …) compose cleanly without clobbering each
+/// other. (`Serialize` is retained only for `/dumpLogs`-style debug output.)
 #[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ControlState {
@@ -250,6 +251,14 @@ pub struct CameraState {
     /// fields stay in sync — setting layers doesn't clobber an
     /// already-set render size.
     pub control: Mutex<ControlState>,
+    /// Persistent shared-memory control block this camera's state is written
+    /// to (`<flight_id>.control.bin`, replacing the old `.control.json`).
+    /// Lazily created on first flush and kept for the camera's life so the
+    /// seqlock counter keeps advancing across writes (recreating it would
+    /// reset the counter and the plugin's change detection would miss a write).
+    /// A `std::sync::Mutex`, not the tokio one — the mmap write is synchronous
+    /// and never held across an await.
+    pub control_block: std::sync::Mutex<Option<ControlBlock>>,
     /// Lazy: created on first encoded frame so the encoder sees the
     /// actual frame dimensions, not the ring's max. Closed + reinit if
     /// the frame dimensions change (the plugin's adaptive downscale
@@ -634,6 +643,7 @@ impl CameraRegistry {
                             subscribers: AtomicUsize::new(0),
                             tracks: RwLock::new(Vec::new()),
                             control: Mutex::new(ControlState::default()),
+                            control_block: std::sync::Mutex::new(None),
                         }),
                     );
                 }
@@ -847,17 +857,23 @@ impl CameraRegistry {
         delta
     }
 
-    /// Flush a camera's in-memory `ControlState` to its
-    /// `<flight_id>.control.json` file. Atomic rename so the plugin
-    /// never observes a half-written file. Carries every field that's
-    /// currently set; the plugin parses lazily, so adding new fields
-    /// here doesn't break older plugin versions.
+    /// Flush a camera's in-memory `ControlState` into its shared-memory
+    /// control block (`<flight_id>.control.bin`), published under a seqlock
+    /// the plugin reads each frame. Replaces the old JSON-file-and-rename
+    /// path; the block is collision-proof (a monotonic seq, not mtime) so a
+    /// rapid rate=0 stop right after a drag can't be missed. The block is
+    /// created on first flush and persists for the camera's life so the
+    /// seqlock counter keeps advancing. No-op if the camera is gone.
     pub async fn flush_control(&self, flight_id: u32, state: &ControlState) -> std::io::Result<()> {
-        let dest = self.shm_dir.join(format!("{flight_id}.control.json"));
-        let tmp = self.shm_dir.join(format!("{flight_id}.control.json.tmp"));
-        let body = serde_json::to_string_pretty(state)?;
-        tokio::fs::write(&tmp, body).await?;
-        tokio::fs::rename(&tmp, &dest).await?;
+        let Some(cam) = self.get(flight_id).await else {
+            return Ok(());
+        };
+        let mut guard = cam.control_block.lock().unwrap_or_else(|e| e.into_inner());
+        if guard.is_none() {
+            let path = self.shm_dir.join(format!("{flight_id}.control.bin"));
+            *guard = Some(ControlBlock::create(&path)?);
+        }
+        guard.as_mut().expect("just created if absent").write(state);
         Ok(())
     }
 
@@ -1151,11 +1167,18 @@ mod tests {
         assert_eq!(ctrl.pan_seq, 3, "deadman must not bump pan_seq");
         assert_eq!(ctrl.fov_seq, 4, "deadman must not bump fov_seq");
 
-        // The stop reached disk (the plugin only sees the control file).
-        let on_disk = tokio::fs::read_to_string(dir.path().join("1.control.json"))
+        // The stop reached the shared-memory control block (the plugin reads
+        // it each frame). Decode the raw bytes and confirm the zeroed rates
+        // and the surviving absolute pan / seqs.
+        let bytes = tokio::fs::read(dir.path().join("1.control.bin"))
             .await
-            .expect("control file flushed");
-        assert!(on_disk.contains("\"panYawRate\": 0"), "got {on_disk}");
-        assert!(on_disk.contains("\"zoomRate\": 0"), "got {on_disk}");
+            .expect("control block flushed");
+        let snap = crate::shared_mem::control::decode(&bytes).expect("decodes");
+        assert_eq!(snap.pan_yaw_rate, Some(0.0));
+        assert_eq!(snap.pan_pitch_rate, Some(0.0));
+        assert_eq!(snap.zoom_rate, Some(0.0));
+        assert_eq!(snap.pan_yaw, Some(12.0), "absolute pan must be untouched");
+        assert_eq!(snap.pan_seq, 3, "deadman must not bump pan_seq");
+        assert_eq!(snap.fov_seq, 4, "deadman must not bump fov_seq");
     }
 }

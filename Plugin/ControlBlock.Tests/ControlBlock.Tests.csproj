@@ -1,0 +1,34 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Standalone contract test for ControlBlock.cs. It compiles ONLY the
+    Unity-free reader (no KSP/Unity assemblies needed) and validates it against
+    the golden fixture the Rust sidecar emits, so the two language sides of the
+    binary control-block layout cannot silently drift. Run: `dotnet run`.
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <!-- Disabled to mirror the net48 plugin's context, so this harness compiles
+         ControlBlock.cs exactly as the plugin does (no nullable-ref warnings). -->
+    <Nullable>disable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <!-- This is a dev test harness, not part of the shipped plugin. -->
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Compile the reader under test directly — no project reference to the
+         KSP plugin (which can't build off-Linux). -->
+    <Compile Include="../Kerbcam/ControlBlock.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The golden fixture the Rust writer emits; copied next to the binary. -->
+    <None Include="../../sidecar/testdata/control_block_v1.bin"
+          Link="control_block_v1.bin"
+          CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

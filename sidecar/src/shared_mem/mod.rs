@@ -12,7 +12,9 @@
 //!   for unit tests of consumer code that doesn't need a real second
 //!   process, and as a comparison reference when debugging the mmap path.
 
+pub mod control;
 pub mod mmap;
+pub use control::ControlBlock;
 pub use mmap::{FrameView, MmapFrameRing, MmapRingConfig, MmapRingError};
 
 use std::sync::Mutex;
