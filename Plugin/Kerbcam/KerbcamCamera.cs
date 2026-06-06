@@ -1558,17 +1558,35 @@ namespace Kerbcam
                     return;
                 }
 
-                var data = request.GetData<byte>();
                 // Write the readback bytes straight into the ring — no
                 // intermediate Texture2D, no pointless GPU Apply(). The readback
-                // target is RGBA32, so `data` is already the exact pixel layout
-                // the ring expects; this is byte-identical to the old
+                // target is RGBA32, so the bytes are already the exact pixel
+                // layout the ring expects; this is byte-identical to the old
                 // LoadRawTextureData→GetRawTextureData path (proven in
                 // MmapFrameRing.Tests). Dimensions come from the snapshot taken
                 // when the readback was issued, since the current render size may
                 // have changed in the meantime (pooled-set switch).
-                byte* src = (byte*)NativeArrayUnsafeUtility.GetUnsafeReadOnlyPtr(data);
-                _ring.Produce(_targets.PendingWidth, _targets.PendingHeight, _pendingCaptureTsMs, src, data.Length);
+                //
+                // On the OpenGL plugin path (the Deck), read the native plugin
+                // buffer pointer directly — skipping GetData's Allocator.Temp
+                // NativeArray + MemMove (one of two full-frame copies per
+                // readback, plus a per-frame Temp alloc; readback_investigation.md
+                // change #1). Pointer is valid only until the next readback
+                // Update, so Produce (which copies into the ring) runs now. On the
+                // Unity-native path GetData is already a zero-copy view — use it.
+                byte* src;
+                int length;
+                if (request.TryGetRawPtr(out var rawPtr, out length))
+                {
+                    src = (byte*)rawPtr;
+                }
+                else
+                {
+                    var data = request.GetData<byte>();
+                    src = (byte*)NativeArrayUnsafeUtility.GetUnsafeReadOnlyPtr(data);
+                    length = data.Length;
+                }
+                _ring.Produce(_targets.PendingWidth, _targets.PendingHeight, _pendingCaptureTsMs, src, length);
                 _consecutiveErrors = 0;
             }
             catch (Exception ex)

@@ -33,11 +33,35 @@ the install script copies it to the right one. Sourced from the
 upstream's `UnityExampleProject/Assets/OpenglAsyncReadback/Plugins/Linux/`
 folder.
 
+## Local modifications (kerbcam fork)
+
+Upstream is unmaintained, so this copy is treated as a maintained fork. MIT
+permits modification; the `LICENSE` and copyright notices are preserved
+verbatim. Divergences from upstream, all clearly marked `kerbcam … (not
+upstream)` in-source:
+
+- **`AsyncGPUReadbackPlugin.cs`** — added zero-copy readback accessors so the
+  OpenGL path can write the native plugin buffer straight into the frame ring,
+  skipping `GetRawData`'s `Allocator.Temp` NativeArray + `MemMove` (one of two
+  full-frame copies per readback, plus a per-frame Temp allocation):
+  - `UniversalAsyncGPUReadbackRequest.TryGetRawPtr(out void*, out int)`
+  - `OpenGLAsyncReadbackRequest.GetRawDataPtr(out void*, out int)`
+  Rationale: `local_docs/perf_profiles/readback_investigation.md` change #1.
+
+Note: the `ClearDeadRefs` dictionary-during-enumeration bug is NOT fixed in
+this source — it's patched at runtime via Harmony in
+`Plugin/Kerbcam/AsyncReadbackRegistryFix.cs` (kept that way so that file stays
+closer to upstream).
+
 ## Updating
+
+⚠️ The `cp` below OVERWRITES the local modifications above — re-apply them
+after updating (diff against git history for the exact hunks).
 
 ```sh
 cd /tmp && git clone --depth 1 https://github.com/yangrc1234/UnityOpenGLAsyncReadback.git yangrc-update
 cp /tmp/yangrc-update/UnityExampleProject/Assets/OpenglAsyncReadback/Scripts/{AsyncGPUReadbackPlugin,AsyncReadbackUpdater}.cs Plugin/Vendor/UnityOpenGLAsyncReadback/
 cp /tmp/yangrc-update/LICENSE Plugin/Vendor/UnityOpenGLAsyncReadback/
 cp /tmp/yangrc-update/UnityExampleProject/Assets/OpenglAsyncReadback/Plugins/Linux/libAsyncGPUReadbackPlugin.so <install>/GameData/Kerbcam/Plugins/x86_64/
+# then re-apply the kerbcam zero-copy accessors (see "Local modifications")
 ```
