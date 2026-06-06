@@ -1069,13 +1069,24 @@ namespace Kerbcam
             // readback requests) are gone. Leaving it alive would keep firing a
             // per-frame render-thread plugin event in every later scene — the
             // root of the "spikes persist on the main menu / only a KSP restart
-            // recovers" symptom. Destroying the GameObject also clears
-            // AsyncReadbackUpdater.instance via Unity's destroyed-object null
-            // semantics, so the next Flight scene re-spawns a fresh one.
+            // recovers" symptom.
+            //
+            // We MUST null AsyncReadbackUpdater.instance ourselves. The previous
+            // code relied on Unity's destroyed-object fake-null making
+            // `instance == null` true on the next Flight Awake — but empirically
+            // it did NOT respawn after an exit-to-KSC round trip (the static held
+            // a stale reference, the Awake guard saw "not null", the pump never
+            // came back, and async readbacks wedged until a full KSP restart).
+            // Destroy() is deferred, so the static stays set across the scene
+            // transition; clear it synchronously here so the next Awake's
+            // `instance == null` guard reliably re-spawns a fresh pump. (The
+            // vendored AsyncReadbackUpdater now also nulls it in its own
+            // OnDestroy, as defence-in-depth.)
             if (_readbackUpdaterGo != null)
             {
                 UnityEngine.Object.Destroy(_readbackUpdaterGo);
                 _readbackUpdaterGo = null;
+                AsyncReadbackUpdater.instance = null;
                 Debug.Log("[Kerbcam] tore down AsyncReadbackUpdater (readback pump) on scene exit");
             }
 

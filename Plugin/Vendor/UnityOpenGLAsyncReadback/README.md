@@ -47,6 +47,13 @@ upstream)` in-source:
   - `UniversalAsyncGPUReadbackRequest.TryGetRawPtr(out void*, out int)`
   - `OpenGLAsyncReadbackRequest.GetRawDataPtr(out void*, out int)`
   Rationale: `local_docs/perf_profiles/readback_investigation.md` change #1.
+- **`AsyncReadbackUpdater.cs`** — added `OnDestroy()` that nulls the static
+  `instance` (`if (instance == this) instance = null;`). Upstream never cleared
+  it, so after the pump GameObject was destroyed the static held a stale
+  reference and consumers re-checking `instance == null` (KerbcamCore re-spawning
+  the pump on the next Flight scene) saw "not null" and never respawned — async
+  readbacks then wedged until a full KSP restart.
+  Rationale: `local_docs/perf_profiles/session_20260606.md` (pump-respawn bug).
 
 Note: the `ClearDeadRefs` dictionary-during-enumeration bug is NOT fixed in
 this source — it's patched at runtime via Harmony in
