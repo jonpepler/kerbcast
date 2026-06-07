@@ -133,7 +133,7 @@ const RemoveButton = styled.button`
 
   &:hover {
     color: #fff;
-    background: rgba(192, 0, 26, 0.75);
+    background: var(--kc-danger-bg);
     border-color: rgba(255, 255, 255, 0.25);
   }
 

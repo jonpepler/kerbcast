@@ -53,7 +53,7 @@ export function Settings({
     <Panel ref={panelRef} role="dialog" aria-label="Settings">
       <PanelHeader>
         <PanelTitle>Settings</PanelTitle>
-        <CloseIconButton type="button" onClick={onClose} aria-label="Close settings">
+        <CloseIconButton type="button" onClick={onClose} aria-label="Close">
           <CloseX aria-hidden="true" />
         </CloseIconButton>
       </PanelHeader>
