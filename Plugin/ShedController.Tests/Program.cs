@@ -137,5 +137,38 @@ const int MaxLevel = 5;
     Check(aggressive <= gentle, "larger back-off factor converges in fewer (or equal) changes");
 }
 
+// --- 9. Custom (stagger) thresholds: an early-engaging profile sheds at a
+//        higher fps than the quality-shed default. Locks the parameterised
+//        thresholds used by the decoupled stagger controller. ---
+{
+    float[] staggerBelow   = { 30f, 27f, 24f, 21f, 18f };
+    float[] staggerRestore  = { 35f, 32f, 29f, 26f, 23f };
+    var c = new ShedController(MaxLevel, shedDwellSeconds: 0.0,
+        shedBelow: staggerBelow, restoreAbove: staggerRestore);
+    int lvl = c.Evaluate(28f, 0.0); // 28 < 30 -> stagger engages (default would NOT shed at 28)
+    Check(lvl == 1, "stagger thresholds engage at 28fps (where the 15fps default would not)");
+    var def = new ShedController(MaxLevel, shedDwellSeconds: 0.0);
+    Check(def.Evaluate(28f, 0.0) == 0, "default (quality-shed) thresholds do NOT shed at 28fps");
+}
+
+// --- 10. Cost-share gate: when kerbcam isn't a meaningful share of frame time,
+//         escalation is suppressed even below the shed threshold — so a game
+//         that's slow for non-kerbcam reasons doesn't starve every feed. ---
+{
+    float[] below   = { 30f, 27f, 24f, 21f, 18f };
+    float[] above    = { 35f, 32f, 29f, 26f, 23f };
+    var c = new ShedController(MaxLevel, shedDwellSeconds: 0.0,
+        shedBelow: below, restoreAbove: above, minEscalateShare: 0.25);
+    // fps well below threshold, but kerbcam is only 10% of the frame -> hold.
+    int blocked = c.Evaluate(20f, 0.0, kerbcamShare: 0.10);
+    Check(blocked == 0, "low kerbcam cost-share blocks escalation (game-bound, not kerbcam-bound)");
+    // same fps, kerbcam now 40% of the frame -> escalate.
+    int allowed = c.Evaluate(20f, 1.0, kerbcamShare: 0.40);
+    Check(allowed == 1, "high kerbcam cost-share allows escalation (kerbcam-bound)");
+    // Default share (1.0) + no gate (minEscalateShare 0) preserves old behaviour.
+    var d = new ShedController(MaxLevel, shedDwellSeconds: 0.0);
+    Check(d.Evaluate(5f, 0.0) == 1, "no-gate controller (default share) escalates as before");
+}
+
 Console.WriteLine(failures == 0 ? "ALL PASS" : $"{failures} FAILURE(S)");
 return failures == 0 ? 0 : 1;

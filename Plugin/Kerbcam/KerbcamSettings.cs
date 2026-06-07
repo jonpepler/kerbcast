@@ -68,29 +68,35 @@ namespace Kerbcam
         // staggering scales cuts up as fps drops — see ReadbackScheduler), which
         // keeps full image quality. Set true to also drop resolution/FX layers
         // under load.
-        public bool EnableAdaptiveShed { get; private set; } = false;
-        // Anti-flap tuning for the adaptive-shed loop (see ShedController).
-        // ShedDwellSeconds: min seconds between shedding further (fast attack).
-        // ShedRestoreDwellSeconds: min seconds before restoring quality (slow
-        //   release) — grows under back-off.
-        // ShedRestoreBackoffFactor: multiplier applied to the restore dwell each
-        //   time a restore is immediately regretted; makes the flap converge.
-        // ShedMaxRestoreDwellSeconds: cap on the backed-off restore dwell.
-        // Defaults are unvalidated estimates pending Deck calibration.
-        public float ShedDwellSeconds { get; private set; } =
-            (float)ShedController.DefaultShedDwellSeconds;
-        public float ShedRestoreDwellSeconds { get; private set; } =
-            (float)ShedController.DefaultRestoreDwellSeconds;
-        public float ShedRestoreBackoffFactor { get; private set; } =
-            (float)ShedController.DefaultBackoffFactor;
-        public float ShedMaxRestoreDwellSeconds { get; private set; } =
-            (float)ShedController.DefaultMaxRestoreDwellSeconds;
-        // Target per-camera capture rate. Captures are round-robined across
-        // cameras (ReadbackScheduler) so they don't all render + read back on
-        // the same frame, bounding simultaneous in-flight GPU readbacks and
-        // capping capture to roughly this rate instead of the full game fps.
-        // Set >= your game fps cap to effectively disable staggering.
-        public float CaptureFps { get; private set; } = 20f;
+        // Per-camera capture-rate CEILING (stream target). Cameras are
+        // round-robined so they don't all render + read back on the same frame,
+        // and each captures at MOST this rate rather than the full game fps. Set
+        // >= your game fps cap to disable the rate cap (the frame budget below
+        // still applies).
+        public float MaxCaptureFps { get; private set; } = 30f;
+
+        // Stagger budget CEILING: the most main-thread time (ms/frame) kerbcam
+        // will spend on its own render + readback. When it would exceed this,
+        // kerbcam captures FEWER cameras per frame (each updates less often, but
+        // at full resolution + all layers — a LOSSLESS temporal degrade). Targets
+        // kerbcam's OWN cost, so it's independent of how slow the game is for
+        // other reasons (a heavy vessel won't make it starve the feeds). Default
+        // 24 ms (≈6–7 cameras at the Deck's ~3.5 ms/camera, landing ~25 fps with
+        // 8 streaming — comfortably above the MinKspFps floor while using the
+        // headroom a lower budget would leave idle). Set 0 to remove the ms cap
+        // entirely, making MinKspFps the control target ("capture everything down
+        // to that fps floor"). kerbcam NEVER drops quality to hit this — that's a
+        // manual/API-only choice.
+        public float MaxKerbcamFrameBudgetMs { get; private set; } = 24f;
+
+        // Physics-floor safety (one-way). If game fps drops below this, kerbcam
+        // staggers HARDER than the budget above to keep KSP above its time-
+        // dilation threshold — below which game-time slows (physics can't keep
+        // real-time) AND the stream itself goes slow-motion + low-cadence. Only
+        // ever tightens / gates restore, so it can't set up a headroom-chasing
+        // oscillation. Default 18 fps (just above typical time dilation). Set 0
+        // to disable the floor (kerbcam then bounds only by MaxKerbcamFrameBudgetMs).
+        public float MinKspFps { get; private set; } = 18f;
 
         // Master toggle for kerbcam's own atmospheric FX (a pluggable overlay
         // — see atmospheric_fx_parked.md for why the stock-FX replication was
@@ -294,12 +300,9 @@ namespace Kerbcam
             ApplyInt(node, "Width", v => settings.Width = v);
             ApplyInt(node, "Height", v => settings.Height = v);
             ApplyBool(node, "AutoSpawnSidecar", v => settings.AutoSpawnSidecar = v);
-            ApplyBool(node, "EnableAdaptiveShed", v => settings.EnableAdaptiveShed = v);
-            ApplyFloat(node, "ShedDwellSeconds", v => settings.ShedDwellSeconds = v);
-            ApplyFloat(node, "ShedRestoreDwellSeconds", v => settings.ShedRestoreDwellSeconds = v);
-            ApplyFloat(node, "ShedRestoreBackoffFactor", v => settings.ShedRestoreBackoffFactor = v);
-            ApplyFloat(node, "ShedMaxRestoreDwellSeconds", v => settings.ShedMaxRestoreDwellSeconds = v);
-            ApplyFloat(node, "CaptureFps", v => settings.CaptureFps = v);
+            ApplyFloat(node, "MaxCaptureFps", v => settings.MaxCaptureFps = v);
+            ApplyFloat(node, "MaxKerbcamFrameBudgetMs", v => settings.MaxKerbcamFrameBudgetMs = v);
+            ApplyFloat(node, "MinKspFps", v => settings.MinKspFps = v);
             ApplyBool(node, "EnableAtmosphericFx", v => settings.EnableAtmosphericFx = v);
             ApplyString(node, "AtmosphericFxLayers", v => settings.AtmosphericFxLayers = ParseAtmoFxLayers(v));
             ApplyBool(node, "EnableHullcamEffects", v => EnableHullcamEffects = v);
