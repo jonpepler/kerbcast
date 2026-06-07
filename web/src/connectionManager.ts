@@ -52,9 +52,13 @@ export class ConnectionManager {
     return this._status;
   }
 
-  /** Begin auto-connecting. Call once on app mount. */
+  /**
+   * Begin auto-connecting. Safe to call again after stop(): React StrictMode
+   * runs the mount effect twice (start, stop, start), so a permanent stop
+   * would leave the second mount dead.
+   */
   start(): void {
-    if (this._stopped) return;
+    this._stopped = false;
     this._offStateChange = this._client.on("state-change", (state) => {
       this._handleStateChange(state);
     });

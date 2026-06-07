@@ -90,7 +90,11 @@ const CAMERA_HUES = [210, 30, 140, 0];
 
 /**
  * Create a KerbcamClient backed by a MockSidecar.
- * The client is already connected and the channel is open when this resolves.
+ *
+ * The app's ConnectionManager owns connect(); the mock completes its half
+ * of the handshake from inside the negotiate override so it survives the
+ * manager's own connect/reconnect cycles (a pre-connected client would be
+ * torn down by the manager's first connect()).
  */
 export async function createMockClient(): Promise<KerbcamClient> {
   const sidecar = new MockSidecar();
@@ -100,37 +104,49 @@ export async function createMockClient(): Promise<KerbcamClient> {
     sidecar.addCamera(cam);
   }
 
+  // Canvas tracks are built once per camera and reused across reconnects;
+  // the canvases keep animating regardless of connection state.
+  const tracks = new Map<number, MediaStreamTrack>();
+  const deliverTracks = () => {
+    let slotIdx = 0;
+    for (let i = 0; i < MOCK_CAMERAS.length; i++) {
+      const cam = MOCK_CAMERAS[i];
+      if ((cam.lifecycle ?? CameraLifecycle.Active) === CameraLifecycle.Destroyed) {
+        slotIdx++;
+        continue;
+      }
+      const mid = String(slotIdx);
+      let track = tracks.get(cam.flightId);
+      if (!track) {
+        track = buildCanvasTrack(cam.cameraName ?? "Camera", CAMERA_HUES[i] ?? 0);
+        tracks.set(cam.flightId, track);
+      }
+      sidecar.deliverTrack(mid, track);
+      slotIdx++;
+    }
+  };
+
   const mockClient = new KerbcamClient(
     {
       host: "mock",
       port: 0,
-      negotiate: (offer) => sidecar.negotiate(offer),
+      negotiate: async (offer) => {
+        const answer = await sidecar.negotiate(offer);
+        // Finish the sidecar's half once connect() has applied the answer:
+        // open the control channel, report connected, hand over tracks.
+        setTimeout(() => {
+          sidecar.open();
+          sidecar.setConnectionState("connected");
+          deliverTracks();
+        }, 50);
+        return answer;
+      },
     },
     sidecar.createTransport(),
   );
 
   // Intercept /profile before the app's DevPanel starts polling
   interceptProfileFetch();
-
-  // Connect, then open the channel (mirrors the fixture two-act pattern)
-  await mockClient.connect([], { slots: 8 });
-  sidecar.open();
-  sidecar.setConnectionState("connected");
-
-  // Deliver canvas tracks for each live camera
-  let slotIdx = 0;
-  for (let i = 0; i < MOCK_CAMERAS.length; i++) {
-    const cam = MOCK_CAMERAS[i];
-    if ((cam.lifecycle ?? CameraLifecycle.Active) === CameraLifecycle.Destroyed) {
-      slotIdx++;
-      continue;
-    }
-    const mid = String(slotIdx);
-    const hue = CAMERA_HUES[i] ?? 0;
-    const track = buildCanvasTrack(cam.cameraName ?? "Camera", hue);
-    sidecar.deliverTrack(mid, track);
-    slotIdx++;
-  }
 
   // Periodic state variation
   setInterval(() => {

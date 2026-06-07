@@ -1,4 +1,9 @@
-import { CameraFeed } from "@jonpepler/kerbcam-react";
+import {
+  buildCameraLabeler,
+  CameraFeed,
+  useKerbcamCameras,
+} from "@jonpepler/kerbcam-react";
+import { useMemo } from "react";
 import styled from "styled-components";
 
 interface TileProps {
@@ -16,6 +21,14 @@ export function Tile({
   onSelectCamera,
   onRemove,
 }: TileProps): React.JSX.Element {
+  // Corner label: the camera's name once one is bound; the tile number is
+  // only a placeholder while nothing is selected. CameraFeed's own title
+  // chrome is hover-revealed, so this is the at-a-glance identifier.
+  const cameras = useKerbcamCameras();
+  const label = useMemo(() => {
+    const cam = cameras.find((c) => c.flightId === flightId);
+    return cam ? buildCameraLabeler(cameras)(cam) : `Tile ${index + 1}`;
+  }, [cameras, flightId, index]);
   return (
     <TileRoot>
       <FeedWrap>
@@ -25,7 +38,7 @@ export function Tile({
           onSelectCamera={onSelectCamera}
         />
       </FeedWrap>
-      <TileCornerLabel>Tile {index + 1}</TileCornerLabel>
+      <TileCornerLabel>{label}</TileCornerLabel>
       <RemoveButton
         type="button"
         aria-label={`Remove tile ${index + 1}`}
@@ -93,7 +106,8 @@ const TileRoot = styled.div`
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18), 0 0 0 0.5px rgba(0, 0, 0, 0.08);
 `;
 
-/* Label: bottom-left corner, barely visible until hovered */
+/* Label: bottom-left corner, barely visible; fades out on hover because the
+   feed's own title chrome appears and would duplicate it */
 const TileCornerLabel = styled.span`
   position: absolute;
   bottom: 0.4rem;
@@ -105,6 +119,15 @@ const TileCornerLabel = styled.span`
   user-select: none;
   text-shadow: 0 1px 3px rgba(0,0,0,0.6);
   z-index: 2;
+  transition: opacity 0.15s ease;
+
+  ${TileRoot}:hover & {
+    opacity: 0;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    transition: none;
+  }
 `;
 
 const RemoveButton = styled.button`
@@ -157,6 +180,14 @@ const FeedWrap = styled.div`
   & > div {
     height: 100%;
     min-height: 0;
+  }
+
+  /* The feed's Next/Previous step buttons land exactly where the tile's
+     remove button sits, and the title menu already covers camera selection
+     on this page, so suppress them here. */
+  & button[aria-label="Next camera"],
+  & button[aria-label="Previous camera"] {
+    display: none;
   }
 `;
 
