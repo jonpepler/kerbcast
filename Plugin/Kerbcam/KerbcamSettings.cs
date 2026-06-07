@@ -1,54 +1,46 @@
 // settings.cfg loader, OCISLY-style. Mirrors the shape used by
-// OfCourseIStillLoveYou's own settings.cfg — a single top-level
+// OfCourseIStillLoveYou's own settings.cfg: a single top-level
 // `Settings { ... }` node parsed via KSP's ConfigNode API. All fields
 // are optional; missing ones fall back to the defaults below.
 //
 // Top-level fields:
-//   BindAddress       — host the sidecar's HTTP signalling endpoint
-//                       binds to. 127.0.0.1 = localhost only (safe).
-//                       0.0.0.0 = any interface (needed for LAN
-//                       streaming to gonogo / a browser on another
-//                       machine).
-//   Port              — sidecar HTTP signalling port (default 8088).
-//   Width / Height    — capture dimensions per Hullcam (default 1024 × 576, 16:9).
-//                       Larger = more pixels to push through openh264
-//                       on the CPU.
-//   AutoSpawnSidecar  — whether the plugin should `Process.Start` the
-//                       bundled sidecar binary on Awake. Set to false
-//                       during sidecar development so `cargo run`
-//                       owns the process.
-//   EnableAdaptiveShed — whether the plugin steps the per-camera
-//                       resolution / layer-mask cascade down when KSP
-//                       fps drops below the shed thresholds (see
-//                       ShedController). Shed*/restore dwell + back-off
-//                       tuning keys live alongside it.
-//                       Default true; set false for perf-comparison
-//                       runs where you want the raw camera cost
-//                       without the cascade masking it.
+//   BindAddress       host the sidecar's HTTP signalling endpoint binds
+//                     to. 127.0.0.1 = localhost only (the default). A LAN
+//                     IP or 0.0.0.0 exposes the feeds to other devices,
+//                     with no authentication, so only on a trusted network.
+//   Port              sidecar HTTP signalling port (default 8088).
+//   Width / Height    capture dimensions per Hullcam (default 1024x576,
+//                     16:9). Larger = more pixels to encode.
 //
 // Per-camera override nodes (zero or more `Camera { ... }` blocks):
-//   PartName          — internal KSP part name (e.g. "navCam1"). Match
-//                       case-sensitive.
-//   Layers            — comma-separated subset of NEAR, SCALED, GALAXY.
-//                       Sets the initial layer mask for the camera on
-//                       attach; operator can still override at runtime
-//                       via POST /cameras/{id}/layers.
-//   EnableAtmosphericFx — per-camera override (true/false) for atmospheric
-//                       FX replication. Overrides the top-level default
-//                       either direction; operator can flip at runtime
-//                       via the control file's enableAtmosphericFx.
+//   PartName          internal KSP part name (e.g. "navCam1"), case-sensitive.
+//   Layers            comma-separated subset of NEAR, SCALED, GALAXY (or ALL).
+//                     Sets the initial layer mask for the camera on attach;
+//                     operator can still override at runtime via POST
+//                     /cameras/{id}/layers.
+//   EnableAtmosphericFx  per-camera override (true/false) for atmospheric FX
+//                     replication. Overrides the top-level default either
+//                     direction; operator can flip it at runtime via the
+//                     control block's enableAtmosphericFx.
 //
-// Per-camera Width / Height overrides aren't supported yet — the
-// sidecar still opens all rings at the global max dims. Plumbing
-// variable dims through MmapRingConfig is a follow-up.
+// Per-camera Width / Height overrides aren't supported yet: the sidecar
+// still opens all rings at the global max dims. Plumbing variable dims
+// through MmapRingConfig is a follow-up.
 //
-//   EnableHullcamLinuxShaderSwap — (Linux only, default true) when true,
-//                       kerbcam Harmony-patches CameraFilter.LoadBundle to
-//                       load our rebuilt shaders.linux bundle from
-//                       GameData/Kerbcam/HullcamShaders/ instead of
-//                       HullcamVDS's broken upstream bundle. Set to false
-//                       to disable the swap and test against upstream's
-//                       bundle directly.
+//   EnableHullcamLinuxShaderSwap  (Linux only, default true) when true,
+//                     kerbcam Harmony-patches CameraFilter.LoadBundle to
+//                     load our rebuilt shaders.linux bundle from
+//                     GameData/Kerbcam/HullcamShaders/ instead of
+//                     HullcamVDS's broken upstream bundle. Set to false
+//                     to disable the swap and test against upstream's
+//                     bundle directly.
+//
+//   AutoSpawnSidecar  whether the plugin Process.Starts the bundled sidecar
+//                     binary on Awake (default true). Undocumented in the
+//                     shipped settings.cfg; it exists as a dev escape hatch
+//                     so `cargo run` can own the sidecar process during
+//                     sidecar development. Set false in your install's
+//                     settings.cfg in that case.
 
 using System.Collections.Generic;
 using System.IO;
@@ -58,7 +50,7 @@ namespace Kerbcam
 {
     internal sealed class KerbcamSettings
     {
-        public string BindAddress { get; private set; } = "0.0.0.0";
+        public string BindAddress { get; private set; } = "127.0.0.1";
         public int Port { get; private set; } = 8088;
         public int Width { get; private set; } = 1024;
         public int Height { get; private set; } = 576;
@@ -68,29 +60,35 @@ namespace Kerbcam
         // staggering scales cuts up as fps drops — see ReadbackScheduler), which
         // keeps full image quality. Set true to also drop resolution/FX layers
         // under load.
-        public bool EnableAdaptiveShed { get; private set; } = false;
-        // Anti-flap tuning for the adaptive-shed loop (see ShedController).
-        // ShedDwellSeconds: min seconds between shedding further (fast attack).
-        // ShedRestoreDwellSeconds: min seconds before restoring quality (slow
-        //   release) — grows under back-off.
-        // ShedRestoreBackoffFactor: multiplier applied to the restore dwell each
-        //   time a restore is immediately regretted; makes the flap converge.
-        // ShedMaxRestoreDwellSeconds: cap on the backed-off restore dwell.
-        // Defaults are unvalidated estimates pending Deck calibration.
-        public float ShedDwellSeconds { get; private set; } =
-            (float)ShedController.DefaultShedDwellSeconds;
-        public float ShedRestoreDwellSeconds { get; private set; } =
-            (float)ShedController.DefaultRestoreDwellSeconds;
-        public float ShedRestoreBackoffFactor { get; private set; } =
-            (float)ShedController.DefaultBackoffFactor;
-        public float ShedMaxRestoreDwellSeconds { get; private set; } =
-            (float)ShedController.DefaultMaxRestoreDwellSeconds;
-        // Target per-camera capture rate. Captures are round-robined across
-        // cameras (ReadbackScheduler) so they don't all render + read back on
-        // the same frame, bounding simultaneous in-flight GPU readbacks and
-        // capping capture to roughly this rate instead of the full game fps.
-        // Set >= your game fps cap to effectively disable staggering.
-        public float CaptureFps { get; private set; } = 20f;
+        // Per-camera capture-rate CEILING (stream target). Cameras are
+        // round-robined so they don't all render + read back on the same frame,
+        // and each captures at MOST this rate rather than the full game fps. Set
+        // >= your game fps cap to disable the rate cap (the frame budget below
+        // still applies).
+        public float MaxCaptureFps { get; private set; } = 30f;
+
+        // Stagger budget CEILING: the most main-thread time (ms/frame) kerbcam
+        // will spend on its own render + readback. When it would exceed this,
+        // kerbcam captures FEWER cameras per frame (each updates less often, but
+        // at full resolution + all layers — a LOSSLESS temporal degrade). Targets
+        // kerbcam's OWN cost, so it's independent of how slow the game is for
+        // other reasons (a heavy vessel won't make it starve the feeds). Default
+        // 24 ms (≈6–7 cameras at the Deck's ~3.5 ms/camera, landing ~25 fps with
+        // 8 streaming — comfortably above the MinKspFps floor while using the
+        // headroom a lower budget would leave idle). Set 0 to remove the ms cap
+        // entirely, making MinKspFps the control target ("capture everything down
+        // to that fps floor"). kerbcam NEVER drops quality to hit this — that's a
+        // manual/API-only choice.
+        public float MaxKerbcamFrameBudgetMs { get; private set; } = 24f;
+
+        // Physics-floor safety (one-way). If game fps drops below this, kerbcam
+        // staggers HARDER than the budget above to keep KSP above its time-
+        // dilation threshold — below which game-time slows (physics can't keep
+        // real-time) AND the stream itself goes slow-motion + low-cadence. Only
+        // ever tightens / gates restore, so it can't set up a headroom-chasing
+        // oscillation. Default 18 fps (just above typical time dilation). Set 0
+        // to disable the floor (kerbcam then bounds only by MaxKerbcamFrameBudgetMs).
+        public float MinKspFps { get; private set; } = 18f;
 
         // Master toggle for kerbcam's own atmospheric FX (a pluggable overlay
         // — see atmospheric_fx_parked.md for why the stock-FX replication was
@@ -117,25 +115,18 @@ namespace Kerbcam
         // Set false to skip the filter pass (pure unfiltered composite).
         public static bool EnableHullcamEffects { get; private set; } = true;
 
-        // Apply TUFX (TexturesUnlimitedFX) post-processing — tonemap,
-        // bloom, colour grading — to each layered kerbcam camera when
-        // TUFX is installed. Without it, atmospheric scattering on
-        // Kerbin's horizon has too wide a dynamic range to display
-        // correctly even with allowHDR=true: the bright sky clips and
-        // the rest crushes dark ("dark Kerbin / black hole horizon").
-        // Default true; integration silently no-ops when TUFX is not
-        // installed. Static so KerbcamCamera can read it directly.
+        // Run TUFX post-processing on each layered kerbcam camera when TUFX
+        // is installed. Without it, atmospheric scattering on Kerbin's horizon
+        // has too wide a dynamic range to display correctly even with
+        // allowHDR=true: the bright sky clips and the rest crushes dark
+        // ("dark Kerbin / black hole horizon"). Default true; silently no-ops
+        // when TUFX is not installed. Static so KerbcamCamera can read it.
         public static bool EnableTUFX { get; private set; } = true;
 
-        // Name of the TUFX profile to attach to kerbcam's per-camera
-        // volumes. Default empty → volumes inherit TUFX's global scene
-        // selection (whatever the operator picked in TUFX's UI for
-        // Flight). Set to "kerbcam" to use the curated profile
-        // bundled at GameData/Kerbcam/TUFXProfiles/kerbcam.cfg (ACES
-        // tonemap, SMAA, modest bloom). Default kept empty until the
-        // curated profile is validated against TUFX defaults in
-        // flight — opt-in until we know it's actually better.
-        // No effect without TUFX installed.
+        // Name of the installed TUFX profile to attach to kerbcam's per-camera
+        // volumes. Default empty: volumes inherit TUFX's own scene selection
+        // (whatever the operator picked in TUFX's UI for Flight). No effect
+        // without TUFX installed.
         public static string TUFXProfile { get; private set; } = "";
 
         // When true (default), kerbcam Harmony-patches HullcamVDS's
@@ -188,14 +179,16 @@ namespace Kerbcam
         // KerbcamGameParameters's constructor.
         public static bool SeedThrottleMainScreen { get; private set; } = false;
 
-        // KeyCode the operator can press at runtime to toggle the
-        // throttle live without opening the Difficulty Settings menu.
-        // Unbound (KeyCode.None) by default; set via settings.cfg
-        // ThrottleMainScreenKey. Examples: F11, M (collision with
-        // map view! avoid), Numlock, ScrollLock, Quote.
-        public static KeyCode ThrottleMainScreenKey { get; private set; } = KeyCode.None;
-
         public string HttpBind => $"{BindAddress}:{Port}";
+
+        // True if the bind address only accepts connections from this machine,
+        // so exposing the feeds to the LAN warrants a warning when it isn't.
+        private static bool IsLoopback(string addr)
+        {
+            if (string.IsNullOrEmpty(addr)) return true;
+            addr = addr.Trim();
+            return addr == "127.0.0.1" || addr == "localhost" || addr == "::1";
+        }
 
         // Per-PartName initial layer mask (e.g. "navCam1" → NEAR only).
         // Cameras whose PartName isn't here default to CameraLayers.All.
@@ -294,12 +287,9 @@ namespace Kerbcam
             ApplyInt(node, "Width", v => settings.Width = v);
             ApplyInt(node, "Height", v => settings.Height = v);
             ApplyBool(node, "AutoSpawnSidecar", v => settings.AutoSpawnSidecar = v);
-            ApplyBool(node, "EnableAdaptiveShed", v => settings.EnableAdaptiveShed = v);
-            ApplyFloat(node, "ShedDwellSeconds", v => settings.ShedDwellSeconds = v);
-            ApplyFloat(node, "ShedRestoreDwellSeconds", v => settings.ShedRestoreDwellSeconds = v);
-            ApplyFloat(node, "ShedRestoreBackoffFactor", v => settings.ShedRestoreBackoffFactor = v);
-            ApplyFloat(node, "ShedMaxRestoreDwellSeconds", v => settings.ShedMaxRestoreDwellSeconds = v);
-            ApplyFloat(node, "CaptureFps", v => settings.CaptureFps = v);
+            ApplyFloat(node, "MaxCaptureFps", v => settings.MaxCaptureFps = v);
+            ApplyFloat(node, "MaxKerbcamFrameBudgetMs", v => settings.MaxKerbcamFrameBudgetMs = v);
+            ApplyFloat(node, "MinKspFps", v => settings.MinKspFps = v);
             ApplyBool(node, "EnableAtmosphericFx", v => settings.EnableAtmosphericFx = v);
             ApplyString(node, "AtmosphericFxLayers", v => settings.AtmosphericFxLayers = ParseAtmoFxLayers(v));
             ApplyBool(node, "EnableHullcamEffects", v => EnableHullcamEffects = v);
@@ -315,17 +305,6 @@ namespace Kerbcam
             // seed values. Settings.cfg is the source of truth for
             // first-time-on-this-save defaults.
             ApplyBool(node, "ThrottleMainScreen", v => SeedThrottleMainScreen = v);
-            ApplyString(node, "ThrottleMainScreenKey", v =>
-            {
-                if (System.Enum.TryParse<KeyCode>(v.Trim(), ignoreCase: true, out var k))
-                {
-                    ThrottleMainScreenKey = k;
-                }
-                else
-                {
-                    Debug.LogWarning($"[Kerbcam] settings.cfg: ThrottleMainScreenKey='{v}' is not a Unity KeyCode; ignoring");
-                }
-            });
 
             foreach (var camNode in node.GetNodes("Camera"))
             {
@@ -377,6 +356,10 @@ namespace Kerbcam
 
             var camCount = settings._initialLayers.Count;
             Debug.Log($"[Kerbcam] settings loaded: bind={settings.HttpBind} dims={settings.Width}x{settings.Height} autoSpawn={settings.AutoSpawnSidecar} cameraOverrides={camCount}");
+            if (!IsLoopback(settings.BindAddress))
+            {
+                Debug.LogWarning($"[Kerbcam] BindAddress={settings.BindAddress} is not loopback. The camera feeds and the signalling endpoint have no authentication and are reachable by anyone on the network. Only do this on a network you trust.");
+            }
             return settings;
         }
 

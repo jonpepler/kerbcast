@@ -220,6 +220,10 @@ namespace Kerbcam
         /// changes.
         /// </summary>
         private bool _subscribed;
+        /// <summary>Whether a peer is currently streaming this camera. Staggering
+        /// is budgeted over the subscribed set only — idle cameras cost nothing
+        /// and must not consume capture permits.</summary>
+        public bool Subscribed => _subscribed;
         private bool _disposed;
         private bool _firstRender = true;
         private bool _firstPixelCheck = true;

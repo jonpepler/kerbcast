@@ -67,10 +67,23 @@ namespace Kerbcam
         // and the anti-flap dwell/back-off all live in ShedController (which is
         // Unity-free and unit-tested). Each LateUpdate we hand it the rolling
         // fps average + the unscaled clock and apply the level it returns.
-        // Initialised with defaults; Awake rebuilds it from settings.cfg once
-        // they're loaded (the field initialiser keeps it non-null meanwhile).
-        private ShedController _shedController =
-            new ShedController(KerbcamCamera.MaxShedLevel);
+        // Stagger controller: the lossless temporal-degrade regulator. Holds
+        // kerbcam's OWN main-thread cost within a frametime budget by capturing
+        // fewer cameras per frame — full resolution + all layers, just less
+        // often. Targets kerbcam's cost (not game fps), so it's KSP-independent.
+        // kerbcam NEVER auto-sheds quality; that's a manual/API-only choice.
+        // Built in Awake from settings; null until then (guarded at call sites).
+        private StaggerBudgetController _staggerController;
+        // Cameras that actually captured last frame, for the per-camera cost
+        // estimate (kerbcamFrameMs / captured).
+        private int _lastCapturedCount = 1;
+        // Rolling estimate of kerbcam's own main-thread cost per frame (the
+        // capture loop's wall-time, EMA-smoothed). Divided by frame time gives
+        // the cost-share the stagger controller gates escalation on.
+        private double _kerbcamFrameMs;
+        private int _staggerBudget;   // last applied capture budget (telemetry)
+        private static readonly double _msPerTick =
+            1000.0 / System.Diagnostics.Stopwatch.Frequency;
 
         // The DontDestroyOnLoad GameObject hosting AsyncReadbackUpdater, whose
         // Update() pumps the OpenGL readback plugin (a per-frame render-thread
@@ -84,6 +97,13 @@ namespace Kerbcam
         // so they don't all issue a GPU render + readback on the same frame.
         private readonly ReadbackScheduler _readbackScheduler = new ReadbackScheduler();
         private bool[] _capturePermit = new bool[0];
+        // Staggering is budgeted over the SUBSCRIBED (streaming) cameras only —
+        // idle/attached cameras cost nothing and must not consume permits.
+        // _subscribedIdx[0.._streamCount) maps a round-robin rank to a full
+        // _cameras index; _streamPermit is the rank-indexed permit set.
+        private int[] _subscribedIdx = new int[0];
+        private bool[] _streamPermit = new bool[0];
+        private int _streamCount;
 
         // Telemetry (Recommendation 1): GC collection-count tracker. Sampled
         // once per LateUpdate when KerbcamSettings.EnableTelemetry is true,
@@ -113,12 +133,7 @@ namespace Kerbcam
             Debug.Log("[Kerbcam] KerbcamCore.Awake — initialising");
 
             _settings = KerbcamSettings.Load();
-            _shedController = new ShedController(
-                KerbcamCamera.MaxShedLevel,
-                _settings.ShedDwellSeconds,
-                _settings.ShedRestoreDwellSeconds,
-                _settings.ShedRestoreBackoffFactor,
-                _settings.ShedMaxRestoreDwellSeconds);
+            _staggerController = BuildStaggerController(_settings);
 
             try
             {
@@ -487,18 +502,6 @@ namespace Kerbcam
             }
         }
 
-        // Hotkey poll. Update runs once per frame; cheap to scan a key
-        // here, and Input.GetKeyDown only fires the tick a key first
-        // goes down so there's no autorepeat risk.
-        private void Update()
-        {
-            if (KerbcamSettings.ThrottleMainScreenKey != KeyCode.None &&
-                Input.GetKeyDown(KerbcamSettings.ThrottleMainScreenKey))
-            {
-                ToggleThrottleViaHotkey();
-            }
-        }
-
         // LateUpdate drives explicit camera.Render() calls via each
         // KerbcamCamera.Refresh(). Our offscreen cameras are permanently
         // disabled (enabled=false) so they never fire during Unity's normal
@@ -518,10 +521,23 @@ namespace Kerbcam
                     GC.CollectionCount(0), GC.CollectionCount(1), GC.CollectionCount(2),
                     Time.unscaledDeltaTime);
             }
-            // Update the degrade level every frame (drives capture staggering
-            // below). Quality shedding (resolution/FX cascade) is opt-in via
-            // settings.cfg's EnableAdaptiveShed; the temporal degrade (fewer
-            // cameras captured per frame) is always on.
+            // Build the subscribed (streaming) set first — staggering is
+            // budgeted over it, not over all attached cameras. Filled here so
+            // both UpdateDegradeLevel (the controller) and the capture loop below
+            // use the same count this frame. Subscription state is from the
+            // previous frame's control poll (set inside Refresh); one-frame lag,
+            // consistent with the cost EMA.
+            {
+                int n = _cameras.Count;
+                if (_subscribedIdx.Length < n) _subscribedIdx = new int[n];
+                _streamCount = 0;
+                for (int i = 0; i < n; i++)
+                    if (_cameras[i].Subscribed) _subscribedIdx[_streamCount++] = i;
+            }
+
+            // Regulate the capture budget from kerbcam's own frame cost (lossless
+            // temporal degrade — fewer streaming cameras captured per frame).
+            // kerbcam never auto-sheds quality; that's manual/API-only.
             UpdateDegradeLevel();
 
             // Reconcile the per-save Difficulty Setting against our
@@ -574,17 +590,48 @@ namespace Kerbcam
 
             // Stagger captures round-robin so the cameras don't all render +
             // read back on the same frame. Budget = how many may capture this
-            // frame to sustain CaptureFps at the current game fps (_fpsAvg);
-            // below CaptureFps it grants all of them.
+            // frame to sustain MaxCaptureFps at the current game fps (_fpsAvg);
+            // below MaxCaptureFps it grants all of them.
             int camCount = _cameras.Count;
             if (_capturePermit.Length < camCount) _capturePermit = new bool[camCount];
-            int budget = ReadbackScheduler.EffectiveBudget(
-                camCount, _settings.CaptureFps, _fpsAvg, _shedController.Level);
-            _readbackScheduler.NextTick(camCount, budget, _capturePermit);
+            if (_subscribedIdx.Length < camCount) _subscribedIdx = new int[camCount];
+            if (_streamPermit.Length < camCount) _streamPermit = new bool[camCount];
+
+            // Staggering is budgeted over the SUBSCRIBED set only. Idle cameras
+            // cost nothing (Refresh early-outs on !_subscribed) and must not eat
+            // permits — otherwise the few cameras actually streaming would be
+            // staggered as if among all attached. (_streamCount was filled before
+            // UpdateDegradeLevel so the controller saw the same count.)
+            int budget = _streamCount; // safe default if controller not built
+            if (_streamCount > 0)
+            {
+                int rateBudget = ReadbackScheduler.Budget(_streamCount, _settings.MaxCaptureFps, _fpsAvg);
+                int staggerBudget = _staggerController != null ? _staggerController.Budget : _streamCount;
+                budget = Math.Min(rateBudget, staggerBudget);
+                _readbackScheduler.NextTick(_streamCount, budget, _streamPermit);
+            }
+            _staggerBudget = budget;
+
+            // Map the rank-indexed stream permits back onto the full camera list;
+            // idle cameras get no permit (they skip render anyway, but this keeps
+            // _lastCapturedCount honest).
+            for (int i = 0; i < camCount; i++) _capturePermit[i] = false;
+            for (int rank = 0; rank < _streamCount; rank++)
+                if (_streamPermit[rank]) _capturePermit[_subscribedIdx[rank]] = true;
+
+            // Measure kerbcam's own main-thread cost this frame (the capture loop
+            // wall-time), EMA-smoothed, + how many cameras actually captured —
+            // together they give the per-camera cost the controller regulates.
+            int captured = 0;
+            for (int i = 0; i < camCount; i++) if (_capturePermit[i]) captured++;
+            _lastCapturedCount = captured > 0 ? captured : 1;
+            long capStart = System.Diagnostics.Stopwatch.GetTimestamp();
             for (int i = 0; i < camCount; i++)
             {
                 _cameras[i].Refresh(_capturePermit[i]);
             }
+            double capMs = (System.Diagnostics.Stopwatch.GetTimestamp() - capStart) * _msPerTick;
+            _kerbcamFrameMs = _kerbcamFrameMs <= 0.0 ? capMs : _kerbcamFrameMs * 0.8 + capMs * 0.2;
 
             MaybeWriteStatusFile();
         }
@@ -612,12 +659,9 @@ namespace Kerbcam
                 };
             }
 
-            string keyHint = KerbcamSettings.ThrottleMainScreenKey != KeyCode.None
-                ? $" or press [{KerbcamSettings.ThrottleMainScreenKey}]"
-                : " (no hotkey bound; set ThrottleMainScreenKey in settings.cfg)";
             string msg =
                 "Main flight camera disabled by kerbcam to free GPU for camera streams. " +
-                $"Go to Pause → Difficulty Settings → Kerbcam{keyHint} to restore.";
+                "Go to Pause > Difficulty Settings > Kerbcam to restore.";
 
             const float w = 560f;
             const float h = 80f;
@@ -666,28 +710,6 @@ namespace Kerbcam
         // (so the change persists if the operator saves now). Lets the
         // hotkey behave intuitively — "press it, it stays toggled
         // until I press it again or change the Difficulty Setting".
-        private void ToggleThrottleViaHotkey()
-        {
-            bool next = !_throttleEffective;
-            try
-            {
-                var game = HighLogic.CurrentGame;
-                if (game?.Parameters != null)
-                {
-                    var node = game.Parameters.CustomParams<KerbcamGameParameters>();
-                    if (node != null) node.ThrottleMainScreen = next;
-                }
-            }
-            catch (Exception ex)
-            {
-                Debug.LogWarning($"[Kerbcam] hotkey CustomParams write failed: {ex.Message}");
-            }
-            _throttleDesired = next;
-            if (next) ApplyMainScreenThrottle();
-            else RestoreMainScreen();
-            Debug.Log($"[Kerbcam] ThrottleMainScreen toggled via hotkey → {next}");
-        }
-
         // KSP ships FlightCamera.EnableCamera() / DisableCamera() as
         // its first-class on/off for the layered main view; calling
         // DisableCamera here is the same code path KSP itself uses on
@@ -884,7 +906,15 @@ namespace Kerbcam
                 var sb = new System.Text.StringBuilder(256 + _cameras.Count * 256);
                 sb.Append("{\n");
                 sb.Append($"  \"kspFps\": {_fpsAvg:F2},\n");
-                sb.Append($"  \"shedLevel\": {_shedController.Level},\n");
+                // shedLevel retained for sidecar wire-compat; kerbcam no longer
+                // auto-sheds quality (manual/API only), so it's always 0.
+                sb.Append("  \"shedLevel\": 0,\n");
+                // Stagger telemetry — watch the budget regulator converge + tune
+                // MaxKerbcamFrameBudgetMs / MinKspFps. staggerBudget: cameras
+                // permitted to capture this tick. kerbcamFrameMs: EMA of kerbcam's
+                // own per-frame main-thread cost (the regulated quantity).
+                sb.Append($"  \"staggerBudget\": {_staggerBudget},\n");
+                sb.Append($"  \"kerbcamFrameMs\": {_kerbcamFrameMs.ToString("F2", System.Globalization.CultureInfo.InvariantCulture)},\n");
                 sb.Append("  \"cameras\": [\n");
                 for (int i = 0; i < _cameras.Count; i++)
                 {
@@ -955,7 +985,7 @@ namespace Kerbcam
             var ci = System.Globalization.CultureInfo.InvariantCulture;
             sb.Append(",\n  \"telemetry\": {\n");
             sb.Append($"    \"cameraCount\": {_cameras.Count},\n");
-            sb.Append($"    \"shedLevel\": {_shedController.Level},\n");
+            sb.Append($"    \"staggerBudget\": {_staggerBudget},\n");
 
             sb.Append("    \"phasesMs\": {\n");
             AppendPhase(sb, "galaxy", RenderPhase.Galaxy, ci, first: true);
@@ -1026,27 +1056,41 @@ namespace Kerbcam
             _fpsAvg = sum / _fpsCount;
         }
 
-        // Per-tick: escalate / de-escalate the degrade level from the rolling
-        // fps average (dwell + back-off in ShedController prevent flapping).
-        // The level always drives capture staggering (the temporal degrade in
-        // LateUpdate's Refresh loop). The resolution/FX *quality* cascade is
-        // applied only when EnableAdaptiveShed is opted in. Skips until the fps
-        // window has filled — early post-load frames are noisy.
+        // Per-tick: regulate the capture budget to hold kerbcam's own per-frame
+        // main-thread cost within MaxKerbcamFrameBudgetMs (lossless temporal
+        // degrade — fewer cameras per frame, full quality each), tightening
+        // further if game fps falls below the MinKspFps physics floor. kerbcam
+        // NEVER auto-sheds quality; that is a manual/API-only operator choice.
+        // Skips until the fps window has filled — early post-load frames noisy.
         private void UpdateDegradeLevel()
         {
             if (_fpsCount < FpsSamples) return;
+            if (_staggerController == null) return;
+            // Per-camera cost = this frame's measured kerbcam cost ÷ the cameras
+            // that actually captured (budget-independent ≈ constant). Unscaled
+            // time so dwell tracks wall-clock, not in-game time (timewarp).
+            double msPerCam = _kerbcamFrameMs / (_lastCapturedCount > 0 ? _lastCapturedCount : 1);
+            int before = _staggerController.Budget;
+            // Budgeted over the SUBSCRIBED set (_streamCount), not all attached.
+            // _fpsAvg feeds the one-way physics-floor safety (MinKspFps).
+            int budget = _staggerController.Evaluate(
+                _kerbcamFrameMs, msPerCam, _streamCount, _fpsAvg, Time.unscaledTime);
+            if (budget != before)
+                Debug.Log($"[Kerbcam] stagger budget={budget}/{_streamCount} streaming "
+                    + $"(kerbcam {_kerbcamFrameMs:F1}ms, {msPerCam:F1}ms/cam, KSP {_fpsAvg:F0}fps, "
+                    + $"max {_settings.MaxKerbcamFrameBudgetMs:F0}ms, floor {_settings.MinKspFps:F0}fps)");
+        }
 
-            int before = _shedController.Level;
-            // Unscaled time so dwell/back-off track wall-clock seconds, not
-            // in-game time (timewarp must not race the loop).
-            int level = _shedController.Evaluate(_fpsAvg, Time.unscaledTime);
-            if (level == before) return;
-
-            Debug.Log($"[Kerbcam] degrade level={level} (avg fps={_fpsAvg:F1}, quality-shed={_settings.EnableAdaptiveShed})");
-            if (_settings.EnableAdaptiveShed)
-            {
-                foreach (var cam in _cameras) cam.ApplyAutoShed(level);
-            }
+        // Build the stagger budget regulator from settings. MaxKerbcamFrameBudgetMs
+        // <= 0 means "no ms cap" — a huge budget so cost never triggers a cut
+        // (capture then bounded only by MaxCaptureFps + the MinKspFps floor).
+        private static StaggerBudgetController BuildStaggerController(KerbcamSettings s)
+        {
+            double budgetMs = s.MaxKerbcamFrameBudgetMs > 0f ? s.MaxKerbcamFrameBudgetMs : 1e6;
+            return new StaggerBudgetController(
+                budgetMs,
+                initialBudget: 1,
+                minKspFps: s.MinKspFps);
         }
 
         private void OnDestroy()
