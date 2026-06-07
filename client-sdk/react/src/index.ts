@@ -26,3 +26,7 @@ export type { LabelableCamera } from "./cameraLabels";
 // Lifecycle utilities
 export { getCameraLifecycle, isCameraDestroyed } from "./lifecycle";
 export type { CameraLifecycle } from "./lifecycle";
+
+// CameraFeed component
+export { CameraFeed } from "./CameraFeed";
+export type { CameraFeedHandle, CameraFeedProps } from "./CameraFeed";
