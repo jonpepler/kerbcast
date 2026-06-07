@@ -53,6 +53,13 @@ if ! printf '%s' "$NEW" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?$';
   exit 3
 fi
 
+# Check for pnpm before touching any files: we rebuild web/dist/index.html as
+# part of the bump and the release must not ship a stale embedded UI.
+if ! command -v pnpm >/dev/null 2>&1; then
+  echo "error: pnpm not found -- install pnpm and re-run so the web build is current" >&2
+  exit 4
+fi
+
 CURRENT_CARGO="$(grep -m1 '^version = ' "$CARGO" | sed -E 's/version = "(.*)"/\1/')"
 CURRENT_TS="$(node -p "require('$TS_PKG').version")"
 CURRENT_REACT="$(node -p "require('$REACT_PKG').version")"
@@ -83,13 +90,7 @@ if command -v cargo >/dev/null 2>&1; then
   ( cd "$(dirname "$CARGO")" && cargo update -p kerbcam-sidecar --precise "$NEW" >/dev/null 2>&1 || true )
 fi
 
-# Rebuild the embedded web UI so the shipped binary contains the page at the
-# bumped version. Requires pnpm; fails with a clear error if it is absent so a
-# release cannot silently ship a stale page.
-if ! command -v pnpm >/dev/null 2>&1; then
-  echo "error: pnpm not found -- install pnpm and re-run so the web build is current" >&2
-  exit 4
-fi
+# Rebuild the embedded web UI so the shipped binary contains the current page.
 echo "rebuilding web UI..."
 ( cd "$ROOT" && pnpm --filter kerbcam-web build >/dev/null )
 echo "  $ROOT/web/dist/index.html"

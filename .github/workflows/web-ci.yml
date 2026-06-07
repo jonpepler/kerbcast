@@ -50,6 +50,13 @@ jobs:
       - name: Install workspace dependencies
         run: pnpm install --frozen-lockfile
 
+      # Build the SDK packages first: @jonpepler/kerbcam and
+      # @jonpepler/kerbcam-react resolve from dist/ (package.json exports
+      # point at dist/index.d.ts). Without this step, typecheck and the web
+      # build fail with "cannot find module / its type declarations".
+      - name: Build SDK packages
+        run: pnpm --filter "@jonpepler/kerbcam" --filter "@jonpepler/kerbcam-react" build
+
       - name: Test (kerbcam-web)
         run: pnpm --filter kerbcam-web test
 
