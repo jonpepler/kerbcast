@@ -136,20 +136,48 @@ export interface InboundVideoStats {
   framesPerSecond: number | undefined;
 }
 
-/** Camera summary returned by {@link KerbcamClient.discover}. */
+/**
+ * Camera summary returned by {@link KerbcamClient.discover} (`GET /cameras`).
+ *
+ * This is the shape the sidecar serialises from its internal `CameraInfo`
+ * struct. It is a discovery snapshot, not a live operating state: it carries
+ * capability and identity fields but not per-connection operator state
+ * (`layers`, `renderWidth`, `panYaw`, etc.) -- those arrive over the data
+ * channel after `connect()`.
+ *
+ * Deliberately separate from `CameraState` even though the two share several
+ * field names, because the shapes differ: `DiscoveredCamera` has `maxWidth`
+ * / `maxHeight` (physical sensor limits) which `CameraState` omits, while
+ * `CameraState` adds runtime fields (`layers`, `renderWidth`, `panYaw`, ...).
+ */
 export interface DiscoveredCamera {
   flightId: number;
+  /** Part-destruction lifecycle. `"active"` for live cameras. */
+  lifecycle?: CameraLifecycle;
   partName: string;
   partTitle: string;
   cameraName: string;
   vesselName: string;
+  /** Physical sensor width ceiling (pixels). Distinct from `renderWidth` on
+   *  `CameraState`, which is the currently-negotiated resolution. */
   maxWidth: number;
+  /** Physical sensor height ceiling (pixels). */
   maxHeight: number;
   supportsZoom: boolean;
   fov: number;
   fovMin: number;
   fovMax: number;
   supportsPan: boolean;
+  panYawMin: number;
+  panYawMax: number;
+  panPitchMin: number;
+  panPitchMax: number;
+  /** Current encoder bitrate in bits per second. 0 when no encoder is running. */
+  encoderBitrateBps: number;
+  /** REMB-derived bandwidth target. 0 until the first feedback arrives. */
+  targetBitrateBps: number;
+  /** Effective degrade level (max across active subscribers). 0.0 to 1.0. */
+  degradeLevel: number;
 }
 
 /** Event payloads emitted by a {@link KerbcamClient}. */
