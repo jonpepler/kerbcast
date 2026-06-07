@@ -4,7 +4,7 @@ A from-scratch successor to OCISLY for streaming Kerbal Space Program camera fee
 
 ## What it does
 
-- Streams HullcamVDS camera sources to a browser via a simple html page or through [@jonpepler/kerbcam](https://github.com/jonpepler/kerbcam/pkgs/npm/kerbcam), a TypeScript package
+- Streams HullcamVDS camera sources to a browser via the bundled kerbcam web UI or through [@jonpepler/kerbcam](https://github.com/jonpepler/kerbcam/pkgs/npm/kerbcam), a TypeScript SDK
 - Supports performance tweak options to keep fps reasonable through degrading resolution, shedding render layers, and adding 'realistic' noise at sour era ce
 - Honours each camera's `cameraMode` so B&W / CRT / night-vision variants look like they do in the in-game Hullcam GUI
 - Supports a data channel for sending control data (eg zoom)
