@@ -164,6 +164,27 @@ namespace Yangrc.OpenGLAsyncReadback {
             }
         }
 
+        /// <summary>
+        /// kerbcam perf addition (not upstream). Zero-copy access for the OpenGL
+        /// plugin path: returns the native plugin buffer pointer directly,
+        /// skipping the Allocator.Temp NativeArray + MemMove that GetData()
+        /// performs (one of two full-frame copies per readback, plus a per-frame
+        /// Temp allocation). Returns false on the Unity-native path, where
+        /// GetData() is already a zero-copy view of Unity's internal buffer — the
+        /// caller should use GetData() there. The pointer is valid only until the
+        /// next readback Update; copy out of it immediately.
+        /// See local_docs/perf_profiles/readback_investigation.md change #1.
+        /// </summary>
+        public unsafe bool TryGetRawPtr(out void* ptr, out int length) {
+            if (isPlugin) {
+                oRequest.GetRawDataPtr(out ptr, out length);
+                return true;
+            }
+            ptr = null;
+            length = 0;
+            return false;
+        }
+
         public bool valid {
             get {
                 return isPlugin ? oRequest.Valid() : (!uDisposd && uInited);
@@ -253,9 +274,27 @@ namespace Yangrc.OpenGLAsyncReadback {
             UnsafeUtility.MemMove(resultNativeArray.GetUnsafePtr(), ptr, length);
             //Though there exists an api named NativeArrayUnsafeUtility.ConvertExistingDataToNativeArray.
             //It's only for internal use. The document on docs.unity3d.com is a lie.
-            
+
             return resultNativeArray;
 		}
+
+        /// <summary>
+        /// kerbcam perf addition (not upstream): the native plugin buffer pointer
+        /// + byte length, with no copy or allocation. Same source data as
+        /// GetRawData, minus the Allocator.Temp NativeArray + MemMove. Pointer is
+        /// valid only until the next Update frees the task buffer — copy out now.
+        /// </summary>
+        public unsafe void GetRawDataPtr(out void* ptr, out int length) {
+            AssertRequestValid();
+            if (!done) {
+                throw new InvalidOperationException("The request is not done yet!");
+            }
+            void* p = null;
+            int len = 0;
+            GetData(this.nativeTaskHandle, ref p, ref len);
+            ptr = p;
+            length = len;
+        }
 
 		internal static void Update()
 		{

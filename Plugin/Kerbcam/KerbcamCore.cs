@@ -63,17 +63,34 @@ namespace Kerbcam
         private int _fpsIdx;
         private int _fpsCount; // up to FpsSamples; growing-average until full
         private float _fpsAvg;
-        private int _shedLevel;
-        // Shed level transitions. Each pair = (escalate-below, restore-above)
-        // for the transition from level N to level N+1. Hysteresis (~5 fps)
-        // prevents flapping. See KerbcamCamera.ShedTable for what each level
-        // actually applies — scaled is in level 5 so the trigger is severe.
-        //
-        // Levels:  0 → 1 → 2 → 3 → 4 → 5
-        //
-        // Transition: 0→1     1→2     2→3     3→4     4→5
-        private static readonly float[] ShedBelow    = { 25f, 18f, 12f,  7f, 3f };
-        private static readonly float[] RestoreAbove = { 30f, 23f, 17f, 12f, 7f };
+        // Adaptive-shed decision state machine. The fps thresholds + hysteresis
+        // and the anti-flap dwell/back-off all live in ShedController (which is
+        // Unity-free and unit-tested). Each LateUpdate we hand it the rolling
+        // fps average + the unscaled clock and apply the level it returns.
+        // Initialised with defaults; Awake rebuilds it from settings.cfg once
+        // they're loaded (the field initialiser keeps it non-null meanwhile).
+        private ShedController _shedController =
+            new ShedController(KerbcamCamera.MaxShedLevel);
+
+        // The DontDestroyOnLoad GameObject hosting AsyncReadbackUpdater, whose
+        // Update() pumps the OpenGL readback plugin (a per-frame render-thread
+        // GL.IssuePluginEvent) every frame. Tracked so OnDestroy can tear it
+        // down on flight exit — otherwise it keeps pumping in every later scene
+        // (space centre, main menu) for the rest of the process, stalling the
+        // render thread on any leftover readback tasks until KSP is restarted.
+        private GameObject _readbackUpdaterGo;
+
+        // Round-robins which cameras capture each frame (see ReadbackScheduler),
+        // so they don't all issue a GPU render + readback on the same frame.
+        private readonly ReadbackScheduler _readbackScheduler = new ReadbackScheduler();
+        private bool[] _capturePermit = new bool[0];
+
+        // Telemetry (Recommendation 1): GC collection-count tracker. Sampled
+        // once per LateUpdate when KerbcamSettings.EnableTelemetry is true,
+        // surfaced into the status JSON's "telemetry" section and reset each
+        // write. Lets us see, with no profiler, whether the ~100ms frametime
+        // spikes coincide with a Mono GC. Struct field — no allocation.
+        private GcTracker _gcTracker;
 
         private static string ResolveRingDir()
         {
@@ -96,6 +113,12 @@ namespace Kerbcam
             Debug.Log("[Kerbcam] KerbcamCore.Awake — initialising");
 
             _settings = KerbcamSettings.Load();
+            _shedController = new ShedController(
+                KerbcamCamera.MaxShedLevel,
+                _settings.ShedDwellSeconds,
+                _settings.ShedRestoreDwellSeconds,
+                _settings.ShedRestoreBackoffFactor,
+                _settings.ShedMaxRestoreDwellSeconds);
 
             try
             {
@@ -106,9 +129,10 @@ namespace Kerbcam
                 // DontDestroyOnLoad GameObject.
                 if (AsyncReadbackUpdater.instance == null)
                 {
-                    var updaterGo = new GameObject("Kerbcam_AsyncReadbackUpdater");
-                    UnityEngine.Object.DontDestroyOnLoad(updaterGo);
-                    updaterGo.AddComponent<AsyncReadbackUpdater>();
+                    _readbackUpdaterGo = new GameObject("Kerbcam_AsyncReadbackUpdater");
+                    UnityEngine.Object.DontDestroyOnLoad(_readbackUpdaterGo);
+                    _readbackUpdaterGo.AddComponent<AsyncReadbackUpdater>();
+                    Debug.Log("[Kerbcam] spawned AsyncReadbackUpdater (readback pump)");
                 }
             }
             catch (Exception ex)
@@ -482,10 +506,23 @@ namespace Kerbcam
         private void LateUpdate()
         {
             UpdateFpsAverage();
-            // Shedding can be disabled via settings.cfg's EnableAdaptiveShed
-            // for perf-comparison runs where we want raw per-camera cost
-            // without the cascade kicking in.
-            if (_settings.EnableAdaptiveShed) ApplyAdaptiveShedding();
+
+            // Telemetry: sample the GC collection counters once per frame and
+            // fold this frame's wall-clock duration into the interval stats, so
+            // a frametime spike that coincides with a gen-0/1/2 collection is
+            // recorded as GC-caused. CollectionCount is a cheap field read; gated
+            // so it's a single bool check when telemetry is off.
+            if (KerbcamSettings.EnableTelemetry)
+            {
+                _gcTracker.Sample(
+                    GC.CollectionCount(0), GC.CollectionCount(1), GC.CollectionCount(2),
+                    Time.unscaledDeltaTime);
+            }
+            // Update the degrade level every frame (drives capture staggering
+            // below). Quality shedding (resolution/FX cascade) is opt-in via
+            // settings.cfg's EnableAdaptiveShed; the temporal degrade (fewer
+            // cameras captured per frame) is always on.
+            UpdateDegradeLevel();
 
             // Reconcile the per-save Difficulty Setting against our
             // effective state. KSP has no settings-changed event for
@@ -535,9 +572,18 @@ namespace Kerbcam
                 }
             }
 
-            for (int i = 0; i < _cameras.Count; i++)
+            // Stagger captures round-robin so the cameras don't all render +
+            // read back on the same frame. Budget = how many may capture this
+            // frame to sustain CaptureFps at the current game fps (_fpsAvg);
+            // below CaptureFps it grants all of them.
+            int camCount = _cameras.Count;
+            if (_capturePermit.Length < camCount) _capturePermit = new bool[camCount];
+            int budget = ReadbackScheduler.EffectiveBudget(
+                camCount, _settings.CaptureFps, _fpsAvg, _shedController.Level);
+            _readbackScheduler.NextTick(camCount, budget, _capturePermit);
+            for (int i = 0; i < camCount; i++)
             {
-                _cameras[i].Refresh();
+                _cameras[i].Refresh(_capturePermit[i]);
             }
 
             MaybeWriteStatusFile();
@@ -838,7 +884,7 @@ namespace Kerbcam
                 var sb = new System.Text.StringBuilder(256 + _cameras.Count * 256);
                 sb.Append("{\n");
                 sb.Append($"  \"kspFps\": {_fpsAvg:F2},\n");
-                sb.Append($"  \"shedLevel\": {_shedLevel},\n");
+                sb.Append($"  \"shedLevel\": {_shedController.Level},\n");
                 sb.Append("  \"cameras\": [\n");
                 for (int i = 0; i < _cameras.Count; i++)
                 {
@@ -857,8 +903,29 @@ namespace Kerbcam
                     sb.Append($"      \"panPitch\": {cam.PanPitch.ToString(System.Globalization.CultureInfo.InvariantCulture)}\n");
                     sb.Append(i == _cameras.Count - 1 ? "    }\n" : "    },\n");
                 }
-                sb.Append("  ]\n");
-                sb.Append("}\n");
+                sb.Append("  ]");
+
+                // Telemetry section (Recommendation 1). Per-phase render cost
+                // (summed across cameras = total main-thread cost per tick; max
+                // across cameras' rolling-max = the spike peak), the GC interval
+                // deltas + spike correlation, degrade level, and camera count.
+                // Only emitted when EnableTelemetry; the array above closes with
+                // no trailing comma, so we add one only when extending the object.
+                if (KerbcamSettings.EnableTelemetry)
+                {
+                    AppendTelemetry(sb);
+                }
+                sb.Append("\n}\n");
+
+                if (KerbcamSettings.EnableTelemetry)
+                {
+                    // Roll the interval stats over now that they've been written:
+                    // clear the GC interval accumulators and each camera's
+                    // rolling-max, so the next write reflects the next ~1s window.
+                    _gcTracker.ResetInterval();
+                    for (int i = 0; i < _cameras.Count; i++)
+                        _cameras[i].PhaseTimings.ResetMax();
+                }
 
                 // Atomic write: drop into .tmp + rename so the sidecar
                 // never reads a half-written file.
@@ -871,6 +938,70 @@ namespace Kerbcam
             {
                 Debug.LogWarning($"[Kerbcam] status file write failed: {ex.Message}");
             }
+        }
+
+        // Builds the "telemetry" object appended to the status JSON when
+        // EnableTelemetry is set. Phase costs are aggregated across cameras:
+        // `ms` is the SUM of each camera's last per-phase value (the total
+        // main-thread cost of that phase this tick across all cameras — the
+        // galaxy:scaled:near ratio that answers "which layer dominates"), and
+        // `maxMs` is the MAX of each camera's rolling-max for the interval (the
+        // worst single-camera spike, reset each write). GC + degrade + camera
+        // count are global. Allocation here is fine — 1Hz, on the blessed status
+        // write path. Caller has just closed the cameras array; we open with a
+        // comma so the telemetry object extends the same JSON object.
+        private void AppendTelemetry(System.Text.StringBuilder sb)
+        {
+            var ci = System.Globalization.CultureInfo.InvariantCulture;
+            sb.Append(",\n  \"telemetry\": {\n");
+            sb.Append($"    \"cameraCount\": {_cameras.Count},\n");
+            sb.Append($"    \"shedLevel\": {_shedController.Level},\n");
+
+            sb.Append("    \"phasesMs\": {\n");
+            AppendPhase(sb, "galaxy", RenderPhase.Galaxy, ci, first: true);
+            AppendPhase(sb, "scaled", RenderPhase.Scaled, ci, first: false);
+            AppendPhase(sb, "near", RenderPhase.Near, ci, first: false);
+            AppendPhase(sb, "blit", RenderPhase.Blit, ci, first: false);
+            AppendPhase(sb, "readback", RenderPhase.Readback, ci, first: false);
+            sb.Append("\n    },\n");
+
+            sb.Append("    \"gc\": {\n");
+            sb.Append($"      \"gen0\": {_gcTracker.IntervalGen0},\n");
+            sb.Append($"      \"gen1\": {_gcTracker.IntervalGen1},\n");
+            sb.Append($"      \"gen2\": {_gcTracker.IntervalGen2},\n");
+            sb.Append($"      \"worstFrameMs\": {_gcTracker.WorstFrameMs.ToString("F2", ci)},\n");
+            sb.Append($"      \"worstGcFrameMs\": {_gcTracker.WorstGcFrameMs.ToString("F2", ci)},\n");
+            sb.Append($"      \"worstFrameWasGc\": {(_gcTracker.WorstFrameWasGc ? "true" : "false")},\n");
+            // Best-effort Mono heap gauge — may read 0 in a non-development
+            // player. Informational only; lead with the collection counts above,
+            // which are reliable.
+            sb.Append($"      \"monoHeapBytes\": {UnityEngine.Profiling.Profiler.GetMonoUsedSizeLong()}\n");
+            sb.Append("    }\n");
+
+            sb.Append("  }");
+        }
+
+        // One phase row: { "ms": <sum-of-last>, "emaMs": <sum-of-ema>, "maxMs":
+        // <max-of-rolling-max> }, all aggregated across cameras. `ms` is the
+        // latest tick's total main-thread cost, `emaMs` the smoothed central
+        // tendency, `maxMs` the interval's worst single-camera spike. `first`
+        // controls the leading comma so the JSON object stays well-formed.
+        private void AppendPhase(System.Text.StringBuilder sb, string name,
+            RenderPhase phase, System.Globalization.CultureInfo ci, bool first)
+        {
+            double sumLast = 0.0;
+            double sumEma = 0.0;
+            double maxMax = 0.0;
+            for (int i = 0; i < _cameras.Count; i++)
+            {
+                var pt = _cameras[i].PhaseTimings;
+                sumLast += pt.Last(phase);
+                sumEma += pt.Ema(phase);
+                double m = pt.Max(phase);
+                if (m > maxMax) maxMax = m;
+            }
+            if (!first) sb.Append(",\n");
+            sb.Append($"      \"{name}\": {{ \"ms\": {sumLast.ToString("F3", ci)}, \"emaMs\": {sumEma.ToString("F3", ci)}, \"maxMs\": {maxMax.ToString("F3", ci)} }}");
         }
 
         private static string LayersToJson(CameraLayers layers)
@@ -895,36 +1026,27 @@ namespace Kerbcam
             _fpsAvg = sum / _fpsCount;
         }
 
-        // Per-tick: decide whether to escalate / de-escalate the shed
-        // level given the rolling fps average. Hysteresis between shed
-        // and restore thresholds prevents flapping. Skips entirely until
-        // the window has filled — early frames after a scene load are
-        // noisy and would trigger spurious sheds.
-        private void ApplyAdaptiveShedding()
+        // Per-tick: escalate / de-escalate the degrade level from the rolling
+        // fps average (dwell + back-off in ShedController prevent flapping).
+        // The level always drives capture staggering (the temporal degrade in
+        // LateUpdate's Refresh loop). The resolution/FX *quality* cascade is
+        // applied only when EnableAdaptiveShed is opted in. Skips until the fps
+        // window has filled — early post-load frames are noisy.
+        private void UpdateDegradeLevel()
         {
             if (_fpsCount < FpsSamples) return;
 
-            int desired = _shedLevel;
-            int maxLevel = KerbcamCamera.MaxShedLevel;
-            // Escalate one level if we're below this transition's shed
-            // threshold; de-escalate one level if we're above the
-            // previous transition's restore threshold. One step per tick
-            // so the system doesn't lurch through multiple resolution
-            // changes in a single LateUpdate.
-            if (_shedLevel < maxLevel && _fpsAvg < ShedBelow[_shedLevel])
-            {
-                desired = _shedLevel + 1;
-            }
-            else if (_shedLevel > 0 && _fpsAvg > RestoreAbove[_shedLevel - 1])
-            {
-                desired = _shedLevel - 1;
-            }
+            int before = _shedController.Level;
+            // Unscaled time so dwell/back-off track wall-clock seconds, not
+            // in-game time (timewarp must not race the loop).
+            int level = _shedController.Evaluate(_fpsAvg, Time.unscaledTime);
+            if (level == before) return;
 
-            if (desired == _shedLevel) return;
-
-            _shedLevel = desired;
-            Debug.Log($"[Kerbcam] adaptive shed level={_shedLevel} (avg fps={_fpsAvg:F1})");
-            foreach (var cam in _cameras) cam.ApplyAutoShed(_shedLevel);
+            Debug.Log($"[Kerbcam] degrade level={level} (avg fps={_fpsAvg:F1}, quality-shed={_settings.EnableAdaptiveShed})");
+            if (_settings.EnableAdaptiveShed)
+            {
+                foreach (var cam in _cameras) cam.ApplyAutoShed(level);
+            }
         }
 
         private void OnDestroy()
@@ -942,6 +1064,31 @@ namespace Kerbcam
             foreach (var cam in _cameras) cam.Dispose();
             _cameras.Clear();
             StopSidecar();
+
+            // Tear down the readback pump now that the cameras (and their
+            // readback requests) are gone. Leaving it alive would keep firing a
+            // per-frame render-thread plugin event in every later scene — the
+            // root of the "spikes persist on the main menu / only a KSP restart
+            // recovers" symptom.
+            //
+            // We MUST null AsyncReadbackUpdater.instance ourselves. The previous
+            // code relied on Unity's destroyed-object fake-null making
+            // `instance == null` true on the next Flight Awake — but empirically
+            // it did NOT respawn after an exit-to-KSC round trip (the static held
+            // a stale reference, the Awake guard saw "not null", the pump never
+            // came back, and async readbacks wedged until a full KSP restart).
+            // Destroy() is deferred, so the static stays set across the scene
+            // transition; clear it synchronously here so the next Awake's
+            // `instance == null` guard reliably re-spawns a fresh pump. (The
+            // vendored AsyncReadbackUpdater now also nulls it in its own
+            // OnDestroy, as defence-in-depth.)
+            if (_readbackUpdaterGo != null)
+            {
+                UnityEngine.Object.Destroy(_readbackUpdaterGo);
+                _readbackUpdaterGo = null;
+                AsyncReadbackUpdater.instance = null;
+                Debug.Log("[Kerbcam] tore down AsyncReadbackUpdater (readback pump) on scene exit");
+            }
 
             // Clean up status file so a stale snapshot doesn't survive
             // into the next launch.

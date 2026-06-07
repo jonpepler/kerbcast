@@ -19,7 +19,9 @@
 //                       owns the process.
 //   EnableAdaptiveShed — whether the plugin steps the per-camera
 //                       resolution / layer-mask cascade down when KSP
-//                       fps drops below the ShedBelow thresholds.
+//                       fps drops below the shed thresholds (see
+//                       ShedController). Shed*/restore dwell + back-off
+//                       tuning keys live alongside it.
 //                       Default true; set false for perf-comparison
 //                       runs where you want the raw camera cost
 //                       without the cascade masking it.
@@ -61,7 +63,34 @@ namespace Kerbcam
         public int Width { get; private set; } = 1024;
         public int Height { get; private set; } = 576;
         public bool AutoSpawnSidecar { get; private set; } = true;
-        public bool EnableAdaptiveShed { get; private set; } = true;
+        // Opt-in QUALITY shedding (resolution + FX-layer cascade). Default
+        // false: by default kerbcam degrades *temporally* instead (capture
+        // staggering scales cuts up as fps drops — see ReadbackScheduler), which
+        // keeps full image quality. Set true to also drop resolution/FX layers
+        // under load.
+        public bool EnableAdaptiveShed { get; private set; } = false;
+        // Anti-flap tuning for the adaptive-shed loop (see ShedController).
+        // ShedDwellSeconds: min seconds between shedding further (fast attack).
+        // ShedRestoreDwellSeconds: min seconds before restoring quality (slow
+        //   release) — grows under back-off.
+        // ShedRestoreBackoffFactor: multiplier applied to the restore dwell each
+        //   time a restore is immediately regretted; makes the flap converge.
+        // ShedMaxRestoreDwellSeconds: cap on the backed-off restore dwell.
+        // Defaults are unvalidated estimates pending Deck calibration.
+        public float ShedDwellSeconds { get; private set; } =
+            (float)ShedController.DefaultShedDwellSeconds;
+        public float ShedRestoreDwellSeconds { get; private set; } =
+            (float)ShedController.DefaultRestoreDwellSeconds;
+        public float ShedRestoreBackoffFactor { get; private set; } =
+            (float)ShedController.DefaultBackoffFactor;
+        public float ShedMaxRestoreDwellSeconds { get; private set; } =
+            (float)ShedController.DefaultMaxRestoreDwellSeconds;
+        // Target per-camera capture rate. Captures are round-robined across
+        // cameras (ReadbackScheduler) so they don't all render + read back on
+        // the same frame, bounding simultaneous in-flight GPU readbacks and
+        // capping capture to roughly this rate instead of the full game fps.
+        // Set >= your game fps cap to effectively disable staggering.
+        public float CaptureFps { get; private set; } = 20f;
 
         // Master toggle for kerbcam's own atmospheric FX (a pluggable overlay
         // — see atmospheric_fx_parked.md for why the stock-FX replication was
@@ -123,6 +152,20 @@ namespace Kerbcam
         // KSP.log otherwise. Static so KerbcamCamera can read it
         // without needing a back-ref to the settings instance.
         public static bool DebugCameraLogging { get; private set; } = false;
+
+        // Low-overhead in-plugin performance telemetry (Recommendation 1 from
+        // the profiling study). When true, KerbcamCamera.Refresh times each
+        // render phase (galaxy / scaled / near / blit / readback) with
+        // Stopwatch.GetTimestamp (allocation-free) and KerbcamCore samples the
+        // GC collection counters every frame; both are surfaced into a
+        // "telemetry" section of global.status.json each ~1Hz write. Lets us
+        // measure on the Deck — with no profiler attach — whether the residual
+        // ~100ms frametime spikes are Mono GC (a deltaTime spike that coincides
+        // with a gen-0/1/2 collection is the proof) and read the per-layer
+        // render-cost ratio. Default false so the feature is genuinely zero-cost
+        // when off (Refresh reads the flag once and skips every GetTimestamp
+        // call). Static so KerbcamCamera reads it without a settings back-ref.
+        public static bool EnableTelemetry { get; private set; } = false;
 
         // Debug: force atmospheric-FX intensity to full regardless of mach /
         // dynamic pressure, so the effect renders even on the pad. Used to
@@ -252,6 +295,11 @@ namespace Kerbcam
             ApplyInt(node, "Height", v => settings.Height = v);
             ApplyBool(node, "AutoSpawnSidecar", v => settings.AutoSpawnSidecar = v);
             ApplyBool(node, "EnableAdaptiveShed", v => settings.EnableAdaptiveShed = v);
+            ApplyFloat(node, "ShedDwellSeconds", v => settings.ShedDwellSeconds = v);
+            ApplyFloat(node, "ShedRestoreDwellSeconds", v => settings.ShedRestoreDwellSeconds = v);
+            ApplyFloat(node, "ShedRestoreBackoffFactor", v => settings.ShedRestoreBackoffFactor = v);
+            ApplyFloat(node, "ShedMaxRestoreDwellSeconds", v => settings.ShedMaxRestoreDwellSeconds = v);
+            ApplyFloat(node, "CaptureFps", v => settings.CaptureFps = v);
             ApplyBool(node, "EnableAtmosphericFx", v => settings.EnableAtmosphericFx = v);
             ApplyString(node, "AtmosphericFxLayers", v => settings.AtmosphericFxLayers = ParseAtmoFxLayers(v));
             ApplyBool(node, "EnableHullcamEffects", v => EnableHullcamEffects = v);
@@ -259,6 +307,7 @@ namespace Kerbcam
             ApplyString(node, "TUFXProfile", v => TUFXProfile = v);
             ApplyBool(node, "EnableHullcamLinuxShaderSwap", v => EnableHullcamLinuxShaderSwap = v);
             ApplyBool(node, "DebugCameraLogging", v => DebugCameraLogging = v);
+            ApplyBool(node, "EnableTelemetry", v => EnableTelemetry = v);
             ApplyBool(node, "ForceAtmosphericFx", v => ForceAtmosphericFx = v);
             ApplyVector3(node, "DebugWindDirection", v => DebugWindDirection = v);
             // Static slots so KerbcamGameParameters (constructed by
@@ -402,6 +451,18 @@ namespace Kerbcam
             if (string.IsNullOrEmpty(raw)) return;
             if (bool.TryParse(raw.Trim(), out bool v)) set(v);
             else Debug.LogWarning($"[Kerbcam] settings.cfg: {key}='{raw}' is not a bool; using default");
+        }
+
+        private static void ApplyFloat(ConfigNode node, string key, System.Action<float> set)
+        {
+            var raw = node.GetValue(key);
+            if (string.IsNullOrEmpty(raw)) return;
+            // Invariant culture: KSP config floats always use '.' as the decimal
+            // separator regardless of the player's locale.
+            if (float.TryParse(raw.Trim(), System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture, out float v))
+                set(v);
+            else Debug.LogWarning($"[Kerbcam] settings.cfg: {key}='{raw}' is not a number; using default");
         }
 
         // Parses three comma-separated floats: `x, y, z`.
