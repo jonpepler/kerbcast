@@ -20,6 +20,11 @@
 - `InboundVideoStats` type exported from the package root.
 - `MockSidecar.setInboundStats(flightId, partialStats)` configures the stats the
   fake `getStats()` returns, keyed by track id (legacy mode) or mid (dynamic mode).
+- `DiscoveredCamera` widened to match the full `GET /cameras` payload: added
+  `lifecycle`, `panYawMin`, `panYawMax`, `panPitchMin`, `panPitchMax`,
+  `encoderBitrateBps`, `targetBitrateBps`, `degradeLevel`. `maxWidth`/`maxHeight`
+  were already present. Additive -- existing consumers that destructure only
+  the previous fields continue working unchanged.
 
 ## 0.3.1 — 2026-05-21
 
