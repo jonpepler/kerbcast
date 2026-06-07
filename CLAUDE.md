@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Sister project
 
-**[gonogo](https://github.com/jonpepler/gonogo)** is a consumer of this mod: a TypeScript SPA that displays kerbcam camera feeds in a mission-control dashboard. Any WebRTC-capable browser can be a kerbcam consumer; gonogo's just the one we built alongside. The two projects share conventions — commits, semver, performance-budget patterns, the Steam-Deck-to-MacBook topology — and gonogo's `CLAUDE.md` is the canonical record of those.
+**[gonogo](https://github.com/jonpepler/gonogo)** is a consumer of this mod: a TypeScript SPA that displays kerbcam camera feeds in a mission-control dashboard. Any WebRTC-capable browser can be a kerbcam consumer; gonogo's just the one we built alongside. The two projects share conventions (commits, semver, performance-budget patterns, the Steam-Deck-to-MacBook topology), and gonogo's `CLAUDE.md` is the canonical record of those.
 
-The full design rationale for kerbcam lives in **gonogo's `local_docs/ocisly_state_and_rebuild.md`** — read it before any non-trivial architectural decision. This CLAUDE.md is an index pointing at it, not a replacement.
+The full design rationale for kerbcam lives in **gonogo's `local_docs/ocisly_state_and_rebuild.md`**: read it before any non-trivial architectural decision. This CLAUDE.md is an index pointing at it, not a replacement.
 
 ## Project status
 
@@ -14,16 +14,16 @@ The full design rationale for kerbcam lives in **gonogo's `local_docs/ocisly_sta
 
 ## Project vision
 
-**kerbcam** is a from-scratch successor to OCISLY (OfCourseIStillLoveYou), the KSP camera-streaming mod. It captures Hullcam VDS camera feeds from KSP and ships them over WebRTC to a browser — fast enough that the Steam Deck doesn't notice, faithful enough that each camera's Hullcam VDS character (B&W, CRT scanlines, night vision, etc.) is preserved.
+**kerbcam** is a from-scratch successor to OCISLY (OfCourseIStillLoveYou), the KSP camera-streaming mod. It captures Hullcam VDS camera feeds from KSP and ships them over WebRTC to a browser, fast enough that the Steam Deck doesn't notice, faithful enough that each camera's Hullcam VDS character (B&W, CRT scanlines, night vision, etc.) is preserved.
 
 The headline differences from OCISLY:
 
-- **`AsyncGPUReadback`** instead of `Texture2D.ReadPixels` — capture is zero-stall on KSP's main thread.
-- **Hardware H.264 encoding** in an out-of-process sidecar — VCN 2.0 on the Deck, no software JPEG encode.
-- **WebRTC end-to-end** — adaptive bitrate, congestion control, packet loss recovery, all for free from `libwebrtc` (via `webrtc-rs`).
-- **Hullcam VDS filter fidelity** — read `cameraMode` from each part, reuse the existing in-game filter materials.
-- **Subscription-driven lifecycle** — cameras render only when a peer is subscribed; no streaming work when nobody's watching.
-- **Adaptive scaling** — `/limits` + `/metrics` + auto-degrade when game framerate drops, with explicit "throttled because X" messages to the operator.
+- **`AsyncGPUReadback`** instead of `Texture2D.ReadPixels`: capture is zero-stall on KSP's main thread.
+- **Hardware H.264 encoding** in an out-of-process sidecar: VCN 2.0 on the Deck, no software JPEG encode.
+- **WebRTC end-to-end**: adaptive bitrate, congestion control, packet loss recovery, all for free from `libwebrtc` (via `webrtc-rs`).
+- **Hullcam VDS filter fidelity**: read `cameraMode` from each part, reuse the existing in-game filter materials.
+- **Subscription-driven lifecycle**: cameras render only when a peer is subscribed; no streaming work when nobody's watching.
+- **Adaptive scaling**: `/limits` + `/metrics` + auto-degrade when game framerate drops, with explicit "throttled because X" messages to the operator.
 
 ## Architecture in one line
 
@@ -38,7 +38,7 @@ One mod download: the plugin and the per-rid sidecar binary ship together in `Ga
 
 ## Repo layout
 
-Current layout (as of 2026-05-19 — scaffold checkpoint):
+Current layout (as of 2026-05-19, scaffold checkpoint):
 
 ```
 sidecar/                Rust workspace (built, 16 tests passing)
@@ -49,7 +49,7 @@ sidecar/                Rust workspace (built, 16 tests passing)
     main.rs             bin entry: clap CLI, tracing init, encoder selection
     encoder/
       mod.rs            EncoderBackend trait + auto_select factory
-      libva.rs          TIER-1 Linux/Deck VA-API (stub — is_available=false)
+      libva.rs          TIER-1 Linux/Deck VA-API (stub, is_available=false)
       videotoolbox.rs   TIER-2 macOS (stub)
       nvenc.rs          TIER-2 Windows/NVIDIA (stub)
       software.rs       OpenH264 / x264 software fallback (stub but encode
@@ -71,9 +71,9 @@ Planned (not yet present):
 .github/workflows/      CI (Rust + C# + integration harness), release, protocol publish
 Plugin/                 KSP-side C# (.csproj → KerbCam.dll). For now the KSP-
                         side work lives in the OCISLY fork (separate repo on
-                        the author's machine) — we'll fork those files into
+                        the author's machine); we'll fork those files into
                         Plugin/ once the rebuild proper starts.
-protocol/               TypeScript / C# codegen targets — currently the message
+protocol/               TypeScript / C# codegen targets, currently the message
                         types are only in sidecar/src/protocol/. Bindings get
                         formalised when gonogo starts consuming them.
 GameData/KerbCam/       packaged install tree (plugin.dll + Sidecar/<rid>/binary).
@@ -82,7 +82,7 @@ live_tests/             Claude-runnable test docs (HTTP endpoints, control-chann
                         shapes) per the rebuild doc §10.4.
 ```
 
-The strategy / planning context for this project lives in the gonogo repo at `local_docs/kerbcam/` — design decisions, performance baselines, ongoing notes. Update both repos when something architectural shifts.
+The strategy / planning context for this project lives in the gonogo repo at `local_docs/kerbcam/`: design decisions, performance baselines, ongoing notes. Update both repos when something architectural shifts.
 
 ## Toolchain
 
@@ -93,7 +93,7 @@ The strategy / planning context for this project lives in the gonogo repo at `lo
 
 ## Workflow
 
-Solo-developer repo. **Conventional Commits + Semantic Versioning.** Direct commits to `main` unless a change is large enough to warrant a feature branch (rare). No `Co-Authored-By: Claude` trailer — write the commit message as if a human authored it. Same convention as gonogo.
+Solo-developer repo. **Conventional Commits + Semantic Versioning.** Direct commits to `main` unless a change is large enough to warrant a feature branch (rare). No `Co-Authored-By: Claude` trailer; write the commit message as if a human authored it. Same convention as gonogo.
 
 Releases: GitHub Actions builds per-rid sidecar binaries on tag, packages `GameData/KerbCam/`, attaches to a GitHub Release. Protocol package publishes to GitHub Packages (not npm) on the same tag.
 
@@ -115,13 +115,13 @@ Same pattern as `gonogo`'s `PerfBudget`. Concrete targets are in gonogo's `local
 - End-to-end glass-to-glass latency on LAN: < 90 ms.
 - Concurrent cameras at 30 fps: 6–8 on the Deck.
 
-All numbers are **estimates pending the §8.0 baseline measurement**. The first real deliverable in this repo is the baseline harness against the *current* OCISLY+gonogo stack — every later perf claim is compared against that.
+All numbers are **estimates pending the §8.0 baseline measurement**. The first real deliverable in this repo is the baseline harness against the *current* OCISLY+gonogo stack; every later perf claim is compared against that.
 
 ## Hullcam VDS filter integration (Path A)
 
 When the player has Hullcam VDS installed (assume yes), `cameraMode` on each `MuMechModuleHullCamera` selects one of 9 filter classes (`CameraFilterNormal`, `BlackAndWhiteFilm`, `BlackAndWhiteLoResTV`, `BlackAndWhiteHiResTV`, `ColorFilm`, `ColorLoResTV`, `ColorHiResTV`, `DockingCam`, `NightVision`). We reflect into the already-loaded Hullcam VDS assembly to get the filter materials and `Graphics.Blit` through them onto our capture RenderTexture *before* `AsyncGPUReadback.Request()`. Pixel-identical to the in-game Hullcam GUI; main-thread cost is the Blit dispatch only, not shader execution.
 
-If Hullcam VDS isn't installed, fall back to a generic mode (Path C in the rebuild doc) — cameras stream in `Normal` colour with no filtering.
+If Hullcam VDS isn't installed, fall back to a generic mode (Path C in the rebuild doc): cameras stream in `Normal` colour with no filtering.
 
 ## Testing
 

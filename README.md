@@ -12,17 +12,17 @@ A from-scratch successor to OCISLY for streaming Kerbal Space Program camera fee
 
 ### How it does it
 
-- Captures KSP Hullcam VDS camera feeds inside the game via `AsyncGPUReadback` — zero stall on the game's main thread
+- Captures KSP Hullcam VDS camera feeds inside the game via `AsyncGPUReadback`, with zero stall on the game's main thread
 - Encodes them in hardware (libva on Linux / Steam Deck; VideoToolbox / NVENC on other tier-2 platforms) in an bggprocess 'sidecar'
-- Streams them out as WebRTC media tracks — adaptive bitrate, congestion control, packet loss recovery for free
-- Renders cameras only when a peer is subscribed — no idle CPU work, no in-game UI required
+- Streams them out as WebRTC media tracks, with adaptive bitrate, congestion control, and packet loss recovery for free
+- Renders cameras only when a peer is subscribed, so no idle CPU work and no in-game UI required
 
 ## Status: pre-release, personal-use only
 
 kerbcam isn't ready for general consumption yet.
 
 - Linux / Steam Deck support is tier-1.
-- macOS and Windows are experimental tier-2 — code paths exist, polish does not.
+- macOS and Windows are experimental tier-2: code paths exist, polish does not.
 - Mod-platform listings (CKAN, SpaceDock, KSP Forums) will come at 1.0.
 
 Issues and PRs are welcome, particularly if you'd like to 'adopt' macOS or Windows support.

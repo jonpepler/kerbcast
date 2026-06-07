@@ -2,13 +2,13 @@
 
 Packages are published to **GitHub Packages**, not npmjs.com. The
 two halves of the wire contract (the Rust sidecar's `Cargo.toml`
-and this TypeScript `package.json`) share a single SemVer line —
+and this TypeScript `package.json`) share a single SemVer line;
 CI verifies they agree before letting a tag publish.
 
 The npm scope is `@jonpepler` because GitHub Packages requires the
 scope to match the repo owner. If the project later moves to an
 umbrella GitHub org, the scope changes to that org's name in one
-search-replace — no other restructuring needed.
+search-replace, with no other restructuring needed.
 
 No manual secret setup. The workflow uses the built-in
 `GITHUB_TOKEN` to write to the repo's own Packages registry.
@@ -88,14 +88,14 @@ Strict [SemVer](https://semver.org/) applied to the wire format:
 
 - **Patch** (`0.1.x`): docstring / metadata changes only.
   Generated TS is byte-identical or trivially cosmetic.
-- **Minor** (`0.x.0`): additive — new message variants, new
+- **Minor** (`0.x.0`): additive, meaning new message variants, new
   optional fields. Existing consumers keep working.
-- **Major** (`x.0.0`): breaking — renamed / removed fields,
+- **Major** (`x.0.0`): breaking, meaning renamed / removed fields,
   changed enum discriminators, changed tagging strategy.
   Consumers must update.
 
 While the protocol is at `0.x`, the minor / breaking distinction
-is loose — assume any minor bump might require consumer updates.
+is loose: assume any minor bump might require consumer updates.
 Tighten this to strict SemVer once the protocol stabilises at
 `1.0.0`.
 

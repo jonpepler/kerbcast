@@ -16,15 +16,15 @@ Captured 2026-05-19. Rust-side unit + integration tests are in good shape (26 pa
 
 ### Quick
 
-- [ ] `live_tests/kerbcam.md` — Claude-runnable instructions for verifying a running sidecar (HTTP endpoints once they exist, control-channel message shapes, common failure modes). Sister doc to `gonogo_claude_tools.sh tele …`.
+- [ ] `live_tests/kerbcam.md`: Claude-runnable instructions for verifying a running sidecar (HTTP endpoints once they exist, control-channel message shapes, common failure modes). Sister doc to `gonogo_claude_tools.sh tele …`.
 - [ ] Add a CI status badge to the README once the first push to GitHub triggers the workflow.
 
 ### Medium
 
 - [ ] `cargo bench` encoder benchmark via `criterion`. Each available backend × resolutions {240p, 480p, 720p, 1080p}. Output a CSV; commit a baseline; CI alerts on > 20% regression.
-- [ ] PerfBudget equivalent of gonogo's `PerfBudget` for the sidecar — declarative budgets that fail tests when exceeded. Important for catching encoder regressions before they hit users.
+- [ ] PerfBudget equivalent of gonogo's `PerfBudget` for the sidecar: declarative budgets that fail tests when exceeded. Important for catching encoder regressions before they hit users.
 - [ ] WebRTC peer integration test (no real browser): spawn the sidecar binary, drive it via a Rust-side WebRTC peer (also `webrtc-rs`), assert frames flow.
-- [ ] **Cross-language `MmapFrameRing` roundtrip.** Small C# fixture tool that writes a known frame (specific dimensions, specific RGBA pattern, specific timestamp) into a ring file; Rust test opens that file and asserts the exact bytes round-trip. Locks the cross-process binary layout contract — without this we're trusting that the field offsets in C#'s `MmapFrameRing.cs` match Rust's `mmap.rs` purely by inspection.
+- [ ] **Cross-language `MmapFrameRing` roundtrip.** Small C# fixture tool that writes a known frame (specific dimensions, specific RGBA pattern, specific timestamp) into a ring file; Rust test opens that file and asserts the exact bytes round-trip. Locks the cross-process binary layout contract; without this we're trusting that the field offsets in C#'s `MmapFrameRing.cs` match Rust's `mmap.rs` purely by inspection.
 
 ### Bigger
 
@@ -34,6 +34,6 @@ Captured 2026-05-19. Rust-side unit + integration tests are in good shape (26 pa
 
 ## Won't test (intentional)
 
-- Unity API surface itself (`AsyncGPUReadback`, `Graphics.Blit`, etc.) — trusted.
-- Hullcam VDS shader contents — if they change upstream our Path A breaks, but that's a manual-test-on-update problem, not a CI problem.
+- Unity API surface itself (`AsyncGPUReadback`, `Graphics.Blit`, etc.): trusted.
+- Hullcam VDS shader contents: if they change upstream our Path A breaks, but that's a manual-test-on-update problem, not a CI problem.
 - Cross-platform perf parity. Tier-2 platforms (macOS, Windows) get conformance tests but not perf assertions, because the dev machine isn't all of them.
