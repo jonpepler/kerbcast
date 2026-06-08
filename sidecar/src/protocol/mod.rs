@@ -285,6 +285,26 @@ pub struct ErrorPayload {
     pub source: ErrorSource,
 }
 
+#[typeshare]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetThrottleMainScreenPayload {
+    /// When `true`, disable the KSP main flight cameras to free GPU for
+    /// kerbcam streams. Persists via the per-save difficulty parameter,
+    /// matching the in-game Difficulty Settings toggle.
+    pub enabled: bool,
+}
+
+#[typeshare]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SettingsStatePayload {
+    /// Effective value of the "Throttle KSP main render" setting as last
+    /// reported by the plugin's `global.status.json`. Reflects what the
+    /// plugin has *applied*, not just what was last requested.
+    pub throttle_main_screen: bool,
+}
+
 /// Messages sent FROM the client TO the sidecar.
 #[typeshare]
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -361,6 +381,10 @@ pub enum ClientMessage {
     /// the connection. The drop-detection reaper remains the fallback for
     /// ungraceful exits (crash / tab close / network loss) that can't send this.
     Disconnect,
+    /// Enable or disable the KSP main render throttle globally. Persists
+    /// across saves (writes the per-save difficulty parameter). Server-wide:
+    /// all peers see the resulting `SettingsState` broadcast.
+    SetThrottleMainScreen(SetThrottleMainScreenPayload),
 }
 
 /// Messages sent FROM the sidecar TO the client.
@@ -396,6 +420,10 @@ pub enum ServerMessage {
     /// with `Pong`; if no Ping arrives within 15s the browser tears down
     /// the connection.
     Ping,
+    /// Current value of global settings (throttle state). Sent after `Hello`
+    /// so a freshly-connected client shows correct state immediately, and
+    /// re-broadcast whenever the polled plugin status shows a change.
+    SettingsState(SettingsStatePayload),
 }
 
 #[cfg(test)]
@@ -645,6 +673,35 @@ mod tests {
                 assert_eq!(p.mid, "1");
                 assert_eq!(p.flight_id, None);
             }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn set_throttle_main_screen_roundtrips() {
+        let msg =
+            ClientMessage::SetThrottleMainScreen(SetThrottleMainScreenPayload { enabled: true });
+        let s = serde_json::to_string(&msg).unwrap();
+        assert!(s.contains("\"type\":\"set-throttle-main-screen\""));
+        assert!(s.contains("\"enabled\":true"));
+        let back: ClientMessage = serde_json::from_str(&s).unwrap();
+        match back {
+            ClientMessage::SetThrottleMainScreen(p) => assert!(p.enabled),
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn settings_state_roundtrips() {
+        let msg = ServerMessage::SettingsState(SettingsStatePayload {
+            throttle_main_screen: false,
+        });
+        let s = serde_json::to_string(&msg).unwrap();
+        assert!(s.contains("\"type\":\"settings-state\""));
+        assert!(s.contains("\"throttleMainScreen\":false"));
+        let back: ServerMessage = serde_json::from_str(&s).unwrap();
+        match back {
+            ServerMessage::SettingsState(p) => assert!(!p.throttle_main_screen),
             _ => panic!("wrong variant"),
         }
     }

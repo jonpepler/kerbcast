@@ -237,8 +237,26 @@ export interface SlotMapPayload {
 	flightId?: number;
 }
 
+export interface SetThrottleMainScreenPayload {
+	/**
+	 * When `true`, disable the KSP main flight cameras to free GPU for
+	 * kerbcam streams. Persists via the per-save difficulty parameter,
+	 * matching the in-game Difficulty Settings toggle.
+	 */
+	enabled: boolean;
+}
+
+export interface SettingsStatePayload {
+	/**
+	 * Effective value of the "Throttle KSP main render" setting as last
+	 * reported by the plugin's `global.status.json`. Reflects what the
+	 * plugin has *applied*, not just what was last requested.
+	 */
+	throttleMainScreen: boolean;
+}
+
 /** Messages sent FROM the client TO the sidecar. */
-export type ClientMessage = 
+export type ClientMessage =
 	/**
 	 * First message on a new data channel. Sidecar replies with `Hello`
 	 * + a `CameraSnapshot` so the client gets server version + every
@@ -333,7 +351,13 @@ export type ClientMessage =
 	 * the connection. The drop-detection reaper remains the fallback for
 	 * ungraceful exits (crash / tab close / network loss) that can't send this.
 	 */
-	| { type: "disconnect", content?: undefined };
+	| { type: "disconnect", content?: undefined }
+	/**
+	 * Enable or disable the KSP main render throttle globally. Persists
+	 * across saves (writes the per-save difficulty parameter). Server-wide:
+	 * all peers see the resulting `SettingsState` broadcast.
+	 */
+	| { type: "set-throttle-main-screen", content: SetThrottleMainScreenPayload };
 
 /** Messages sent FROM the sidecar TO the client. */
 export type ServerMessage = 
@@ -378,5 +402,11 @@ export type ServerMessage =
 	 * with `Pong`; if no Ping arrives within 15s the browser tears down
 	 * the connection.
 	 */
-	| { type: "ping", content?: undefined };
+	| { type: "ping", content?: undefined }
+	/**
+	 * Current value of global settings (throttle state). Sent after `Hello`
+	 * so a freshly-connected client shows correct state immediately, and
+	 * re-broadcast whenever the polled plugin status shows a change.
+	 */
+	| { type: "settings-state", content: SettingsStatePayload };
 

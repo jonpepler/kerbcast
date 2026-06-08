@@ -26,7 +26,7 @@ use kerbcam_sidecar::cameras::{CameraRegistry, CameraState};
 use kerbcam_sidecar::encoder::{select_backend, EncodeConfig, EncoderChoice, RawFrame, Software};
 use kerbcam_sidecar::protocol::{
     AdaptiveShedPayload, CameraLifecycle, CameraState as ProtocolCameraState,
-    CameraStateChangedPayload, ServerMessage,
+    CameraStateChangedPayload, ServerMessage, SettingsStatePayload,
 };
 use kerbcam_sidecar::shared_mem::MmapRingConfig;
 use kerbcam_sidecar::signalling::{router, AppState};
@@ -206,7 +206,10 @@ async fn consume_loop(
             // Status poll piggybacks on the rescan cadence — both are
             // ~1Hz and the plugin's status writer matches that rate.
             let delta = registry.poll_status().await;
-            if delta.adaptive_shed.is_some() || !delta.changed_cameras.is_empty() {
+            if delta.adaptive_shed.is_some()
+                || !delta.changed_cameras.is_empty()
+                || delta.throttle_main_screen.is_some()
+            {
                 broadcast_status_delta(&peers, delta).await;
             }
             // Broadcast camera-state-changed for newly-destroyed cameras and
@@ -336,6 +339,15 @@ async fn broadcast_status_delta(
 
     for state in delta.changed_cameras {
         let msg = ServerMessage::CameraStateChanged(CameraStateChangedPayload { state });
+        for peer in &snapshot {
+            peer.push_message(&msg).await;
+        }
+    }
+
+    if let Some(throttle_main_screen) = delta.throttle_main_screen {
+        let msg = ServerMessage::SettingsState(SettingsStatePayload {
+            throttle_main_screen,
+        });
         for peer in &snapshot {
             peer.push_message(&msg).await;
         }

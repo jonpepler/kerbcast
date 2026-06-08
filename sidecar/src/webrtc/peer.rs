@@ -51,7 +51,8 @@ use crate::protocol::{
     CameraLifecycle, CameraSnapshotPayload, CameraState, CameraStateChangedPayload, ClientMessage,
     ErrorPayload, ErrorSource, FlightIdPayload, HelloPayload, Layer, ServerMessage,
     SetDegradePayload, SetFovPayload, SetLayersPayload, SetPanPayload, SetPanRatePayload,
-    SetRenderSizePayload, SetZoomRatePayload, SlotMapPayload,
+    SetRenderSizePayload, SetThrottleMainScreenPayload, SetZoomRatePayload, SettingsStatePayload,
+    SlotMapPayload,
 };
 
 const CONTROL_CHANNEL_LABEL: &str = "kerbcam-control";
@@ -385,6 +386,15 @@ async fn handle_client_message(
             )
             .await;
             send_camera_snapshot(&registry, &dc).await;
+            /* Prime the client with the current throttle state immediately. */
+            let throttle_main_screen = registry.last_throttle_main_screen().await;
+            send_server_message(
+                &dc,
+                &ServerMessage::SettingsState(SettingsStatePayload {
+                    throttle_main_screen,
+                }),
+            )
+            .await;
             // Announce the initial slot bindings so the client maps its
             // initial cameras to slots by mid — uniform with dynamic
             // Subscribe, no reliance on the answer's camera order.
@@ -444,6 +454,14 @@ async fn handle_client_message(
         }
         ClientMessage::Pong => {
             // No-op — the peer is alive by virtue of having sent this.
+        }
+        ClientMessage::SetThrottleMainScreen(SetThrottleMainScreenPayload { enabled }) => {
+            /* Write global.control.json; the plugin polls it next to status. */
+            if let Err(e) = registry.write_global_control(enabled).await {
+                warn!(error = %e, "write_global_control failed");
+            } else {
+                info!(enabled, "global control: throttle_main_screen written");
+            }
         }
         ClientMessage::Disconnect => {
             // Graceful teardown: release every camera this peer is feeding now,

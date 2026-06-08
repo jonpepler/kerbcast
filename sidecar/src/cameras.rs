@@ -43,6 +43,11 @@ struct GlobalStatusFile {
     shed_level: u32,
     #[serde(default)]
     cameras: Vec<PerCameraStatus>,
+    /// Effective state of the KSP main render throttle. Written by the
+    /// plugin from `_throttleEffective` each status cycle. Absent in
+    /// older plugin writes; defaults to `false` so existing data is safe.
+    #[serde(default)]
+    throttle_main_screen: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -71,6 +76,9 @@ struct PerCameraStatus {
 pub struct StatusDelta {
     pub adaptive_shed: Option<(u32, f32)>, // (level, ksp_fps)
     pub changed_cameras: Vec<ProtocolCameraState>,
+    /// Set when the plugin-reported throttle state has changed. The
+    /// consume loop broadcasts `SettingsState` when this is `Some`.
+    pub throttle_main_screen: Option<bool>,
 }
 
 /// In-memory mirror of a camera's control state. The data-channel message
@@ -433,6 +441,13 @@ pub struct CameraRegistry {
     /// consume loop never encodes; we measure the plugin's KSP-frametime
     /// cost cleanly, not the sidecar encode path.
     force_render: AtomicBool,
+    /*
+     * Monotonic sequence counter for global.control.json writes. Seeded on
+     * the first write from the on-disk file (max(on-disk seq, 0) + 1) so a
+     * restarted sidecar doesn't re-issue a seq the plugin has already seen.
+     * Subsequent writes bump atomically so concurrent peer handlers compose.
+     */
+    global_control_seq: AtomicU64,
 }
 
 const STATUS_LOG_CAP: usize = 12_288;
@@ -458,6 +473,8 @@ pub struct GlobalStatusFileExport {
     pub shed_level: u32,
     #[serde(default)]
     pub cameras: Vec<PerCameraStatusExport>,
+    #[serde(default)]
+    pub throttle_main_screen: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -501,8 +518,17 @@ impl From<&GlobalStatusFile> for GlobalStatusFileExport {
                     pan_pitch: c.pan_pitch,
                 })
                 .collect(),
+            throttle_main_screen: s.throttle_main_screen,
         }
     }
+}
+
+/* On-disk shape written by `write_global_control`. */
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GlobalControlFile {
+    throttle_main_screen: bool,
+    seq: u64,
 }
 
 impl CameraRegistry {
@@ -515,6 +541,7 @@ impl CameraRegistry {
             status_log: Mutex::new(Vec::new()),
             epoch: Instant::now(),
             force_render: AtomicBool::new(false),
+            global_control_seq: AtomicU64::new(0),
         }
     }
 
@@ -522,6 +549,20 @@ impl CameraRegistry {
     /// Used by `GET /profile` to serve the latest telemetry snapshot.
     pub fn shm_dir(&self) -> &std::path::Path {
         self.shm_dir.as_path()
+    }
+
+    /*
+     * Last-seen effective throttle state from global.status.json. Returns
+     * `false` when no status has been received yet (plugin hasn't written).
+     * Used by the Hello path to prime a freshly-connected peer's UI.
+     */
+    pub async fn last_throttle_main_screen(&self) -> bool {
+        self.last_status
+            .lock()
+            .await
+            .as_ref()
+            .map(|s| s.throttle_main_screen)
+            .unwrap_or(false)
     }
 
     /// Profiling override (see the field). `POST /profile/render` toggles it.
@@ -822,6 +863,16 @@ impl CameraRegistry {
             delta.adaptive_shed = Some((parsed.shed_level, parsed.ksp_fps));
         }
 
+        // Throttle-state changes are global — emit a SettingsState whenever
+        // the reported effective value moves (or on first poll: `last` is None).
+        if last
+            .as_ref()
+            .map(|s| s.throttle_main_screen != parsed.throttle_main_screen)
+            .unwrap_or(true)
+        {
+            delta.throttle_main_screen = Some(parsed.throttle_main_screen);
+        }
+
         // Per-camera diffs. Only flag cameras whose effective state moved.
         for cam_status in &parsed.cameras {
             let prev = last.as_ref().and_then(|s| {
@@ -919,6 +970,46 @@ impl CameraRegistry {
             *guard = Some(ControlBlock::create(&path)?);
         }
         guard.as_mut().expect("just created if absent").write(state);
+        Ok(())
+    }
+
+    /*
+     * Write global.control.json with the requested throttle state and a
+     * monotonic seq. The seq is seeded on first write from the on-disk file
+     * so a restarted sidecar doesn't re-issue a seq the plugin has already
+     * seen; subsequent calls bump atomically. The plugin acts only when seq
+     * increases, so concurrent peer handlers composing cleanly is safe.
+     */
+    pub async fn write_global_control(&self, throttle_main_screen: bool) -> std::io::Result<()> {
+        let path = self.shm_dir.join("global.control.json");
+
+        /* Seed from on-disk seq on first write (compare-and-swap 0 -> seed). */
+        if self.global_control_seq.load(Ordering::Acquire) == 0 {
+            let seed = match tokio::fs::read(&path).await {
+                Ok(b) => serde_json::from_slice::<GlobalControlFile>(&b)
+                    .map(|f| f.seq)
+                    .unwrap_or(0),
+                Err(_) => 0,
+            };
+            /* Only write if still 0; another concurrent call may have won. */
+            let _ = self.global_control_seq.compare_exchange(
+                0,
+                seed,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
+        }
+
+        let seq = self.global_control_seq.fetch_add(1, Ordering::AcqRel) + 1;
+        let payload = GlobalControlFile {
+            throttle_main_screen,
+            seq,
+        };
+        let json = serde_json::to_string(&payload)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        let tmp = path.with_extension("json.tmp");
+        tokio::fs::write(&tmp, json.as_bytes()).await?;
+        tokio::fs::rename(&tmp, &path).await?;
         Ok(())
     }
 
