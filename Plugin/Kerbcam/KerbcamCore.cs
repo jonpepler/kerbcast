@@ -256,19 +256,21 @@ namespace Kerbcam
                     CreateNoWindow = true,
                 };
 
-                // Self-contained sidecar deployment: CI bundles the ffmpeg
-                // shared libs (libavutil/libavcodec/etc) the binary links
-                // against into a sibling lib/ directory, because SteamOS
+                // Self-contained sidecar deployment (Linux only): CI bundles
+                // the ffmpeg shared libs (libavutil/libavcodec/etc) the binary
+                // links against into a sibling lib/ directory, because SteamOS
                 // doesn't ship those .so files. Prepend lib/ to
                 // LD_LIBRARY_PATH so the dynamic linker finds the bundled
                 // copies before falling back to the system path (for libva
                 // + its GPU-driver shims, which we intentionally do NOT
                 // bundle — those have to match the host's Mesa stack).
                 //
-                // Gated on Directory.Exists so the dev workflow (manual
-                // sidecar launch, no bundled lib dir) and macOS dev (which
-                // never hits this code path because binPath doesn't resolve
-                // there either) stay harmless.
+                // Gated on Directory.Exists, which is the cross-platform
+                // guard: macOS/Windows sidecars are software-encode (OpenH264,
+                // no exotic native deps) and ship no lib/ dir, so this block is
+                // skipped there — the OS loader finds anything beside the
+                // binary on its own. The dev workflow (manual launch, no
+                // bundled lib dir) stays harmless for the same reason.
                 //
                 // EnvironmentVariables is the cross-platform setter on
                 // .NET48/Mono despite the MSDN page tagging it Windows-only.
@@ -309,16 +311,57 @@ namespace Kerbcam
 
         private static string ResolveSidecarBinary()
         {
-            // Bundled location: GameData/Kerbcam/Sidecar/kerbcam-sidecar
-            // Casing matters — the Deck's filesystem is case-sensitive and the
-            // release workflow (.github/workflows/release.yml) packages into
-            // "Sidecar" (capital S). Keep this in lockstep with release.yml.
-            // KSPUtil.ApplicationRootPath is the KSP install root.
+            /* Per-OS bundle layout under GameData/Kerbcam/Sidecar/<rid>/:
+               the release workflow (.github/workflows/release.yml) builds one
+               sidecar per supported runtime and lays each out in its own rid
+               subdir. Casing matters — the Deck's filesystem is case-sensitive
+               and the workflow packages into "Sidecar" (capital S). Keep the
+               rid set + binary name in lockstep with release.yml's assemble
+               job. KSPUtil.ApplicationRootPath is the KSP install root. */
+            var rid = SidecarRid();
+            if (rid == null) return null;
+            var binName = Application.platform == RuntimePlatform.WindowsPlayer
+                ? "kerbcam-sidecar.exe"
+                : "kerbcam-sidecar";
+
             var bundled = Path.Combine(
                 KSPUtil.ApplicationRootPath,
-                "GameData", "Kerbcam", "Sidecar", "kerbcam-sidecar");
+                "GameData", "Kerbcam", "Sidecar", rid, binName);
             if (File.Exists(bundled)) return bundled;
+
+            /* Legacy flat Linux layout (pre-per-rid releases and the
+               feature-branch Deck-deploy flow, which stage straight into
+               Sidecar/). Keep resolving it so older bundles and manually
+               staged artifacts still launch. */
+            if (rid == "linux-x64")
+            {
+                var legacy = Path.Combine(
+                    KSPUtil.ApplicationRootPath,
+                    "GameData", "Kerbcam", "Sidecar", "kerbcam-sidecar");
+                if (File.Exists(legacy)) return legacy;
+            }
             return null;
+        }
+
+        /* Map the running KSP player to the sidecar runtime-identifier subdir
+           that release.yml ships. macOS is arm64-only (matches the documented
+           Apple-Silicon target); KSP runs x86_64 under Rosetta but the
+           separately-spawned sidecar runs native arm64. Intel-mac (osx-x64) is
+           a deferred tier-2 TODO. Unknown platforms return null so TryStartSidecar
+           logs the manual-launch hint rather than guessing a path. */
+        private static string SidecarRid()
+        {
+            switch (Application.platform)
+            {
+                case RuntimePlatform.LinuxPlayer:
+                    return "linux-x64";
+                case RuntimePlatform.OSXPlayer:
+                    return "osx-arm64";
+                case RuntimePlatform.WindowsPlayer:
+                    return "win-x64";
+                default:
+                    return null;
+            }
         }
 
         private void StopSidecar()
