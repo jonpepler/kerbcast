@@ -73,7 +73,7 @@ fn main() {
         ring.produce(WIDTH, HEIGHT, t * 1000.0, &pixels)
             .expect("ring produce");
         n += 1;
-        if n % (FPS * 5) == 0 {
+        if n.is_multiple_of(FPS * 5) {
             println!("{n} frames");
         }
         std::thread::sleep(Duration::from_millis(1000 / FPS));
@@ -84,8 +84,8 @@ fn main() {
 /// fake cameras are tellable apart.
 fn render(pixels: &mut [u8], flight_id: u32, t: f64) {
     let bar_y = ((t * 60.0) as u32) % HEIGHT;
-    let base_r = ((flight_id * 53) % 200) as u32;
-    let base_b = ((flight_id * 131) % 200) as u32;
+    let base_r = (flight_id * 53) % 200;
+    let base_b = (flight_id * 131) % 200;
     for y in 0..HEIGHT {
         let on_bar = y >= bar_y.saturating_sub(4) && y <= bar_y + 4;
         for x in 0..WIDTH {

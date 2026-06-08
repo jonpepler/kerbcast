@@ -102,15 +102,21 @@ jobs:
           done
 
           # Keep Cargo.lock's own entry in step so the next cargo command
-          # doesn't dirty the tree. Only the kerbcam-sidecar package line.
-          python3 - "$CURRENT" "$NEW" <<'EOF'
+          # doesn't dirty the tree. Match whatever version the lock holds
+          # (it can trail Cargo.toml; v0.13.0 was tagged with a stale lock).
+          python3 - "$NEW" <<'EOF'
+          import re
           import sys
-          cur, new = sys.argv[1], sys.argv[2]
+          new = sys.argv[1]
           path = "sidecar/Cargo.lock"
           s = open(path).read()
-          needle = 'name = "kerbcam-sidecar"\nversion = "%s"' % cur
-          assert needle in s, "kerbcam-sidecar %s not found in Cargo.lock" % cur
-          open(path, "w").write(s.replace(needle, 'name = "kerbcam-sidecar"\nversion = "%s"' % new))
+          s2, n = re.subn(
+              r'(name = "kerbcam-sidecar"\nversion = ")[^"]+(")',
+              r"\g<1>%s\g<2>" % new,
+              s,
+          )
+          assert n == 1, "expected one kerbcam-sidecar entry, found %d" % n
+          open(path, "w").write(s2)
           EOF
 
           echo "Cargo.toml: $(grep -m1 '^version' sidecar/Cargo.toml)"
