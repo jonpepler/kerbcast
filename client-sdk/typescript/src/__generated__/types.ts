@@ -205,6 +205,15 @@ export interface SetRenderSizePayload {
 	height: number;
 }
 
+export interface SetThrottleMainScreenPayload {
+	/**
+	 * When `true`, disable the KSP main flight cameras to free GPU for
+	 * kerbcam streams. Persists via the per-save difficulty parameter,
+	 * matching the in-game Difficulty Settings toggle.
+	 */
+	enabled: boolean;
+}
+
 export interface SetZoomRatePayload {
 	flightId: number;
 	/**
@@ -214,6 +223,15 @@ export interface SetZoomRatePayload {
 	 * frame.
 	 */
 	rate: number;
+}
+
+export interface SettingsStatePayload {
+	/**
+	 * Effective value of the "Throttle KSP main render" setting as last
+	 * reported by the plugin's `global.status.json`. Reflects what the
+	 * plugin has *applied*, not just what was last requested.
+	 */
+	throttleMainScreen: boolean;
 }
 
 /**
@@ -237,26 +255,8 @@ export interface SlotMapPayload {
 	flightId?: number;
 }
 
-export interface SetThrottleMainScreenPayload {
-	/**
-	 * When `true`, disable the KSP main flight cameras to free GPU for
-	 * kerbcam streams. Persists via the per-save difficulty parameter,
-	 * matching the in-game Difficulty Settings toggle.
-	 */
-	enabled: boolean;
-}
-
-export interface SettingsStatePayload {
-	/**
-	 * Effective value of the "Throttle KSP main render" setting as last
-	 * reported by the plugin's `global.status.json`. Reflects what the
-	 * plugin has *applied*, not just what was last requested.
-	 */
-	throttleMainScreen: boolean;
-}
-
 /** Messages sent FROM the client TO the sidecar. */
-export type ClientMessage =
+export type ClientMessage = 
 	/**
 	 * First message on a new data channel. Sidecar replies with `Hello`
 	 * + a `CameraSnapshot` so the client gets server version + every
