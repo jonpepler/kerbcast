@@ -55,6 +55,10 @@ namespace Kerbcam
         private float _statusCooldown;
         private const float StatusWriteIntervalSeconds = 1.0f;
 
+        /* Control file (sidecar -> plugin). Polled ~1Hz alongside status writes. */
+        private string _controlPath;
+        private ulong _lastAppliedControlSeq;
+
         // Rolling 60-sample FPS window for adaptive layer shedding.
         // ~1s at 60fps, ~2s at 30fps — long enough to ignore single-frame
         // hitches, short enough to react to sustained slow-downs.
@@ -159,6 +163,7 @@ namespace Kerbcam
             {
                 Directory.CreateDirectory(RingDir);
                 _statusPath = Path.Combine(RingDir, "global.status.json");
+                _controlPath = Path.Combine(RingDir, "global.control.json");
                 Debug.Log($"[Kerbcam] rings directory ready at {RingDir} ({RingSlots} slots × {_settings.Width}×{_settings.Height} RGBA per camera)");
             }
             catch (Exception ex)
@@ -633,6 +638,7 @@ namespace Kerbcam
             double capMs = (System.Diagnostics.Stopwatch.GetTimestamp() - capStart) * _msPerTick;
             _kerbcamFrameMs = _kerbcamFrameMs <= 0.0 ? capMs : _kerbcamFrameMs * 0.8 + capMs * 0.2;
 
+            MaybeApplyGlobalControl();
             MaybeWriteStatusFile();
         }
 
@@ -909,6 +915,7 @@ namespace Kerbcam
                 // shedLevel retained for sidecar wire-compat; kerbcam no longer
                 // auto-sheds quality (manual/API only), so it's always 0.
                 sb.Append("  \"shedLevel\": 0,\n");
+                sb.Append($"  \"throttleMainScreen\": {(_throttleEffective ? "true" : "false")},\n");
                 // Stagger telemetry — watch the budget regulator converge + tune
                 // MaxKerbcamFrameBudgetMs / MinKspFps. staggerBudget: cameras
                 // permitted to capture this tick. kerbcamFrameMs: EMA of kerbcam's
@@ -968,6 +975,67 @@ namespace Kerbcam
             {
                 Debug.LogWarning($"[Kerbcam] status file write failed: {ex.Message}");
             }
+        }
+
+        /*
+         * Poll global.control.json written by the sidecar. On a new seq,
+         * apply the requested throttle state: write the per-save difficulty
+         * param so it persists, then drive the existing apply/restore methods.
+         * Gated by _statusCooldown so it runs ~1Hz alongside the status write.
+         */
+        private void MaybeApplyGlobalControl()
+        {
+            if (_controlPath == null || _statusCooldown > 0f) return;
+            try
+            {
+                if (!File.Exists(_controlPath)) return;
+                var json = File.ReadAllText(_controlPath);
+                if (!TryParseGlobalControl(json, out ulong seq, out bool throttle)) return;
+                if (seq <= _lastAppliedControlSeq) return;
+                _lastAppliedControlSeq = seq;
+                /* Set the per-save difficulty param so it persists on save. */
+                try
+                {
+                    var game = HighLogic.CurrentGame;
+                    if (game?.Parameters != null)
+                    {
+                        var param = game.Parameters.CustomParams<KerbcamGameParameters>();
+                        if (param != null) param.ThrottleMainScreen = throttle;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Debug.LogWarning($"[Kerbcam] global control: param write failed: {ex.Message}");
+                }
+                /* Drive the live throttle state immediately (same as the reconcile). */
+                _throttleDesired = throttle;
+                if (throttle) ApplyMainScreenThrottle();
+                else RestoreMainScreen();
+                Debug.Log($"[Kerbcam] global control: throttleMainScreen={throttle} (seq={seq})");
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"[Kerbcam] global control read failed: {ex.Message}");
+            }
+        }
+
+        /*
+         * Parse {"throttleMainScreen": bool, "seq": number} written by the
+         * sidecar. Uses Regex to avoid a JSON library dependency. The sidecar
+         * controls the format exactly so the pattern is stable.
+         */
+        private static bool TryParseGlobalControl(string json, out ulong seq, out bool throttle)
+        {
+            seq = 0;
+            throttle = false;
+            if (string.IsNullOrEmpty(json)) return false;
+            var seqMatch = System.Text.RegularExpressions.Regex.Match(json, "\"seq\"\\s*:\\s*(\\d+)");
+            if (!seqMatch.Success) return false;
+            if (!ulong.TryParse(seqMatch.Groups[1].Value, out seq)) return false;
+            var throttleMatch = System.Text.RegularExpressions.Regex.Match(json, "\"throttleMainScreen\"\\s*:\\s*(true|false)");
+            if (!throttleMatch.Success) return false;
+            throttle = throttleMatch.Groups[1].Value == "true";
+            return true;
         }
 
         // Builds the "telemetry" object appended to the status JSON when
