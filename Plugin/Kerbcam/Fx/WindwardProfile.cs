@@ -1,50 +1,23 @@
-// Windward profile of a vessel relative to the wind axis. Used by the
-// bowshock, trail, and embers effects to size and position their meshes
-// adaptively — so the FX adapts to the vessel's orientation (broadside
-// reentry shows a wide+close bowshock and a wide+short wake; end-on
-// shows a narrow+far bowshock and a narrow+long wake).
-//
-// WindwardRadius is the max perpendicular-to-wind distance from CoM to any
-// part — drives the dome radius / trail tube radius / ember emit spread.
-// ForwardStandoff is the max along +windDir — where the bowshock dome's
-// base sits relative to the vessel CoM. AftStandoff is the max along
-// -windDir — where the trail tube and embers anchor.
+// KSP adapter for FxSilhouette: walks the vessel's parts and feeds their
+// bounds corners (relative to CoM) into the shared silhouette math in
+// Fx/Core/FxCore.cs — the SAME code the CI render harness compiles, so the
+// previews exercise the real sizing/placement. This file owns only the
+// KSP-typed plumbing: per-part bounds caching and the per-frame memo.
 //
 // Measures part RENDERER BOUNDS, not part transform positions — a part's
 // origin sits near its centre, so position-only measurement underestimated
-// every extent by half a part and the FX meshes sat inside the hull (the
-// CI preview harness always measured bounds; this matches it). Per part a
-// local-space box is computed once (lazily, from merged renderer bounds)
-// and cached; per frame only its 8 corners are projected against the wind
-// axis. A same-frame memo collapses the bowshock+trail double call.
+// every extent by half a part and the FX meshes sat inside the hull. Per
+// part a local-space box is computed once (lazily, from merged renderer
+// bounds) and cached; per frame only its 8 corners are projected. A
+// same-frame memo collapses the bowshock+trail double call.
 
 using System.Collections.Generic;
 using UnityEngine;
 
 namespace Kerbcam
 {
-    internal struct WindwardProfile
+    internal static class WindwardProfile
     {
-        public float WindwardRadius;
-        public float ForwardStandoff;
-        public float AftStandoff;
-        // Elliptical cross-section perpendicular to the wind: MajorAxis is
-        // the direction (⊥ wind) of the vessel's longest perpendicular
-        // extent, RadiusMajor/RadiusMinor the extents along it and along
-        // wind × MajorAxis. A broadside vessel presents a long flat
-        // silhouette — FX shaped as circles of WindwardRadius read as if
-        // the vessel were flying nose-first. End-on the two radii converge
-        // and the ellipse degenerates to the old circle.
-        public Vector3 MajorAxis;
-        public float RadiusMajor;
-        public float RadiusMinor;
-
-        public Vector3 MinorAxis(Vector3 windDir)
-        {
-            Vector3 minor = Vector3.Cross(windDir, MajorAxis);
-            return minor.sqrMagnitude > 1e-6f ? minor.normalized : Vector3.up;
-        }
-
         private struct PartBox
         {
             public Vector3 Centre;   // part-local
@@ -54,26 +27,23 @@ namespace Kerbcam
         private static readonly Dictionary<Part, PartBox> _boxCache = new Dictionary<Part, PartBox>();
         private static float _lastCacheFlush;
 
-        // Same-frame memo — bowshock and trail both compute the profile for
-        // the same vessel/wind every frame.
+        // Corner scratch (relative to CoM) handed to FxSilhouette.FromCorners
+        // — reused so the per-frame path allocates nothing after warmup.
+        private static readonly List<Vector3> _cornerScratch = new List<Vector3>(512);
+
+        // Same-frame memo — bowshock and trail both compute the silhouette
+        // for the same vessel/wind every frame.
         private static Vessel _memoVessel;
         private static Vector3 _memoWind;
         private static int _memoFrame = -1;
-        private static WindwardProfile _memo;
+        private static FxSilhouette _memo;
 
-        // Perp-plane corner components from the last pass — reused (no alloc
-        // after warmup) for the second pass that measures the minor radius
-        // once the major direction is known.
-        private static readonly List<Vector3> _perpScratch = new List<Vector3>(256);
-
-        public static WindwardProfile Compute(Vessel vessel, Vector3 windDir)
+        public static FxSilhouette Compute(Vessel vessel, Vector3 windDir)
         {
-            var p = new WindwardProfile
+            if (vessel == null || vessel.parts == null || vessel.parts.Count == 0)
             {
-                WindwardRadius = 1f, ForwardStandoff = 1f, AftStandoff = 1f,
-                MajorAxis = Vector3.right, RadiusMajor = 1f, RadiusMinor = 1f,
-            };
-            if (vessel == null || vessel.parts == null || vessel.parts.Count == 0) return p;
+                return FxSilhouette.FromCorners(null, windDir);
+            }
 
             if (Time.frameCount == _memoFrame && ReferenceEquals(vessel, _memoVessel)
                 && (windDir - _memoWind).sqrMagnitude < 1e-6f)
@@ -90,9 +60,7 @@ namespace Kerbcam
             }
 
             Vector3 com = vessel.CoM;
-            float fwd = 0f, aft = 0f, perpMax = 0f;
-            Vector3 majorDir = Vector3.zero;
-            _perpScratch.Clear();
+            _cornerScratch.Clear();
             foreach (var part in vessel.parts)
             {
                 if (part == null || part.transform == null) continue;
@@ -103,63 +71,25 @@ namespace Kerbcam
                 }
 
                 Transform tr = part.transform;
-                Vector3 c = tr.TransformPoint(box.Centre);
+                Vector3 c = tr.TransformPoint(box.Centre) - com;
                 Vector3 ax = tr.right * box.Extents.x;
                 Vector3 ay = tr.up * box.Extents.y;
                 Vector3 az = tr.forward * box.Extents.z;
                 for (int i = 0; i < 8; i++)
                 {
-                    Vector3 corner = c
+                    _cornerScratch.Add(c
                         + ((i & 1) == 0 ? -ax : ax)
                         + ((i & 2) == 0 ? -ay : ay)
-                        + ((i & 4) == 0 ? -az : az);
-                    Vector3 rel = corner - com;
-                    float along = Vector3.Dot(rel, windDir);
-                    if (along > fwd) fwd = along;
-                    if (-along > aft) aft = -along;
-                    Vector3 perp = rel - along * windDir;
-                    _perpScratch.Add(perp);
-                    float perpDist = perp.magnitude;
-                    if (perpDist > perpMax)
-                    {
-                        perpMax = perpDist;
-                        majorDir = perp;
-                    }
+                        + ((i & 4) == 0 ? -az : az));
                 }
             }
-            // Minor radius: extent along wind × major across all corners.
-            // Falls back to the circle when the major direction is
-            // degenerate (vessel centred dead-on the wind axis).
-            float minorMax = perpMax;
-            if (majorDir.sqrMagnitude > 1e-6f)
-            {
-                Vector3 majorAxis = majorDir.normalized;
-                Vector3 minorAxis = Vector3.Cross(windDir, majorAxis);
-                if (minorAxis.sqrMagnitude > 1e-6f)
-                {
-                    minorAxis.Normalize();
-                    minorMax = 0f;
-                    for (int i = 0; i < _perpScratch.Count; i++)
-                    {
-                        float d = Mathf.Abs(Vector3.Dot(_perpScratch[i], minorAxis));
-                        if (d > minorMax) minorMax = d;
-                    }
-                }
-                p.MajorAxis = majorAxis;
-            }
-            // Floors keep small probes from producing degenerate
-            // (zero-sized) FX meshes.
-            p.WindwardRadius = Mathf.Max(perpMax, 0.5f);
-            p.ForwardStandoff = Mathf.Max(fwd, 1f);
-            p.AftStandoff = Mathf.Max(aft, 1f);
-            p.RadiusMajor = Mathf.Max(perpMax, 0.5f);
-            p.RadiusMinor = Mathf.Max(minorMax, 0.4f);
 
+            var s = FxSilhouette.FromCorners(_cornerScratch, windDir);
             _memoVessel = vessel;
             _memoWind = windDir;
             _memoFrame = Time.frameCount;
-            _memo = p;
-            return p;
+            _memo = s;
+            return s;
         }
 
         // Merged renderer bounds expressed in the part's local frame. The

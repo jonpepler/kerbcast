@@ -8,15 +8,22 @@
 //
 // For each *.json under ci/kerbcam-shaders/Fixtures/, and for each of the
 // four FX shaders (Plasma/Core, Bowshock, Trail, Ember), and for each of
-// the three camera viewpoints (external, nose_up, body_out), render the
-// shader on a proxy vessel and save a PNG keyed
-// {fixture}_{shader}_{view}.png. Per-shader scene setup mirrors what the
-// plugin does at runtime: CommandBuffer.DrawRenderer on proxy renderers
-// for plasma, procedural cone ahead of vessel for bowshock, procedural
-// tapered tube behind vessel for trail, ParticleSystem for embers.
+// that shader's camera viewpoints (see ViewsFor), render the shader on a
+// proxy vessel and save a PNG keyed {fixture}_{shader}_{view}.png. Plus a
+// ramp_bowshock_q* fade strip sweeping the shared q ramp at mach 8.
+//
+// Silhouette measurement, mesh placement, intensity ramps, and the
+// procedural meshes all come from the SHARED FX core (Assets/Editor/Shared
+// is a symlink to Plugin/Kerbcam/Fx/Core) — the same code the plugin runs
+// in-game, so these renders test it rather than a hand-mirrored copy.
+// Per-shader scene setup mirrors the runtime draw path:
+// CommandBuffer.DrawRenderer on proxy renderers for plasma/ember,
+// procedural dome ahead of the vessel for bowshock, procedural tapered
+// tube astern for trail.
 
 using System.Collections.Generic;
 using System.IO;
+using Kerbcam;
 using UnityEditor;
 using UnityEngine;
 using UnityEngine.Rendering;
@@ -29,6 +36,7 @@ namespace KerbcamCI
         private const int _outHeight = 576;
         private const string _fixturesDir = "Fixtures";
         private const string _outputDir = "Previews";
+        private const float _previewTubeRadius = 0.6f; // m, preview trail mesh natural radius
 
         private static readonly string[] _shaderIds = { "plasma", "bowshock", "trail", "ember" };
         // Per-shader viewpoints. The previous shared external/nose_up/body_out
@@ -107,6 +115,37 @@ namespace KerbcamCI
                     }
                 }
             }
+            // q-sweep fade strip: renders the bowshock at mach 8 (mach ramp
+            // saturated, like real reentry) across the q ramp, so the
+            // fade-in behaviour is VIEWABLE — each frame's intensity comes
+            // from the shared FxRamps.Bowshock, the exact curve the plugin
+            // runs in-game. A binary q gate shows up here as one black
+            // frame followed by a full-brightness one (the reentry pop-in).
+            foreach (float q in new[] { 0.1f, 0.35f, 0.6f, 0.85f, 1.1f, 1.5f })
+            {
+                float intensity = FxRamps.Bowshock(8f, q);
+                var rampFx = new FxFixture
+                {
+                    name = $"ramp_bowshock_q{q:0.00}",
+                    inputs = new FxFixture.Inputs
+                    {
+                        intensity = intensity,
+                        fxState = 1f,
+                        windDirWorld = new[] { 0f, 1f, 0f, 0f },
+                    },
+                };
+                Debug.Log($"[Kerbcam-CI]   begin {rampFx.name} (intensity={intensity:F2})");
+                try
+                {
+                    RenderOne(rampFx, "bowshock", bowshockShader, "dome_side", _fixturesDir);
+                    Debug.Log($"[Kerbcam-CI]   end   {rampFx.name} OK");
+                }
+                catch (System.Exception e)
+                {
+                    Debug.LogError($"[Kerbcam-CI]   end   {rampFx.name} FAILED: {e.GetType().Name}: {e.Message}");
+                }
+            }
+
             Debug.Log("[Kerbcam-CI] RenderFxPreviews: done");
         }
 
@@ -120,12 +159,12 @@ namespace KerbcamCI
                 BuildProxyVessel(sceneRoot.transform);
                 AddDirectionalLight(sceneRoot.transform);
 
-                // Wind direction + windward profile drive both the FX mesh
+                // Wind direction + silhouette drive both the FX mesh
                 // placement and the FX-anchored camera views. Computed BEFORE
-                // any FX renderer is parented under the root so the profile
+                // any FX renderer is parented under the root so the silhouette
                 // only measures the proxy vessel.
                 Vector3 windDir = WindDirFromInputs(fx.inputs);
-                var profile = ComputeWindwardProfile(sceneRoot.transform, windDir);
+                var profile = ComputeSilhouette(sceneRoot.transform, windDir);
 
                 var camGo = new GameObject("__fx_preview_camera");
                 camGo.transform.SetParent(sceneRoot.transform, false);
@@ -213,31 +252,20 @@ namespace KerbcamCI
         // wider and closer to the vessel; when wind is end-on, the dome
         // is narrower and further forward. Same logic mirrored on the
         // runtime in BowshockEffect.
-        private static void SetupBowshock(Transform root, Material mat, Vector3 windDir, WindwardProfile profile)
+        private static void SetupBowshock(Transform root, Material mat, Vector3 windDir, FxSilhouette profile)
         {
-            // Dome = 1.5× the vessel's elliptical windward silhouette (shock
-            // wider than body): local X scaled by the major radius, local Y
-            // by the minor — broadside gives a long "canoe" shock along the
-            // vessel's length. Depth from the geometric mean (flat oblate).
-            // Mirrored on the runtime in BowshockEffect.
-            float radMajor = Mathf.Max(profile.RadiusMajor * 1.5f, 0.5f);
-            float radMinor = Mathf.Max(profile.RadiusMinor * 1.5f, 0.4f);
-            float domeDepth = Mathf.Sqrt(radMajor * radMinor) * 0.55f;
-
-            // Dome base sits right at the vessel's windward extreme; the
-            // dome's curved surface bulges forward into the airflow.
-            Vector3 basePos = root.position + windDir * profile.ForwardStandoff;
+            // Placement + mesh come from the SHARED FX core — the same code
+            // BowshockEffect runs in-game, so this render tests it.
+            var pose = FxPlacement.Bowshock(profile, windDir, root.position);
 
             var go = new GameObject("bowshock_dome");
             go.transform.SetParent(root, false);
-            go.transform.position = basePos;
-            // Local +Z = wind direction; up = minor axis (always ⊥ wind, so
-            // it also guards the degenerate LookRotation case).
-            go.transform.rotation = Quaternion.LookRotation(windDir, profile.MinorAxis(windDir));
-            go.transform.localScale = new Vector3(radMajor, radMinor, domeDepth);
+            go.transform.position = pose.Position;
+            go.transform.rotation = pose.Rotation;
+            go.transform.localScale = pose.Scale;
             var mf = go.AddComponent<MeshFilter>();
             var mr = go.AddComponent<MeshRenderer>();
-            mf.sharedMesh = BuildDomeMesh();
+            mf.sharedMesh = FxMeshes.BuildDome();
             mr.sharedMaterial = mat;
             mr.shadowCastingMode = ShadowCastingMode.Off;
             mr.receiveShadows = false;
@@ -250,33 +278,34 @@ namespace KerbcamCI
         // matches the vessel's profile), then a small overlap pulls the
         // head INSIDE the vessel so the cylinder occludes the top edge.
         // Mirrored on runtime in TrailEffect.
-        private static void SetupTrail(Transform root, Material mat, Vector3 windDir, WindwardProfile profile, string viewId)
+        private static void SetupTrail(Transform root, Material mat, Vector3 windDir, FxSilhouette profile, string viewId)
         {
+            // Placement comes from the SHARED FX core (same code as
+            // TrailEffect in-game). The preview tube is narrower (0.6 m)
+            // and longer (40 m) than the runtime's 4 m × 20 m so emergence
+            // is visible, but FxPlacement.Trail normalises by the natural
+            // radius — world-space wake size is identical either way.
+            var pose = FxPlacement.Trail(profile, windDir, root.position, _previewTubeRadius);
+
             var go = new GameObject("trail_tube");
             go.transform.SetParent(root, false);
-            // Position: at the vessel's aft windward edge, pulled IN by
-            // 0.5 m so the head buries inside the vessel and the cylinder
-            // occludes the ring of vertices at the tube's start.
-            Vector3 trailHeadPos = root.position - windDir * (profile.AftStandoff - 0.5f);
-            go.transform.position = trailHeadPos;
-            // up = minor axis: local X (major) follows the vessel's long
-            // silhouette axis so a broadside wake is a wide flat ribbon,
-            // not a circular tube. Mirrored on the runtime in TrailEffect.
-            go.transform.rotation = Quaternion.LookRotation(-windDir, profile.MinorAxis(windDir));
-            // Scale each perp axis of the tube to the vessel's elliptical
-            // silhouette. The major cap of 1.0× applies ONLY to the close
-            // aft_hullcam view — its camera sits about 0.9 m from the trail
-            // head, so a wide tube fills the near plane and LLVMpipe hangs
-            // on the near-fullscreen additive triangles. The pulled-back
-            // wake views get the uncrushed broadside ribbon (the runtime
-            // tube is 4 m so its 1.0× cap never crushes a real silhouette).
-            float majorCap = viewId == "aft_hullcam" ? 1.0f : 4.5f;
-            float scaleMajor = Mathf.Clamp(profile.RadiusMajor / 0.6f, 0.5f, majorCap);
-            float scaleMinor = Mathf.Clamp(profile.RadiusMinor / 0.6f, 0.3f, 1.0f);
-            go.transform.localScale = new Vector3(scaleMajor, scaleMinor, 1f);
+            go.transform.position = pose.Position;
+            go.transform.rotation = pose.Rotation;
+            // PREVIEW-ONLY cap on top of the shared placement: the close
+            // aft_hullcam camera sits about 0.9 m from the trail head, so a
+            // tube wider than ~0.6 m fills the near plane and LLVMpipe
+            // hangs on the near-fullscreen additive triangles. Pulled-back
+            // wake views render the uncapped shared scale.
+            Vector3 scale = pose.Scale;
+            if (viewId == "aft_hullcam")
+            {
+                scale.x = Mathf.Min(scale.x, 1f);
+                scale.y = Mathf.Min(scale.y, 1f);
+            }
+            go.transform.localScale = scale;
             var mf = go.AddComponent<MeshFilter>();
             var mr = go.AddComponent<MeshRenderer>();
-            mf.sharedMesh = BuildTaperedTubeMesh();
+            mf.sharedMesh = FxMeshes.BuildTaperedTube(_previewTubeRadius, 40f, 32, 24);
             mr.sharedMaterial = mat;
             mr.shadowCastingMode = ShadowCastingMode.Off;
             mr.receiveShadows = false;
@@ -337,18 +366,20 @@ namespace KerbcamCI
         // the mesh placement uses, so they stay framed across the sideways
         // and diagonal wind fixtures.
         private static void ApplyCameraPose(Transform t, FxFixture.CameraPose pose, string viewId,
-            Vector3 windDir, WindwardProfile profile)
+            Vector3 windDir, FxSilhouette profile)
         {
             // A stable direction perpendicular to the wind axis — the "side"
             // the side/three-quarter views shoot from.
             Vector3 perpHelper = Mathf.Abs(windDir.y) < 0.99f ? Vector3.up : Vector3.forward;
             Vector3 perp = Vector3.Cross(windDir, perpHelper).normalized;
 
-            float radMajor = Mathf.Max(profile.RadiusMajor * 1.5f, 0.5f);
-            float domeDepth = Mathf.Sqrt(radMajor * Mathf.Max(profile.RadiusMinor * 1.5f, 0.4f)) * 0.55f;
-            Vector3 domeCentre = windDir * (profile.ForwardStandoff + domeDepth * 0.5f);
-            Vector3 wakeHead = -windDir * Mathf.Max(profile.AftStandoff - 0.5f, 0f);
-            float domeDist = Mathf.Max(4.5f, radMajor * 3.5f);
+            // Camera anchors from the SHARED placement (root at origin), so
+            // the views stay aimed even if the placement maths changes.
+            var domePose = FxPlacement.Bowshock(profile, windDir, Vector3.zero);
+            var wakePose = FxPlacement.Trail(profile, windDir, Vector3.zero, _previewTubeRadius);
+            Vector3 domeCentre = domePose.Position + windDir * (domePose.Scale.z * 0.5f);
+            Vector3 wakeHead = wakePose.Position;
+            float domeDist = Mathf.Max(4.5f, domePose.Scale.x * 3.5f);
 
             switch (viewId)
             {
@@ -544,37 +575,14 @@ namespace KerbcamCI
             return go;
         }
 
-        // Windward profile of the proxy vessel relative to the wind axis.
-        // WindwardRadius is the max perpendicular-to-wind distance from
-        // the root origin to any renderer's AABB corner — sizes the
-        // bowshock dome and trail tube. ForwardStandoff is the max along
-        // +windDir (vessel-to-shock standoff). AftStandoff is the max
-        // along -windDir (where the trail/embers attach).
-        private struct WindwardProfile
+        // Silhouette of the proxy vessel: collect renderer-AABB corners
+        // relative to the root and hand them to the SHARED FxSilhouette
+        // (Assets/Editor/Shared → Plugin/Kerbcam/Fx/Core, symlinked) — the
+        // exact code the plugin runs in-game, so these renders test it.
+        private static FxSilhouette ComputeSilhouette(Transform root, Vector3 windDir)
         {
-            public float WindwardRadius;
-            public float ForwardStandoff;
-            public float AftStandoff;
-            // Elliptical perp cross-section — see the runtime WindwardProfile:
-            // a broadside vessel presents a long flat silhouette, and FX
-            // sized as circles read as if it were flying nose-first.
-            public Vector3 MajorAxis;
-            public float RadiusMajor;
-            public float RadiusMinor;
-
-            public Vector3 MinorAxis(Vector3 windDir)
-            {
-                Vector3 minor = Vector3.Cross(windDir, MajorAxis);
-                return minor.sqrMagnitude > 1e-6f ? minor.normalized : Vector3.up;
-            }
-        }
-
-        private static WindwardProfile ComputeWindwardProfile(Transform root, Vector3 windDir)
-        {
-            float fwd = 0f, aft = 0f, perpMax = 0f;
+            var corners = new List<Vector3>();
             Vector3 origin = root.position;
-            Vector3 majorDir = Vector3.right;
-            var perps = new List<Vector3>();
             foreach (var rend in root.GetComponentsInChildren<Renderer>())
             {
                 if (rend == null || rend is ParticleSystemRenderer) continue;
@@ -582,46 +590,13 @@ namespace KerbcamCI
                 Vector3 c = b.center, e = b.extents;
                 for (int i = 0; i < 8; i++)
                 {
-                    Vector3 corner = c + new Vector3(
+                    corners.Add(c - origin + new Vector3(
                         (i & 1) == 0 ? -e.x : e.x,
                         (i & 2) == 0 ? -e.y : e.y,
-                        (i & 4) == 0 ? -e.z : e.z);
-                    Vector3 rel = corner - origin;
-                    float along = Vector3.Dot(rel, windDir);
-                    if (along > fwd) fwd = along;
-                    if (-along > aft) aft = -along;
-                    Vector3 perp = rel - along * windDir;
-                    perps.Add(perp);
-                    float perpDist = perp.magnitude;
-                    if (perpDist > perpMax)
-                    {
-                        perpMax = perpDist;
-                        majorDir = perp;
-                    }
+                        (i & 4) == 0 ? -e.z : e.z));
                 }
             }
-            float minorMax = perpMax;
-            if (majorDir.sqrMagnitude > 1e-6f)
-            {
-                Vector3 majorAxis = majorDir.normalized;
-                Vector3 minorAxis = Vector3.Cross(windDir, majorAxis);
-                if (minorAxis.sqrMagnitude > 1e-6f)
-                {
-                    minorAxis.Normalize();
-                    minorMax = 0f;
-                    foreach (var perp in perps)
-                    {
-                        float d = Mathf.Abs(Vector3.Dot(perp, minorAxis));
-                        if (d > minorMax) minorMax = d;
-                    }
-                }
-                majorDir = majorAxis;
-            }
-            return new WindwardProfile
-            {
-                WindwardRadius = perpMax, ForwardStandoff = fwd, AftStandoff = aft,
-                MajorAxis = majorDir, RadiusMajor = perpMax, RadiusMinor = minorMax,
-            };
+            return FxSilhouette.FromCorners(corners, windDir);
         }
 
         private static Vector3 WindDirFromInputs(FxFixture.Inputs inputs)
@@ -631,160 +606,6 @@ namespace KerbcamCI
                 : Vector3.up;
             if (windDir.sqrMagnitude < 1e-3f) windDir = Vector3.up;
             return windDir.normalized;
-        }
-
-        // Oblate dome (flattened hemisphere) for the bowshock. Local frame:
-        // open base at z=0 (faces the vessel), curved surface extends to
-        // z=+1 (faces the airflow). xy in [-1, +1] at the base. The
-        // GameObject's localScale stretches this unit dome to (radius,
-        // radius, depth) for the actual flat shape.
-        private static Mesh BuildDomeMesh()
-        {
-            // 32×64 (was 10×32): the shader's spherical normal comes from the
-            // INTERPOLATED localPos, which kinks at every latitude ring on a
-            // coarse mesh — near-axis views showed the fresnel quantised into
-            // ~10 concentric rings. Tessellation is the fix; the normal math
-            // itself is fine.
-            const int latSeg = 32;
-            const int lonSeg = 64;
-            int ringVerts = lonSeg + 1;
-            int totalVerts = latSeg * ringVerts + 1;
-            var verts = new Vector3[totalVerts];
-            var uvs = new Vector2[totalVerts];
-            verts[0] = new Vector3(0f, 0f, 1f);
-            uvs[0] = new Vector2(0.5f, 1f);
-            for (int lat = 1; lat <= latSeg; lat++)
-            {
-                float phi = (lat / (float)latSeg) * Mathf.PI * 0.5f;
-                float sp = Mathf.Sin(phi);
-                float cp = Mathf.Cos(phi);
-                for (int lon = 0; lon < ringVerts; lon++)
-                {
-                    float th = (lon / (float)lonSeg) * Mathf.PI * 2f;
-                    int idx = 1 + (lat - 1) * ringVerts + lon;
-                    verts[idx] = new Vector3(sp * Mathf.Cos(th), sp * Mathf.Sin(th), cp);
-                    uvs[idx] = new Vector2(lon / (float)lonSeg, 1f - lat / (float)latSeg);
-                }
-            }
-            var tris = new List<int>();
-            for (int lon = 0; lon < lonSeg; lon++)
-            {
-                tris.Add(0); tris.Add(1 + lon); tris.Add(1 + lon + 1);
-            }
-            for (int lat = 1; lat < latSeg; lat++)
-            {
-                int rowA = 1 + (lat - 1) * ringVerts;
-                int rowB = 1 + lat * ringVerts;
-                for (int lon = 0; lon < lonSeg; lon++)
-                {
-                    tris.Add(rowA + lon);     tris.Add(rowB + lon);     tris.Add(rowA + lon + 1);
-                    tris.Add(rowA + lon + 1); tris.Add(rowB + lon);     tris.Add(rowB + lon + 1);
-                }
-            }
-            var mesh = new Mesh { name = "Kerbcam Bowshock Dome" };
-            mesh.vertices = verts;
-            mesh.uv = uvs;
-            mesh.triangles = tris.ToArray();
-            mesh.RecalculateNormals();
-            mesh.RecalculateBounds();
-            return mesh;
-        }
-
-        // Higher-segment cone (32 radial faces) for the preview so the
-        // polygonal silhouette outline disappears against the camera frame.
-        // Runtime BowshockEffect uses 16 — same generator, more faces.
-        private static Mesh BuildConeMesh()
-        {
-            const int faces = 32;
-            const float baseRadius = 3f;
-            const float length = 6f;
-            var verts = new Vector3[faces * 2];
-            var normals = new Vector3[faces * 2];
-            var tris = new int[faces * 3];
-            float apexZ = length * 0.5f;
-            float baseZ = -length * 0.5f;
-            Vector3 apex = new Vector3(0f, 0f, apexZ);
-            for (int f = 0; f < faces; f++)
-            {
-                float angMid = (f + 0.5f) / faces * Mathf.PI * 2f;
-                float angA = (float)f / faces * Mathf.PI * 2f;
-                float angB = (float)(f + 1) / faces * Mathf.PI * 2f;
-                Vector3 baseA = new Vector3(Mathf.Cos(angA) * baseRadius, Mathf.Sin(angA) * baseRadius, baseZ);
-                Vector3 baseB = new Vector3(Mathf.Cos(angB) * baseRadius, Mathf.Sin(angB) * baseRadius, baseZ);
-                Vector3 e1 = baseA - apex;
-                Vector3 e2 = baseB - apex;
-                Vector3 n = Vector3.Cross(e1, e2).normalized;
-                Vector3 outwardXY = new Vector3(Mathf.Cos(angMid), Mathf.Sin(angMid), 0f);
-                if (Vector3.Dot(n, outwardXY) < 0f) n = -n;
-                int vBase = f * 2;
-                verts[vBase + 0] = apex;
-                verts[vBase + 1] = baseA;
-                normals[vBase + 0] = n;
-                normals[vBase + 1] = n;
-                int next = (f + 1) % faces;
-                int tBase = f * 3;
-                tris[tBase + 0] = vBase + 0;
-                tris[tBase + 1] = vBase + 1;
-                tris[tBase + 2] = next * 2 + 1;
-            }
-            var mesh = new Mesh { name = "Kerbcam Bowshock Cone" };
-            mesh.vertices = verts;
-            mesh.normals = normals;
-            mesh.triangles = tris;
-            mesh.RecalculateBounds();
-            return mesh;
-        }
-
-        // Preview trail tube: narrower at the vessel end (0.6 m) and much
-        // longer (40 m) than the runtime fixed 4 m × 20 m mesh, so it can
-        // visually emerge FROM the vessel rather than hanging off-axis
-        // below it. 24 radial × 32 length so the silhouette isn't
-        // visibly polygonal.
-        private static Mesh BuildTaperedTubeMesh()
-        {
-            const int lengthSeg = 32;
-            const int radialSeg = 24;
-            const float startR = 0.6f;
-            const float length = 40f;
-            int ringVerts = radialSeg + 1;
-            int totalVerts = (lengthSeg + 1) * ringVerts;
-            var verts = new Vector3[totalVerts];
-            var uvs = new Vector2[totalVerts];
-            for (int yi = 0; yi <= lengthSeg; yi++)
-            {
-                float v = yi / (float)lengthSeg;
-                float r = startR * (1f - v);
-                float z = v * length;
-                for (int xi = 0; xi <= radialSeg; xi++)
-                {
-                    float u = xi / (float)radialSeg;
-                    float a = u * Mathf.PI * 2f;
-                    int idx = yi * ringVerts + xi;
-                    verts[idx] = new Vector3(Mathf.Cos(a) * r, Mathf.Sin(a) * r, z);
-                    uvs[idx] = new Vector2(u, v);
-                }
-            }
-            var tris = new List<int>();
-            for (int yi = 0; yi < lengthSeg; yi++)
-            {
-                for (int xi = 0; xi < radialSeg; xi++)
-                {
-                    int a = yi * ringVerts + xi;
-                    int b = a + 1;
-                    int c = (yi + 1) * ringVerts + xi;
-                    int d = c + 1;
-                    tris.Add(a); tris.Add(c); tris.Add(b);
-                    tris.Add(b); tris.Add(c); tris.Add(d);
-                }
-            }
-            var mesh = new Mesh { name = "Kerbcam Trail Tube" };
-            if (totalVerts > 65535) mesh.indexFormat = UnityEngine.Rendering.IndexFormat.UInt32;
-            mesh.vertices = verts;
-            mesh.uv = uvs;
-            mesh.triangles = tris.ToArray();
-            mesh.RecalculateNormals();
-            mesh.RecalculateBounds();
-            return mesh;
         }
 
         // ------------------------------------------------------------------

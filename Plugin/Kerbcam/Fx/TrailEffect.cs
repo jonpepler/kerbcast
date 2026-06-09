@@ -31,22 +31,14 @@ namespace Kerbcam
         private static readonly int _IntensityId = Shader.PropertyToID("_Intensity");
         private static readonly int _WindDirId = Shader.PropertyToID("_WindDirWorld");
 
-        // Tube geometry — built once. 24 length segments × 12 radial segments,
-        // 25 rings × 13 verts (duplicate at the radial seam so uv.x runs 0→1
-        // cleanly without a seam vert needing two uv.x values).
+        // Tube geometry — built once via the shared FxMeshes. 24 length
+        // segments × 12 radial segments; natural start radius 4 m (the
+        // shared FxPlacement.Trail normalises by it, so the world-space
+        // wake size is mesh-independent).
         private const int _lengthSegments = 24;
         private const int _radialSegments = 12;
         private const float _tubeStartRadius = 4f; // metres at the vessel end
         private const float _tubeLength = 20f;     // metres in local space
-
-        // Intensity ramp — per spec, more aggressive than CoreSheath: trail
-        // turns on a bit later (mach 0.9) and saturates earlier (mach 3.0).
-        // q is a ramp, not a gate, for the same reason as BowshockEffect:
-        // a binary cutoff popped the wake in at full strength on reentry.
-        private const float _qLow = 0.1f;        // kPa — onset
-        private const float _qHigh = 1.5f;       // kPa — full strength
-        private const float _machLow = 0.9f;
-        private const float _machHigh = 3.0f;
 
         // Intensity used by ForceAtmosphericFx — a moderate, flight-like value
         // (not max) so the forced pad preview reads like real supersonic flight.
@@ -62,7 +54,7 @@ namespace Kerbcam
             _material = KerbcamFxAssets.LoadMaterial("KerbcamTrail");
             if (_material == null) return false; // bundle/shader missing → unavailable
             _cb = new CommandBuffer { name = "Kerbcam FX Trail" };
-            _mesh = BuildTaperedTube();
+            _mesh = FxMeshes.BuildTaperedTube(_tubeStartRadius, _tubeLength, _lengthSegments, _radialSegments);
             Debug.Log($"[Kerbcam] FX trail initialized on {nearCam.name}");
             return true;
         }
@@ -131,20 +123,14 @@ namespace Kerbcam
             // vessel presents to the airflow (broadside flight → wide
             // wake; end-on → narrower).
             Vector3 windDir = vel / Mathf.Sqrt(velSqr);
-            var profile = WindwardProfile.Compute(state.Vessel, windDir);
-            // Bury head inside the vessel by 0.5 m. Mesh's natural start
-            // radius is _tubeStartRadius (4 m); scale each perpendicular
-            // axis to the vessel's elliptical silhouette — a broadside
-            // vessel drags a wide flat ribbon shaped like its long side,
-            // not the circular tube a nose-first vessel sheds. Major cap
-            // 1.0× so the wake doesn't engulf nearby hullcams; up = minor
-            // axis aligns the ellipse (always ⊥ wind, so also the
-            // degenerate-LookRotation guard).
-            Vector3 worldPos = state.Vessel.CoM - windDir * Mathf.Max(profile.AftStandoff - 0.5f, 0f);
-            float scaleMajor = Mathf.Clamp(profile.RadiusMajor / _tubeStartRadius, 0.25f, 1.0f);
-            float scaleMinor = Mathf.Clamp(profile.RadiusMinor / _tubeStartRadius, 0.15f, 1.0f);
-            Quaternion rot = Quaternion.LookRotation(-windDir, profile.MinorAxis(windDir));
-            Matrix4x4 m = Matrix4x4.TRS(worldPos, rot, new Vector3(scaleMajor, scaleMinor, 1f));
+            // Silhouette + placement come from the shared FX core (also
+            // compiled by the CI render harness): head buried at the aft
+            // windward edge, elliptical wake matching the silhouette the
+            // vessel presents — broadside drags a wide flat ribbon, not
+            // the circular tube a nose-first vessel sheds.
+            var silhouette = WindwardProfile.Compute(state.Vessel, windDir);
+            var pose = FxPlacement.Trail(silhouette, windDir, state.Vessel.CoM, _tubeStartRadius);
+            Matrix4x4 m = Matrix4x4.TRS(pose.Position, pose.Rotation, pose.Scale);
 
             _material.SetFloat(_IntensityId, intensity);
             _material.SetVector(_WindDirId, windDir);
@@ -157,82 +143,11 @@ namespace Kerbcam
             Attach();
         }
 
+        // Shared FxRamps — mach gates the physics, q ramps the visibility
+        // (never a binary gate; see the reentry pop-in note in FxCore).
         private static float ComputeIntensity(float mach, float dynamicPressure)
         {
-            float machRamp = Mathf.Clamp01(Mathf.InverseLerp(_machLow, _machHigh, mach));
-            float qRamp = Mathf.SmoothStep(0f, 1f,
-                Mathf.Clamp01(Mathf.InverseLerp(_qLow, _qHigh, dynamicPressure)));
-            return machRamp * qRamp;
-        }
-
-        // Build a hollow tapered cylinder along local +Z. uv.y = z / _tubeLength
-        // (0 at vessel end, 1 at tail); uv.x = radial fraction (0→1 around the
-        // ring, with seam duplication). Radius tapers linearly from
-        // _tubeStartRadius at z=0 to 0 at z=_tubeLength. No end caps.
-        private static Mesh BuildTaperedTube()
-        {
-            int rings = _lengthSegments + 1;       // 25
-            int vertsPerRing = _radialSegments + 1; // 13 (seam duplicated)
-            int vertCount = rings * vertsPerRing;   // 325
-            int triCount = _lengthSegments * _radialSegments * 2; // 576 tris
-            int idxCount = triCount * 3;            // 1728 indices
-
-            var verts = new Vector3[vertCount];
-            var normals = new Vector3[vertCount];
-            var uvs = new Vector2[vertCount];
-            var tris = new int[idxCount];
-
-            for (int r = 0; r < rings; r++)
-            {
-                float vy = (float)r / _lengthSegments;             // 0..1 along length
-                float z = vy * _tubeLength;
-                float radius = Mathf.Lerp(_tubeStartRadius, 0f, vy);
-                for (int s = 0; s < vertsPerRing; s++)
-                {
-                    float ux = (float)s / _radialSegments;         // 0..1 around ring
-                    float angle = ux * Mathf.PI * 2f;
-                    float cx = Mathf.Cos(angle);
-                    float cy = Mathf.Sin(angle);
-                    int i = r * vertsPerRing + s;
-                    verts[i] = new Vector3(cx * radius, cy * radius, z);
-                    // Outward normal in local space — ignores the taper tilt,
-                    // close enough for a thin radial gradient in the shader.
-                    normals[i] = new Vector3(cx, cy, 0f);
-                    uvs[i] = new Vector2(ux, vy);
-                }
-            }
-
-            int t = 0;
-            for (int r = 0; r < _lengthSegments; r++)
-            {
-                int row0 = r * vertsPerRing;
-                int row1 = (r + 1) * vertsPerRing;
-                for (int s = 0; s < _radialSegments; s++)
-                {
-                    int a = row0 + s;
-                    int b = row0 + s + 1;
-                    int c = row1 + s;
-                    int d = row1 + s + 1;
-                    // CCW when viewed from outside (+normal) — Cull Off in the
-                    // shader so winding doesn't matter for visibility, but keep
-                    // it consistent anyway.
-                    tris[t++] = a; tris[t++] = c; tris[t++] = b;
-                    tris[t++] = b; tris[t++] = c; tris[t++] = d;
-                }
-            }
-
-            var mesh = new Mesh { name = "KerbcamTrailTube" };
-            // 325 verts is comfortably under the 16-bit index limit; explicit
-            // for clarity.
-            mesh.indexFormat = UnityEngine.Rendering.IndexFormat.UInt16;
-            mesh.vertices = verts;
-            mesh.normals = normals;
-            mesh.uv = uvs;
-            mesh.triangles = tris;
-            // Huge bounds so it never frustum-culls when streaming behind a
-            // fast vessel — the matrix can fling it far from its origin.
-            mesh.bounds = new Bounds(Vector3.zero, Vector3.one * 10000f);
-            return mesh;
+            return FxRamps.Trail(mach, dynamicPressure);
         }
 
         private void Attach()
