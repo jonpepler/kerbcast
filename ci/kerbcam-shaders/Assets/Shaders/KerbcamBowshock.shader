@@ -183,6 +183,15 @@ Shader "Kerbcam/Bowshock"
                 float fxNoise = tex2D(_FXMainTex, fxUv).r;
                 float shimmer = 0.7 + 0.6 * fxNoise;
 
+                // Looking along the shock axis (forward hullcam), any noise
+                // keyed on dome coordinates reads as concentric rings —
+                // z-contours are circles from that angle no matter how the
+                // other axis is mapped. Fade the noise to flat as the view
+                // aligns with the axis; off-axis views keep full shimmer.
+                float3 shockAxis = normalize(mul((float3x3)unity_ObjectToWorld, float3(0, 0, 1)));
+                float axisAlign = abs(dot(viewDir, shockAxis));
+                shimmer = lerp(shimmer, 1.0, isDome * smoothstep(0.55, 0.85, axisAlign));
+
                 // Rim-dominant glow with a sharp brightness cap. baseGlow is
                 // tiny on purpose — the interior should NOT be visible as a
                 // surface. endsFade kills the rim contribution at both the

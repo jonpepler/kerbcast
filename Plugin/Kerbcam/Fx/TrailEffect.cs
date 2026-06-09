@@ -133,15 +133,18 @@ namespace Kerbcam
             Vector3 windDir = vel / Mathf.Sqrt(velSqr);
             var profile = WindwardProfile.Compute(state.Vessel, windDir);
             // Bury head inside the vessel by 0.5 m. Mesh's natural start
-            // radius is _tubeStartRadius (4 m); scale to match the actual
-            // windward radius, capped at 1.0× so the wake doesn't engulf
-            // nearby hullcams.
+            // radius is _tubeStartRadius (4 m); scale each perpendicular
+            // axis to the vessel's elliptical silhouette — a broadside
+            // vessel drags a wide flat ribbon shaped like its long side,
+            // not the circular tube a nose-first vessel sheds. Major cap
+            // 1.0× so the wake doesn't engulf nearby hullcams; up = minor
+            // axis aligns the ellipse (always ⊥ wind, so also the
+            // degenerate-LookRotation guard).
             Vector3 worldPos = state.Vessel.CoM - windDir * Mathf.Max(profile.AftStandoff - 0.5f, 0f);
-            float radiusScale = Mathf.Clamp(profile.WindwardRadius / _tubeStartRadius, 0.25f, 1.0f);
-            // Helper up — same degenerate-LookRotation guard as BowshockEffect.
-            Vector3 helperUp = Mathf.Abs(windDir.y) < 0.99f ? Vector3.up : Vector3.right;
-            Quaternion rot = Quaternion.LookRotation(-windDir, helperUp);
-            Matrix4x4 m = Matrix4x4.TRS(worldPos, rot, new Vector3(radiusScale, radiusScale, 1f));
+            float scaleMajor = Mathf.Clamp(profile.RadiusMajor / _tubeStartRadius, 0.25f, 1.0f);
+            float scaleMinor = Mathf.Clamp(profile.RadiusMinor / _tubeStartRadius, 0.15f, 1.0f);
+            Quaternion rot = Quaternion.LookRotation(-windDir, profile.MinorAxis(windDir));
+            Matrix4x4 m = Matrix4x4.TRS(worldPos, rot, new Vector3(scaleMajor, scaleMinor, 1f));
 
             _material.SetFloat(_IntensityId, intensity);
             _material.SetVector(_WindDirId, windDir);

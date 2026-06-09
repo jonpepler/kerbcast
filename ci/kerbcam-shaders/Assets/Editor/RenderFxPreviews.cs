@@ -215,10 +215,14 @@ namespace KerbcamCI
         // runtime in BowshockEffect.
         private static void SetupBowshock(Transform root, Material mat, Vector3 windDir, WindwardProfile profile)
         {
-            // Dome width = 1.5× vessel windward radius (shock is wider than
-            // body); depth = 0.55× width (flat oblate).
-            float domeRadius = Mathf.Max(profile.WindwardRadius * 1.5f, 0.5f);
-            float domeDepth = domeRadius * 0.55f;
+            // Dome = 1.5× the vessel's elliptical windward silhouette (shock
+            // wider than body): local X scaled by the major radius, local Y
+            // by the minor — broadside gives a long "canoe" shock along the
+            // vessel's length. Depth from the geometric mean (flat oblate).
+            // Mirrored on the runtime in BowshockEffect.
+            float radMajor = Mathf.Max(profile.RadiusMajor * 1.5f, 0.5f);
+            float radMinor = Mathf.Max(profile.RadiusMinor * 1.5f, 0.4f);
+            float domeDepth = Mathf.Sqrt(radMajor * radMinor) * 0.55f;
 
             // Dome base sits right at the vessel's windward extreme; the
             // dome's curved surface bulges forward into the airflow.
@@ -227,11 +231,10 @@ namespace KerbcamCI
             var go = new GameObject("bowshock_dome");
             go.transform.SetParent(root, false);
             go.transform.position = basePos;
-            // Local +Z = wind direction (curved surface facing into wind).
-            // helperUp avoids degenerate LookRotation when wind ≈ ±Y.
-            Vector3 helperUp = Mathf.Abs(windDir.y) < 0.99f ? Vector3.up : Vector3.right;
-            go.transform.rotation = Quaternion.LookRotation(windDir, helperUp);
-            go.transform.localScale = new Vector3(domeRadius, domeRadius, domeDepth);
+            // Local +Z = wind direction; up = minor axis (always ⊥ wind, so
+            // it also guards the degenerate LookRotation case).
+            go.transform.rotation = Quaternion.LookRotation(windDir, profile.MinorAxis(windDir));
+            go.transform.localScale = new Vector3(radMajor, radMinor, domeDepth);
             var mf = go.AddComponent<MeshFilter>();
             var mr = go.AddComponent<MeshRenderer>();
             mf.sharedMesh = BuildDomeMesh();
@@ -256,16 +259,18 @@ namespace KerbcamCI
             // occludes the ring of vertices at the tube's start.
             Vector3 trailHeadPos = root.position - windDir * (profile.AftStandoff - 0.5f);
             go.transform.position = trailHeadPos;
-            Vector3 helperUp = Mathf.Abs(windDir.y) < 0.99f ? Vector3.up : Vector3.right;
-            go.transform.rotation = Quaternion.LookRotation(-windDir, helperUp);
-            // Scale the tube's start radius to vessel windward radius so the
-            // wake matches the vessel's profile, but CAP at 1.0× — the
-            // close aft_hullcam camera sits about 0.9 m from the trail
-            // head, so a tube wider than ~0.6 m starts filling the near
-            // plane and LLVMpipe hangs on the resulting near-fullscreen
-            // additive triangles.
-            float radiusScale = Mathf.Clamp(profile.WindwardRadius / 0.6f, 0.5f, 1.0f);
-            go.transform.localScale = new Vector3(radiusScale, radiusScale, 1f);
+            // up = minor axis: local X (major) follows the vessel's long
+            // silhouette axis so a broadside wake is a wide flat ribbon,
+            // not a circular tube. Mirrored on the runtime in TrailEffect.
+            go.transform.rotation = Quaternion.LookRotation(-windDir, profile.MinorAxis(windDir));
+            // Scale each perp axis of the tube to the vessel's elliptical
+            // silhouette, CAPPED at 1.0× — the close aft_hullcam camera
+            // sits about 0.9 m from the trail head, so a tube wider than
+            // ~0.6 m starts filling the near plane and LLVMpipe hangs on
+            // the resulting near-fullscreen additive triangles.
+            float scaleMajor = Mathf.Clamp(profile.RadiusMajor / 0.6f, 0.5f, 1.0f);
+            float scaleMinor = Mathf.Clamp(profile.RadiusMinor / 0.6f, 0.3f, 1.0f);
+            go.transform.localScale = new Vector3(scaleMajor, scaleMinor, 1f);
             var mf = go.AddComponent<MeshFilter>();
             var mr = go.AddComponent<MeshRenderer>();
             mf.sharedMesh = BuildTaperedTubeMesh();
@@ -336,18 +341,22 @@ namespace KerbcamCI
             Vector3 perpHelper = Mathf.Abs(windDir.y) < 0.99f ? Vector3.up : Vector3.forward;
             Vector3 perp = Vector3.Cross(windDir, perpHelper).normalized;
 
-            float domeRadius = Mathf.Max(profile.WindwardRadius * 1.5f, 0.5f);
-            float domeDepth = domeRadius * 0.55f;
+            float radMajor = Mathf.Max(profile.RadiusMajor * 1.5f, 0.5f);
+            float domeDepth = Mathf.Sqrt(radMajor * Mathf.Max(profile.RadiusMinor * 1.5f, 0.4f)) * 0.55f;
             Vector3 domeCentre = windDir * (profile.ForwardStandoff + domeDepth * 0.5f);
             Vector3 wakeHead = -windDir * Mathf.Max(profile.AftStandoff - 0.5f, 0f);
-            float domeDist = Mathf.Max(4.5f, domeRadius * 3.5f);
+            float domeDist = Mathf.Max(4.5f, radMajor * 3.5f);
 
             switch (viewId)
             {
                 case "side_profile":
-                    t.localPosition = new Vector3(3.5f, 0f, 0f);
-                    t.localRotation = Quaternion.LookRotation(
-                        (Vector3.zero - t.localPosition).normalized, Vector3.up);
+                    // Perpendicular to the WIND, not a fixed +X — with a
+                    // sideways/diagonal wind the fixed position looked
+                    // straight down the wind axis and the plasma drag shape
+                    // was invisible. Distance stays at the LLVMpipe-proven
+                    // 3.5 m. For the vertical-wind fixtures perp = +X, i.e.
+                    // exactly the old camera.
+                    PlaceLookAt(t, Vector3.zero, perp * 3.5f);
                     return;
                 case "aft_hullcam":
                     t.localPosition = new Vector3(0.85f, -0.5f, 0.3f);
@@ -543,12 +552,26 @@ namespace KerbcamCI
             public float WindwardRadius;
             public float ForwardStandoff;
             public float AftStandoff;
+            // Elliptical perp cross-section — see the runtime WindwardProfile:
+            // a broadside vessel presents a long flat silhouette, and FX
+            // sized as circles read as if it were flying nose-first.
+            public Vector3 MajorAxis;
+            public float RadiusMajor;
+            public float RadiusMinor;
+
+            public Vector3 MinorAxis(Vector3 windDir)
+            {
+                Vector3 minor = Vector3.Cross(windDir, MajorAxis);
+                return minor.sqrMagnitude > 1e-6f ? minor.normalized : Vector3.up;
+            }
         }
 
         private static WindwardProfile ComputeWindwardProfile(Transform root, Vector3 windDir)
         {
             float fwd = 0f, aft = 0f, perpMax = 0f;
             Vector3 origin = root.position;
+            Vector3 majorDir = Vector3.right;
+            var perps = new List<Vector3>();
             foreach (var rend in root.GetComponentsInChildren<Renderer>())
             {
                 if (rend == null || rend is ParticleSystemRenderer) continue;
@@ -565,11 +588,37 @@ namespace KerbcamCI
                     if (along > fwd) fwd = along;
                     if (-along > aft) aft = -along;
                     Vector3 perp = rel - along * windDir;
+                    perps.Add(perp);
                     float perpDist = perp.magnitude;
-                    if (perpDist > perpMax) perpMax = perpDist;
+                    if (perpDist > perpMax)
+                    {
+                        perpMax = perpDist;
+                        majorDir = perp;
+                    }
                 }
             }
-            return new WindwardProfile { WindwardRadius = perpMax, ForwardStandoff = fwd, AftStandoff = aft };
+            float minorMax = perpMax;
+            if (majorDir.sqrMagnitude > 1e-6f)
+            {
+                Vector3 majorAxis = majorDir.normalized;
+                Vector3 minorAxis = Vector3.Cross(windDir, majorAxis);
+                if (minorAxis.sqrMagnitude > 1e-6f)
+                {
+                    minorAxis.Normalize();
+                    minorMax = 0f;
+                    foreach (var perp in perps)
+                    {
+                        float d = Mathf.Abs(Vector3.Dot(perp, minorAxis));
+                        if (d > minorMax) minorMax = d;
+                    }
+                }
+                majorDir = majorAxis;
+            }
+            return new WindwardProfile
+            {
+                WindwardRadius = perpMax, ForwardStandoff = fwd, AftStandoff = aft,
+                MajorAxis = majorDir, RadiusMajor = perpMax, RadiusMinor = minorMax,
+            };
         }
 
         private static Vector3 WindDirFromInputs(FxFixture.Inputs inputs)

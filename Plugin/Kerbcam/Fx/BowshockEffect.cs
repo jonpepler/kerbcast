@@ -127,23 +127,22 @@ namespace Kerbcam
             Vector3 windDir = vel.normalized;
             // Dome mesh is unit-sized: base ring at z=0 (faces vessel), apex
             // at z=+1 (faces airflow). Adapt to the vessel's WINDWARD profile
-            // so the dome's radius matches what the vessel actually presents
-            // to the airflow — broadside flight → wide dome; end-on → narrow.
+            // — and to its elliptical cross-section: a broadside vessel
+            // presents a long flat silhouette, so the shock is a wide
+            // "canoe" along the vessel's length, not a circle. Local X is
+            // scaled by the major radius, local Y by the minor; up = minor
+            // axis aligns the mesh to the silhouette (and doubles as the
+            // degenerate-LookRotation guard, since it is always ⊥ wind).
             var profile = WindwardProfile.Compute(state.Vessel, windDir);
-            float domeRadius = profile.WindwardRadius * 1.5f; // shock wider than body
-            float domeDepth = domeRadius * 0.55f;             // flat oblate (~real bowshock)
+            float radMajor = profile.RadiusMajor * 1.5f; // shock wider than body
+            float radMinor = profile.RadiusMinor * 1.5f;
+            float domeDepth = Mathf.Sqrt(radMajor * radMinor) * 0.55f; // flat oblate (~real bowshock)
 
             // Base of the dome sits at the vessel's windward extreme along
             // the wind axis; the curved surface bulges further forward.
             Vector3 worldPos = state.Vessel.CoM + windDir * profile.ForwardStandoff;
-            // Helper up avoids a degenerate LookRotation when the wind axis
-            // is near world-up (vertical ascent) — same guard as the CI
-            // preview harness. The dome is rotationally symmetric so the
-            // roll this picks is invisible, but the degenerate case spams
-            // Unity warnings and can produce frame-to-frame roll flips.
-            Vector3 helperUp = Mathf.Abs(windDir.y) < 0.99f ? Vector3.up : Vector3.right;
-            Quaternion rot = Quaternion.LookRotation(windDir, helperUp);
-            Matrix4x4 m = Matrix4x4.TRS(worldPos, rot, new Vector3(domeRadius, domeRadius, domeDepth));
+            Quaternion rot = Quaternion.LookRotation(windDir, profile.MinorAxis(windDir));
+            Matrix4x4 m = Matrix4x4.TRS(worldPos, rot, new Vector3(radMajor, radMinor, domeDepth));
 
             _material.SetFloat(_IntensityId, intensity);
 
