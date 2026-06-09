@@ -203,14 +203,22 @@ Shader "Kerbcam/Plasma"
             // the airflow direction. windFront is the windward-dot used to
             // gate emission (0..1, 1 = fully windward). Strip vertex layout:
             //
-            //   b0 ──── b1     y=0  (vessel surface)
+            //   b0 ──── b1     y=0  (just off the vessel surface)
             //   │ \  / │
             //   m0 ──── m1     y=0.5 (middle, spread, wobble)
             //   │ \  / │
             //   t0 ──── t1     y=1.0 (tip, alpha = 0)
             //
             // trailUV.x = 0 at the a-side of the edge, 1 at the b-side.
-            void emitStrip(float3 wpA, float3 wpB, float3 windDir, float windFront,
+            //
+            // nA/nB are the edge vertices' surface normals. The strip is
+            // lifted along them: a small constant at the base so it clears
+            // the hull skin instead of slicing through it (ZTest LEqual
+            // against the hull's own depth), growing toward the tip so the
+            // strip arcs AROUND the body like a separating streamline
+            // rather than extruding straight through it.
+            void emitStrip(float3 wpA, float3 wpB, float3 nA, float3 nB,
+                           float3 windDir, float windFront,
                            float baseLen, float wobble, inout TriangleStream<g2f> stream)
             {
                 // Per-vertex extrusion lengths from a position hash, so adjacent
@@ -242,13 +250,21 @@ Shader "Kerbcam/Plasma"
                 float w0 = (hash13(wpA * 5.1 + 7.7) - 0.5) * wobble;
                 float w1 = (hash13(wpB * 5.1 + 7.7) - 0.5) * wobble;
 
+                // Normal lift: constant hull clearance at the base, growing
+                // with extrusion length toward the tip (streamline separation).
+                float liftBase = 0.04;
+                float liftMidA = liftBase + 0.18 * lenA;
+                float liftMidB = liftBase + 0.18 * lenB;
+                float liftTipA = liftBase + 0.30 * lenA;
+                float liftTipB = liftBase + 0.30 * lenB;
+
                 // Base / middle / tip positions, in world space.
-                float3 b0 = wpA;
-                float3 b1 = wpB;
-                float3 m0 = wpA + windDir * (lenA * 0.4) - side * sideMid + windDir * w0;
-                float3 m1 = wpB + windDir * (lenB * 0.4) + side * sideMid + windDir * w1;
-                float3 t0 = wpA + windDir * lenA          - side * sideTip;
-                float3 t1 = wpB + windDir * lenB          + side * sideTip;
+                float3 b0 = wpA + nA * liftBase;
+                float3 b1 = wpB + nB * liftBase;
+                float3 m0 = wpA + nA * liftMidA + windDir * (lenA * 0.4) - side * sideMid + windDir * w0;
+                float3 m1 = wpB + nB * liftMidB + windDir * (lenB * 0.4) + side * sideMid + windDir * w1;
+                float3 t0 = wpA + nA * liftTipA + windDir * lenA          - side * sideTip;
+                float3 t1 = wpB + nB * liftTipB + windDir * lenB          + side * sideTip;
 
                 g2f o;
                 o.windFront = windFront;
@@ -319,6 +335,7 @@ Shader "Kerbcam/Plasma"
                 else { a = 2; b = 0; }
 
                 emitStrip(input[a].worldPos, input[b].worldPos,
+                          normalize(input[a].worldNormal), normalize(input[b].worldNormal),
                           windDir, windFrontTri, baseLen, wobble, stream);
             }
 

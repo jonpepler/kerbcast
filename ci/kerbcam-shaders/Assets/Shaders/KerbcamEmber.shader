@@ -151,8 +151,13 @@ Shader "Kerbcam/Ember"
                 if (triWind < 0.05) return;
 
                 // Triangle triCentroid in world space — the spark's emission
-                // anchor (ablation point on the heated surface).
+                // anchor (ablation point on the heated surface), lifted a
+                // touch along the surface normal so freshly-shed sparks
+                // clear the hull skin instead of being depth-clipped half
+                // inside it (ZTest LEqual against the hull's own depth).
                 float3 triCentroid = (input[0].worldPos + input[1].worldPos + input[2].worldPos) / 3.0;
+                float3 triNormal = normalize(input[0].worldNormal + input[1].worldNormal + input[2].worldNormal);
+                triCentroid += triNormal * 0.08;
 
                 // Per-triangle pseudo-random seeds for variation.
                 float seedA = hash13(triCentroid * 7.3);

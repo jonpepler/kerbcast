@@ -62,7 +62,7 @@ namespace KerbcamCI
 
             var fixtureFiles = Directory.GetFiles(_fixturesDir, "*.json");
             System.Array.Sort(fixtureFiles);
-            Debug.Log($"[Kerbcam-CI] RenderFxPreviews: {fixtureFiles.Length} fixture(s), {_shaderIds.Length} shader(s), {_viewIds.Length} view(s)");
+            Debug.Log($"[Kerbcam-CI] RenderFxPreviews: {fixtureFiles.Length} fixture(s), {_shaderIds.Length} shader(s), 3 views each");
 
             var plasmaShader = Shader.Find("Kerbcam/Plasma");
             var bowshockShader = Shader.Find("Kerbcam/Bowshock");
