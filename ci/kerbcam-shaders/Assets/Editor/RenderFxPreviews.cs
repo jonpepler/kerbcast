@@ -588,8 +588,13 @@ namespace KerbcamCI
         // radius, depth) for the actual flat shape.
         private static Mesh BuildDomeMesh()
         {
-            const int latSeg = 10;
-            const int lonSeg = 32;
+            // 32×64 (was 10×32): the shader's spherical normal comes from the
+            // INTERPOLATED localPos, which kinks at every latitude ring on a
+            // coarse mesh — near-axis views showed the fresnel quantised into
+            // ~10 concentric rings. Tessellation is the fix; the normal math
+            // itself is fine.
+            const int latSeg = 32;
+            const int lonSeg = 64;
             int ringVerts = lonSeg + 1;
             int totalVerts = latSeg * ringVerts + 1;
             var verts = new Vector3[totalVerts];
