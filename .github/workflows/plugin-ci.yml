@@ -13,10 +13,12 @@ on:
       - 'wip/**'
     paths:
       - 'Plugin/**'
+      - 'sidecar/testdata/**'
       - '.github/workflows/plugin-ci.yml'
   pull_request:
     paths:
       - 'Plugin/**'
+      - 'sidecar/testdata/**'
       - '.github/workflows/plugin-ci.yml'
   workflow_dispatch: {}
   workflow_call: {}
@@ -54,3 +56,25 @@ jobs:
           name: kerbcam-plugin
           path: Plugin/obj/Release/Kerbcam.dll
           if-no-files-found: error
+
+  # The Plugin/*.Tests projects are Unity-free harnesses (exit 0 = pass):
+  # each compiles its unit under test directly, so no KSP assemblies or
+  # secrets are needed and they run fine on a plain runner.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '10.x'
+
+      - name: Run plugin test harnesses
+        run: |
+          set -euo pipefail
+          for proj in Plugin/*.Tests; do
+            echo "::group::${proj}"
+            dotnet run --project "$proj" -c Release
+            echo "::endgroup::"
+          done
