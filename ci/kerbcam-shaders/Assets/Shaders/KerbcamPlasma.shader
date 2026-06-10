@@ -142,7 +142,8 @@ Shader "Kerbcam/Plasma"
                 float4 pos       : SV_POSITION;
                 float3 worldPos  : TEXCOORD0;
                 float2 trailUV   : TEXCOORD1; // .y = 0 at base → 1 at tip; .x = 0..1 across width
-                float  windFront : TEXCOORD2; // [0..1], windward dot product at emission
+                float2 windFront : TEXCOORD2; // .x = windward dot at emission; .y = triangle-area weight
+                float  stripRand : TEXCOORD3; // per-strip rand (noise-phase decorrelation)
             };
 
             // Cheap pseudo-random scalar from a 3D position. No texture lookup,
@@ -218,7 +219,7 @@ Shader "Kerbcam/Plasma"
             // strip arcs AROUND the body like a separating streamline
             // rather than extruding straight through it.
             void emitStrip(float3 wpA, float3 wpB, float3 nA, float3 nB,
-                           float3 windDir, float windFront,
+                           float3 windDir, float windFront, float areaNorm,
                            float baseLen, float wobble, inout TriangleStream<g2f> stream)
             {
                 // Per-vertex extrusion lengths from a position hash, so adjacent
@@ -241,9 +242,21 @@ Shader "Kerbcam/Plasma"
                 float sideLen2 = dot(side, side);
                 if (sideLen2 < 0.04) return;   // edge < ~12° off airflow — skip
                 side *= rsqrt(sideLen2);       // normalise so widths are absolute, not angle-dependent
+
+                // Per-strip randomisation. Mesh tessellation around a circular
+                // rim (nose-cone shoulder, engine-bell lip) is perfectly
+                // regular, so uniform strips read as an even radial comb when
+                // the camera looks along the airflow. Decorrelate neighbours:
+                // vary width, lean the strip along its base edge, and hand the
+                // fragment stage a per-strip noise phase.
+                float stripRand  = hash13((wpA + wpB) * 1.317 + 11.71);
+                float stripRand2 = hash13((wpA + wpB) * 2.731 + 5.13);
+
                 float radiusMul = max(_FxRadiusMul, 0.5);
-                float sideMid = 0.15 * baseLen * radiusMul;
-                float sideTip = 0.45 * baseLen * radiusMul;
+                float widthMul  = 0.65 + 0.70 * stripRand2;
+                float sideMid = 0.15 * baseLen * radiusMul * widthMul;
+                float sideTip = 0.45 * baseLen * radiusMul * widthMul;
+                float3 lean = edgeN * ((stripRand - 0.5) * 0.5 * baseLen);
 
                 // Per-vertex perpendicular wobble — driven off _FXWobble so the
                 // tuning lives in the stock published value when present.
@@ -261,13 +274,14 @@ Shader "Kerbcam/Plasma"
                 // Base / middle / tip positions, in world space.
                 float3 b0 = wpA + nA * liftBase;
                 float3 b1 = wpB + nB * liftBase;
-                float3 m0 = wpA + nA * liftMidA + windDir * (lenA * 0.4) - side * sideMid + windDir * w0;
-                float3 m1 = wpB + nB * liftMidB + windDir * (lenB * 0.4) + side * sideMid + windDir * w1;
-                float3 t0 = wpA + nA * liftTipA + windDir * lenA          - side * sideTip;
-                float3 t1 = wpB + nB * liftTipB + windDir * lenB          + side * sideTip;
+                float3 m0 = wpA + nA * liftMidA + windDir * (lenA * 0.4) - side * sideMid + windDir * w0 + lean * 0.4;
+                float3 m1 = wpB + nB * liftMidB + windDir * (lenB * 0.4) + side * sideMid + windDir * w1 + lean * 0.4;
+                float3 t0 = wpA + nA * liftTipA + windDir * lenA          - side * sideTip + lean;
+                float3 t1 = wpB + nB * liftTipB + windDir * lenB          + side * sideTip + lean;
 
                 g2f o;
-                o.windFront = windFront;
+                o.windFront = float2(windFront, areaNorm);
+                o.stripRand = stripRand;
 
                 #define EMIT(WP, UVX, UVY) \
                     o.worldPos = (WP); \
@@ -332,6 +346,19 @@ Shader "Kerbcam/Plasma"
                 // Triangle centroid windward score → emission gate.
                 float windFrontTri = (wf0 + wf1 + wf2) * (1.0 / 3.0);
 
+                // Triangle-area weight, GENTLE: each windward triangle emits
+                // one strip, so finely-meshed parts (engine bells) stack
+                // additively hotter than coarse tanks — the per-part hot
+                // rims. Floor at 0.5: this evens parts out by at most 2x,
+                // it does NOT normalise density fully. (Linear weighting
+                // crushed real KSP triangles, 0.002-0.02 m², to invisibility
+                // under the capped cold-wind intensity — flight-tested. The
+                // in-game brightness is protected by the C# intensity caps,
+                // not by this weight.) Reference area 0.05 m².
+                float triArea = 0.5 * length(cross(input[1].worldPos - input[0].worldPos,
+                                                   input[2].worldPos - input[0].worldPos));
+                float areaNorm = lerp(0.5, 1.0, saturate(sqrt(triArea * 20.0)));
+
                 // Emit one strip from the edge whose two vertices are most
                 // windward — that's the edge most likely to ride along the
                 // visible plasma silhouette. Picking one of the three edges
@@ -344,7 +371,7 @@ Shader "Kerbcam/Plasma"
 
                 emitStrip(input[a].worldPos, input[b].worldPos,
                           normalize(input[a].worldNormal), normalize(input[b].worldNormal),
-                          windDir, windFrontTri, baseLen, wobble, stream);
+                          windDir, windFrontTri, areaNorm, baseLen, wobble, stream);
             }
 
             // ----- fragment stage -----
@@ -355,21 +382,39 @@ Shader "Kerbcam/Plasma"
 
                 float fxState = saturate(_FxState);
 
+                // Real-heating hint from KSP — a touch of FxColor.a brightens
+                // genuinely-heating fragments and leaves cold ones subtle.
+                float fxHeating = saturate(_FXColor.a);
+
+                // Colour: lerp between the two presets purely by fxState
+                // (separate from intensity). Real-heating colour from
+                // _FXColor.rgb gets mixed in at full reentry as a tint.
+                float3 baseCol = lerp(_CondensationColor.rgb, _ReentryColor.rgb, fxState);
+                float3 col = lerp(baseCol, baseCol * (0.4 + _FXColor.rgb * 1.6),
+                                  fxHeating * fxState);
+
                 // Sample KSP's tuned plasma noise along the trail. Scroll
                 // along trailUV.y so the streaks visibly move toward the tail.
                 // Scroll speed and noise tile rate both lerp between the two
                 // presets — condensation moves slowly, reentry is fast.
                 float scrollSpeed = lerp(0.6, 4.0, fxState);
                 float tile = lerp(0.5, 1.4, fxState);
-                float2 fxUv = float2(i.trailUV.x * tile,
+                // Offset the noise phase per strip — neighbours sampling the
+                // texture at the same x read as a bank of identical spokes.
+                float2 fxUv = float2((i.trailUV.x + i.stripRand * 7.31) * tile,
                                      i.trailUV.y * tile - _Time.y * scrollSpeed);
                 float fxNoise = tex2D(_FXMainTex, fxUv).r;
                 // Sharpen into wisps; clamp away the lower half so the trail
                 // is wispy rather than a solid slab.
                 float noiseSharp = saturate(fxNoise * 1.7 - 0.35);
 
-                // Length fade — bright at base, fades to nothing at tip.
-                float lenFade = pow(saturate(1.0 - i.trailUV.y), 1.6);
+                // Length fade — bright at base, fades to nothing at tip. The
+                // short feather-in at the base matters: y=0 is the only strip
+                // boundary that otherwise carries full alpha, and against the
+                // hull it draws as a hard bright chord — around a circular rim,
+                // a ring of radial dashes.
+                float lenFade = pow(saturate(1.0 - i.trailUV.y), 1.6)
+                              * smoothstep(0.0, 0.15, i.trailUV.y);
                 // Width fade — softer at the edges of the strip so the trail
                 // doesn't read as a hard ribbon.
                 float widthFade = 1.0 - pow(abs(i.trailUV.x * 2.0 - 1.0), 2.0);
@@ -395,25 +440,18 @@ Shader "Kerbcam/Plasma"
                 // (and stacks additively into a blown-out fan near the
                 // nose). The streak term already carries widthFade; the
                 // wrap must too, or the strip boundary is visible.
-                float wrapSoft = wrapHead * widthFade;
+                // Same base feather as lenFade — the wrap term is brightest
+                // exactly at y=0, so without it the base chords survive
+                // through this layer even with the streak feathered.
+                float wrapSoft = wrapHead * widthFade * smoothstep(0.0, 0.15, i.trailUV.y);
                 float alphaConstruct = streak * 0.85 + wrapSoft * 0.55;
                 float alphaDestruct  = wrapSoft * (1.0 - noiseSharp * 0.6);
-                float layerMix = 1.0 - i.windFront; // leeward fragments get more of the wispy layer
+                float layerMix = 1.0 - i.windFront.x; // leeward fragments get more of the wispy layer
                 float glow = lerp(alphaConstruct, alphaDestruct, layerMix);
 
-                // Real-heating hint from KSP — a touch of FxColor.a brightens
-                // genuinely-heating fragments and leaves cold ones subtle.
-                float fxHeating = saturate(_FXColor.a);
+                glow *= i.windFront.y; // triangle-area weight (density normalisation)
                 glow *= (0.7 + 0.5 * fxHeating);
-
                 glow *= _Intensity;
-
-                // Colour: lerp between the two presets purely by fxState
-                // (separate from intensity). Real-heating colour from
-                // _FXColor.rgb gets mixed in at full reentry as a tint.
-                float3 baseCol = lerp(_CondensationColor.rgb, _ReentryColor.rgb, fxState);
-                float3 col = lerp(baseCol, baseCol * (0.4 + _FXColor.rgb * 1.6),
-                                  fxHeating * fxState);
 
                 return fixed4(col * glow, 1.0);
             }
