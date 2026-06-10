@@ -336,9 +336,12 @@ jobs:
         with:
           unity-version: ${{ env.UNITY_VERSION }}
           version-file: "None"
-          # Windows/macOS modules are for the kerbcam-shaders per-platform
-          # bundles; the HullcamVDS shaders.linux build stays Linux-only.
-          build-targets: StandaloneLinux64 StandaloneWindows64 StandaloneOSX
+          # Windows/macOS player-support is for the kerbcam-shaders per-platform
+          # bundles; the HullcamVDS shaders.linux build stays Linux-only. The
+          # cross-targets must be requested as Hub module ids via `modules` —
+          # the action rejects non-host build-targets on Linux.
+          build-targets: StandaloneLinux64
+          modules: windows-mono mac-mono
           cache-installation: true
 
       - name: Activate Unity Personal license

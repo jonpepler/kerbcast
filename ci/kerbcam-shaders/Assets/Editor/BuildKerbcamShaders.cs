@@ -29,6 +29,15 @@ namespace KerbcamCI
                 outputDir,
                 BuildAssetBundleOptions.UncompressedAssetBundle,
                 target);
+            // BuildAssetBundles silently produces nothing when player support
+            // for the target is missing (run 27307004282: no Bundles-windows/,
+            // step still green). Fail the editor invocation instead so the CI
+            // step that broke is the build, not a later copy.
+            var bundle = Path.Combine(outputDir, "kerbcam-shaders");
+            if (!File.Exists(bundle))
+                throw new IOException(
+                    $"BuildAssetBundles produced no {bundle} for {target}; " +
+                    "is the player-support module installed?");
         }
     }
 }

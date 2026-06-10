@@ -42,7 +42,11 @@ jobs:
           version-file: 'None'
           # Windows/macOS player-support modules let the Linux editor compile
           # d3d11/metal shader variants; no Windows or mac runner needed.
-          build-targets: StandaloneLinux64 StandaloneWindows64 StandaloneOSX
+          # They must be requested as Hub module ids via `modules` — the
+          # action rejects non-host build-targets on Linux ("StandaloneWindows64
+          # is not a valid build target for Linux", run 27307004282).
+          build-targets: StandaloneLinux64
+          modules: windows-mono mac-mono
           cache-installation: true
 
       - name: Activate Unity Personal license
