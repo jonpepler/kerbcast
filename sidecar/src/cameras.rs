@@ -283,6 +283,12 @@ pub struct CameraState {
     /// `target_bitrate_bps` and reinitialises the encoder when they
     /// diverge significantly (REMB-driven adaptation).
     pub encoder_bitrate: AtomicU32,
+    /// Consecutive encode() failures. Reset on success; at the consume
+    /// loop's threshold the encoder is closed + dropped so the next
+    /// frame re-initialises it (hardware first, software fallback) —
+    /// otherwise a wedged encoder session stalls subscribed peers
+    /// forever while only emitting warn logs.
+    pub encode_failure_streak: AtomicU32,
     /// Most-recent target bitrate, computed as the min across active
     /// subscribers' REMB estimates (so the slowest receiver doesn't
     /// drop the whole stream). 0 = no REMB received yet; consume loop
@@ -428,7 +434,7 @@ pub struct CameraRegistry {
     /// don't produce duplicate entries. Cap is generous (12k = ~3.5h
     /// at 1Hz) so a full test never overflows; in practice the harness
     /// resets before each run.
-    status_log: Mutex<Vec<StatusLogEntry>>,
+    status_log: Mutex<std::collections::VecDeque<StatusLogEntry>>,
     /// `Instant` anchor for `StatusLogEntry::t_ms`. Set at registry
     /// construction so timestamps are relative to sidecar startup —
     /// not wall-clock, immune to NTP slews mid-run.
@@ -538,7 +544,7 @@ impl CameraRegistry {
             ring_cfg,
             cameras: RwLock::new(HashMap::new()),
             last_status: Mutex::new(None),
-            status_log: Mutex::new(Vec::new()),
+            status_log: Mutex::new(std::collections::VecDeque::new()),
             epoch: Instant::now(),
             force_render: AtomicBool::new(false),
             global_control_seq: AtomicU64::new(0),
@@ -606,7 +612,7 @@ impl CameraRegistry {
     /// The harness fires `GET /dumpLogs` after `[BASELINE-DONE]` and
     /// writes the result alongside the Telemachus / kOS log slices.
     pub async fn dump_run_logs(&self) -> Vec<StatusLogEntry> {
-        self.status_log.lock().await.clone()
+        self.status_log.lock().await.iter().cloned().collect()
     }
 
     /// Walk `shm_dir`, attach any new `<flight_id>.ring` files, poll
@@ -720,6 +726,7 @@ impl CameraRegistry {
                             encoder_width: AtomicU32::new(0),
                             encoder_height: AtomicU32::new(0),
                             encoder_bitrate: AtomicU32::new(0),
+                            encode_failure_streak: AtomicU32::new(0),
                             target_bitrate_bps: AtomicU32::new(0),
                             bandwidth_estimates: Mutex::new(std::collections::HashMap::new()),
                             degrade_levels: Mutex::new(std::collections::HashMap::new()),
@@ -944,11 +951,13 @@ impl CameraRegistry {
                 t_ms: self.epoch.elapsed().as_millis() as u64,
                 status: GlobalStatusFileExport::from(&parsed),
             };
+            // VecDeque: pop_front is O(1); a Vec::remove(0) here would
+            // shift 12k entries on every append once the cap is hit.
             let mut log = self.status_log.lock().await;
             if log.len() >= STATUS_LOG_CAP {
-                log.remove(0);
+                log.pop_front();
             }
-            log.push(entry);
+            log.push_back(entry);
         }
 
         *last = Some(parsed);

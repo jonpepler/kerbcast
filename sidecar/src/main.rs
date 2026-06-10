@@ -33,6 +33,12 @@ use kerbcam_sidecar::signalling::{router, AppState};
 use kerbcam_sidecar::webrtc::KerbcamPeer;
 use kerbcam_sidecar::VERSION;
 
+/// Consecutive encode() failures before the consume loop drops a
+/// camera's encoder to force re-initialisation. ~1s of frames at 30fps:
+/// transient hiccups don't churn the session, a wedged one recovers
+/// quickly.
+const ENCODE_FAILURE_REINIT_THRESHOLD: u32 = 30;
+
 #[derive(Parser, Debug)]
 #[command(name = "kerbcam-sidecar", version = VERSION, about)]
 struct Cli {
@@ -148,7 +154,7 @@ async fn main() -> Result<()> {
     });
 
     let ping_peers = peers.clone();
-    tokio::spawn(async move {
+    let ping_task = tokio::spawn(async move {
         let interval = Duration::from_secs(5);
         loop {
             sleep(interval).await;
@@ -172,14 +178,41 @@ async fn main() -> Result<()> {
         cli.bitrate_bps,
     );
 
-    tokio::select! {
+    // SIGTERM is what the plugin's process kill, systemd and container
+    // runtimes send first — without a handler the runtime never unwinds
+    // and the supervisor escalates to SIGKILL after its timeout. No-op
+    // pending future on non-unix (Windows gets ctrl_c only).
+    #[cfg(unix)]
+    let terminate = async {
+        match signal::unix::signal(signal::unix::SignalKind::terminate()) {
+            Ok(mut sig) => {
+                sig.recv().await;
+            }
+            Err(e) => {
+                warn!(error = %e, "SIGTERM handler unavailable");
+                std::future::pending::<()>().await;
+            }
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    let result = tokio::select! {
         result = consume => result,
         _ = signal::ctrl_c() => {
             info!("ctrl-c received, shutting down");
-            http_server.abort();
             Ok(())
         }
-    }
+        _ = terminate => {
+            info!("SIGTERM received, shutting down");
+            Ok(())
+        }
+    };
+    // Detached loops would otherwise keep the runtime alive past the
+    // shutdown signal.
+    http_server.abort();
+    ping_task.abort();
+    result
 }
 
 /// Per-tick: rescan the rings dir periodically; for every camera with
@@ -580,9 +613,31 @@ async fn encode_and_fan_out(
         data: &frame.pixels,
         capture_ts_ms: frame.capture_ts_ms,
     }) {
-        Ok(n) => n,
+        Ok(n) => {
+            cam.encode_failure_streak.store(0, Ordering::Release);
+            n
+        }
         Err(e) => {
-            warn!(flight_id = cam.flight_id, error = %e, "encode failed");
+            // A persistently-failing encoder session (wedged VAAPI
+            // context, driver reset) never heals by retrying encode();
+            // peers would stall forever on an open track. Drop it after
+            // a sustained streak so the next frame re-runs init — which
+            // already falls back to software when hardware init fails.
+            let streak = cam.encode_failure_streak.fetch_add(1, Ordering::AcqRel) + 1;
+            warn!(flight_id = cam.flight_id, error = %e, streak, "encode failed");
+            if streak >= ENCODE_FAILURE_REINIT_THRESHOLD {
+                if let Some(mut backend) = encoder_guard.take() {
+                    backend.close();
+                }
+                cam.encoder_width.store(0, Ordering::Release);
+                cam.encoder_height.store(0, Ordering::Release);
+                cam.encoder_bitrate.store(0, Ordering::Release);
+                cam.encode_failure_streak.store(0, Ordering::Release);
+                warn!(
+                    flight_id = cam.flight_id,
+                    "encoder dropped after {streak} consecutive failures; will reinit on next frame"
+                );
+            }
             return;
         }
     };
