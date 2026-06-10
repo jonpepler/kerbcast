@@ -16,7 +16,6 @@ export interface Tile {
 }
 
 const STORAGE_KEY = "kerbcam:tiles";
-const MAX_TILES = 8;
 
 /** Read tiles from localStorage. Returns null when the key is absent. */
 export function loadTiles(): Tile[] | null {
@@ -56,9 +55,12 @@ export function seedTiles(flightIds: number[]): Tile[] {
   return flightIds.slice(0, 4).map((flightId) => ({ flightId, spotlit: false }));
 }
 
-/** Add a new empty tile (returns tiles unchanged if already at max). */
+/**
+ * Add a new empty tile. There is no upper bound on tile count: the plugin and
+ * sidecar adapt to load (capture staggering, frame budget), and the grid
+ * layout flows into more rows as tiles are added.
+ */
 export function addTile(tiles: Tile[]): Tile[] {
-  if (tiles.length >= MAX_TILES) return tiles;
   return [...tiles, { flightId: null, spotlit: false }];
 }
 
@@ -80,5 +82,3 @@ export function updateTile(
 export function toggleSpotlight(tiles: Tile[], index: number): Tile[] {
   return tiles.map((t, i) => (i === index ? { ...t, spotlit: !t.spotlit } : t));
 }
-
-export { MAX_TILES };

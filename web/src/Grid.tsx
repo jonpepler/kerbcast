@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import styled from "styled-components";
 import { bestGrid } from "./bestGrid";
 import { AddTile, Tile } from "./Tile";
-import { addTile, MAX_TILES, removeTile, saveTiles, toggleSpotlight, updateTile } from "./tiles";
+import { addTile, removeTile, saveTiles, toggleSpotlight, updateTile } from "./tiles";
 import type { Tile as TileData } from "./tiles";
 
 interface GridProps {
@@ -29,14 +29,10 @@ export function Grid({ tiles, onTilesChange, showDebugInfo }: GridProps): React.
   const handleRemove = (index: number) => commit(removeTile(tiles, index));
   const handleToggleSpotlight = (index: number) =>
     commit(toggleSpotlight(tiles, index));
-  const handleAdd = () => {
-    const next = addTile(tiles);
-    if (next !== tiles) commit(next);
-  };
+  const handleAdd = () => commit(addTile(tiles));
 
   const isEmpty = tiles.length === 0;
   const spotlightActive = tiles.some((t) => t.spotlit);
-  const canAdd = tiles.length < MAX_TILES;
 
   // Measure the container so the flat grid can grow tiles to fill it.
   const rootRef = useRef<HTMLDivElement>(null);
@@ -66,7 +62,7 @@ export function Grid({ tiles, onTilesChange, showDebugInfo }: GridProps): React.
   if (flatFill) {
     // contentRect already excludes Root's padding, so size is the usable area.
     const availW = size.w;
-    const availH = size.h - (canAdd ? ADD_BAR_H + GAP : 0);
+    const availH = size.h - (ADD_BAR_H + GAP);
     const { cols, rows } = bestGrid(tiles.length, availW, availH);
     const cellW = (availW - GAP * (cols - 1)) / cols;
     const cellH = (availH - GAP * (rows - 1)) / rows;
@@ -95,14 +91,12 @@ export function Grid({ tiles, onTilesChange, showDebugInfo }: GridProps): React.
           onToggleSpotlight={() => handleToggleSpotlight(i)}
         />
       ))}
-      {canAdd && (
-        <AddTile
-          onClick={handleAdd}
-          isEmpty={isEmpty}
-          compact={spotlightActive}
-          bar={flatFill}
-        />
-      )}
+      <AddTile
+        onClick={handleAdd}
+        isEmpty={isEmpty}
+        compact={spotlightActive}
+        bar={flatFill}
+      />
       {isEmpty && (
         <EmptyHint>
           <EmptyIcon aria-hidden="true">

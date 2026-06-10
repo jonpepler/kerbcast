@@ -196,7 +196,13 @@ describe("App - connect flow", () => {
     });
   });
 
-  it("shows add-tile button when there are fewer than 8 tiles", async () => {
+  it("shows add-tile button regardless of tile count (no cap)", async () => {
+    // 8 was the old hard cap; seed past it and confirm adding still works.
+    localStorage.setItem(
+      "kerbcam:tiles",
+      JSON.stringify(Array.from({ length: 8 }, (_, i) => ({ flightId: i + 1 }))),
+    );
+
     const { client, openSidecar } = buildFixture([
       makeCamera({ flightId: 1, cameraName: "Solo" }),
     ]);
@@ -207,8 +213,15 @@ describe("App - connect flow", () => {
     });
 
     await waitFor(() => {
-      expect(screen.getByRole("button", { name: /add tile/i })).toBeTruthy();
+      expect(screen.getAllByRole("button", { name: /remove tile/i })).toHaveLength(8);
     });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /add tile/i }));
+    });
+
+    expect(screen.getAllByRole("button", { name: /remove tile/i })).toHaveLength(9);
+    expect(screen.getByRole("button", { name: /add tile/i })).toBeTruthy();
   });
 
   it("header shows sidecar version and encoder backend after connect", async () => {
