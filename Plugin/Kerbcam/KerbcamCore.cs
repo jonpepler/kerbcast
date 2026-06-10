@@ -275,6 +275,16 @@ namespace Kerbcam
                     $"--max-width {_settings.Width} " +
                     $"--max-height {_settings.Height}";
 
+                // Explicit bitrate only when the operator configured one.
+                // BitrateBps = 0 (the default) means auto: omit the flag so
+                // the sidecar derives its default from the encoder backend
+                // it selects (hardware backends default higher than the
+                // software fallback).
+                if (_settings.BitrateBps > 0)
+                {
+                    args += $" --bitrate-bps {_settings.BitrateBps}";
+                }
+
                 var psi = new ProcessStartInfo
                 {
                     FileName = binPath,

@@ -55,6 +55,14 @@ namespace Kerbcam
         public int Width { get; private set; } = 1024;
         public int Height { get; private set; } = 576;
         public bool AutoSpawnSidecar { get; private set; } = true;
+
+        // Target H.264 bitrate forwarded to the sidecar at launch, in bits
+        // per second. 0 (the default) means auto: the flag is not forwarded
+        // at all and the sidecar derives its own default from the selected
+        // encoder backend (hardware encoders default higher than the
+        // software fallback). Set explicitly to trade bandwidth for image
+        // quality. Applies to every stream; only read at sidecar launch.
+        public int BitrateBps { get; private set; } = 0;
         // Opt-in QUALITY shedding (resolution + FX-layer cascade). Default
         // false: by default kerbcam degrades *temporally* instead (capture
         // staggering scales cuts up as fps drops — see ReadbackScheduler), which
@@ -286,6 +294,7 @@ namespace Kerbcam
             ApplyInt(node, "Port", v => settings.Port = v);
             ApplyInt(node, "Width", v => settings.Width = v);
             ApplyInt(node, "Height", v => settings.Height = v);
+            ApplyInt(node, "BitrateBps", v => settings.BitrateBps = v);
             ApplyBool(node, "AutoSpawnSidecar", v => settings.AutoSpawnSidecar = v);
             ApplyFloat(node, "MaxCaptureFps", v => settings.MaxCaptureFps = v);
             ApplyFloat(node, "MaxKerbcamFrameBudgetMs", v => settings.MaxKerbcamFrameBudgetMs = v);
