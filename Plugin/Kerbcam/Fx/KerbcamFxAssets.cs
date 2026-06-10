@@ -1,8 +1,9 @@
 // Shared loader for the kerbcam-shaders AssetBundle (built in CI by
 // build-kerbcam-shaders.yml, shipped at GameData/Kerbcam/kerbcam-shaders).
 // FX effects fetch their shaders/materials through here. The bundle is loaded
-// once and cached; a missing bundle or shader returns null so callers degrade
-// gracefully (FX simply doesn't appear) rather than throwing.
+// once and cached; a missing bundle, missing shader, or shader with no variant
+// for the running graphics API returns null so callers degrade gracefully
+// (FX simply doesn't appear) rather than throwing.
 
 using System;
 using System.IO;
@@ -62,6 +63,17 @@ namespace Kerbcam
             if (shader == null)
             {
                 Debug.LogWarning($"[Kerbcam] FX shader '{shaderAssetName}' not found in kerbcam-shaders bundle");
+                return null;
+            }
+            // A bundle built for another platform cross-loads with non-null
+            // shaders that have no variant for the running graphics API; Unity
+            // would render them as solid magenta. Treat them as unavailable.
+            if (!shader.isSupported)
+            {
+                Debug.LogWarning(
+                    $"[Kerbcam] FX shader '{shaderAssetName}' has no variant for " +
+                    $"{Application.platform}/{SystemInfo.graphicsDeviceType}; " +
+                    "the kerbcam-shaders bundle was likely built for another platform");
                 return null;
             }
             return new Material(shader) { name = shaderAssetName };
