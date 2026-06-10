@@ -102,6 +102,19 @@ namespace KerbcamCI
                         emberShader;
                     foreach (var viewId in ViewsFor(shaderId))
                     {
+                        /* Body-mounted plasma hullcams with non-axial wind
+                           put full-length strips THROUGH the camera plane —
+                           giant clipped triangles hang LLVMpipe outright,
+                           at any resolution (runs 27264102844, 27265194905).
+                           Broadside plasma shape is judged from
+                           side_profile, which renders fine at half res. */
+                        bool nonAxialWind = Mathf.Abs(Vector3.Dot(
+                            WindDirFromInputs(fx.inputs), Vector3.up)) < 0.99f;
+                        if (shaderId == "plasma" && nonAxialWind && viewId.EndsWith("_hullcam"))
+                        {
+                            Debug.Log($"[Kerbcam-CI]   SKIP  {fx.name}/{shaderId}/{viewId} (LLVMpipe hang: strips cross hullcam plane in non-axial wind)");
+                            continue;
+                        }
                         Debug.Log($"[Kerbcam-CI]   begin {fx.name}/{shaderId}/{viewId}");
                         try
                         {
@@ -206,8 +219,22 @@ namespace KerbcamCI
                     case "ember": SetupEmber(sceneRoot.transform, cam, mat, fx.inputs); break;
                 }
 
+                /* Non-axial-wind plasma renders fill the whole frame with
+                   full-length strips from EVERY view (the wind crosses the
+                   camera axis, so strips sweep the frame edge-to-edge) —
+                   LLVMpipe's pathological case, and at real-part proxy
+                   tessellation it hangs the runner outright (one view
+                   confirmed hung per run: first side_profile, then
+                   forward_hullcam). Half resolution quarters the fill; these
+                   views judge shape (drag direction, comb, envelope), not
+                   pixel detail. */
+                bool lowRes = shaderId == "plasma"
+                              && Mathf.Abs(Vector3.Dot(windDir, Vector3.up)) < 0.99f;
+                int w = lowRes ? _outWidth / 2 : _outWidth;
+                int h = lowRes ? _outHeight / 2 : _outHeight;
+
                 // Render to RT
-                var rt = new RenderTexture(_outWidth, _outHeight, 24, RenderTextureFormat.ARGB32)
+                var rt = new RenderTexture(w, h, 24, RenderTextureFormat.ARGB32)
                 {
                     name = $"FxPreviewRT_{fx.name}_{shaderId}_{viewId}",
                     antiAliasing = 1
@@ -218,8 +245,8 @@ namespace KerbcamCI
                 // Read back + encode
                 var prev = RenderTexture.active;
                 RenderTexture.active = rt;
-                var tex = new Texture2D(_outWidth, _outHeight, TextureFormat.RGBA32, false);
-                tex.ReadPixels(new Rect(0, 0, _outWidth, _outHeight), 0, 0);
+                var tex = new Texture2D(w, h, TextureFormat.RGBA32, false);
+                tex.ReadPixels(new Rect(0, 0, w, h), 0, 0);
                 tex.Apply();
                 RenderTexture.active = prev;
 
@@ -558,6 +585,14 @@ namespace KerbcamCI
         // Mesh builders (proxies)
         // ------------------------------------------------------------------
 
+        /* Ringed cone at real-part tessellation. The old 12-segment cone
+           shared one apex vertex across 12 giant triangles, so every
+           forward view showed 12 cartoon wedges radiating from the tip —
+           an artifact real KSP parts (~32-48 radial segments, ringed)
+           never produce, which made along-axis strip artifacts impossible
+           to evaluate in CI. Triangle count is the LLVMpipe fill-cost
+           driver (strip area is per-triangle, not per-edge-length), so
+           keep seg*rings modest. */
         private static GameObject MakeCone()
         {
             var go = new GameObject("nose_cone");
@@ -565,28 +600,56 @@ namespace KerbcamCI
             var mr = go.AddComponent<MeshRenderer>();
             var std = Shader.Find("Standard");
             if (std != null) mr.sharedMaterial = new Material(std);
-            const int seg = 12;
+            const int seg = 24;
+            const int rings = 2;
             const float r = 1f;
             const float h = 1.5f;
-            var verts = new Vector3[seg + 2];
-            var uvs = new Vector2[seg + 2];
-            verts[0] = new Vector3(0f, h, 0f);
-            uvs[0] = new Vector2(0.5f, 1f);
+            var verts = new List<Vector3>();
+            var uvs = new List<Vector2>();
+            var tris = new List<int>();
+            // Side rings: radius tapers linearly to a small tip ring, then a
+            // single apex vertex closes it. seg+1 verts per ring so the UV
+            // seam wraps cleanly.
+            for (int j = 0; j <= rings; j++)
+            {
+                float v = j / (float)rings;
+                float rr = Mathf.Lerp(r, 0.06f, v);
+                float y = v * h;
+                for (int i = 0; i <= seg; i++)
+                {
+                    float u = i / (float)seg;
+                    float a = u * Mathf.PI * 2f;
+                    verts.Add(new Vector3(Mathf.Cos(a) * rr, y, Mathf.Sin(a) * rr));
+                    uvs.Add(new Vector2(u, v));
+                }
+            }
+            for (int j = 0; j < rings; j++)
+            {
+                int row0 = j * (seg + 1), row1 = (j + 1) * (seg + 1);
+                for (int i = 0; i < seg; i++)
+                {
+                    tris.Add(row0 + i); tris.Add(row1 + i); tris.Add(row1 + i + 1);
+                    tris.Add(row0 + i); tris.Add(row1 + i + 1); tris.Add(row0 + i + 1);
+                }
+            }
+            int apex = verts.Count;
+            verts.Add(new Vector3(0f, h, 0f));
+            uvs.Add(new Vector2(0.5f, 1f));
+            int tipRow = rings * (seg + 1);
             for (int i = 0; i < seg; i++)
             {
-                float u = i / (float)seg;
-                float a = u * Mathf.PI * 2f;
-                verts[1 + i] = new Vector3(Mathf.Cos(a) * r, 0f, Mathf.Sin(a) * r);
-                uvs[1 + i] = new Vector2(u, 0f);
+                tris.Add(tipRow + i); tris.Add(apex); tris.Add(tipRow + i + 1);
             }
-            verts[seg + 1] = Vector3.zero;
-            uvs[seg + 1] = new Vector2(0.5f, 0f);
-            var tris = new List<int>();
-            for (int i = 0; i < seg; i++) { tris.Add(0); tris.Add(1 + i); tris.Add(1 + ((i + 1) % seg)); }
-            for (int i = 0; i < seg; i++) { tris.Add(seg + 1); tris.Add(1 + ((i + 1) % seg)); tris.Add(1 + i); }
+            int baseCentre = verts.Count;
+            verts.Add(Vector3.zero);
+            uvs.Add(new Vector2(0.5f, 0f));
+            for (int i = 0; i < seg; i++)
+            {
+                tris.Add(baseCentre); tris.Add(i + 1); tris.Add(i);
+            }
             var mesh = new Mesh { name = "nose_cone_mesh" };
-            mesh.vertices = verts;
-            mesh.uv = uvs;
+            mesh.vertices = verts.ToArray();
+            mesh.uv = uvs.ToArray();
             mesh.triangles = tris.ToArray();
             mesh.RecalculateNormals();
             mesh.RecalculateBounds();
