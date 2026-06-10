@@ -1,0 +1,124 @@
+# Live-testing kerbcam
+
+Script-testable reference for verifying a running kerbcam sidecar — written so
+a Claude session (or a human with curl) can check a live instance without
+re-deriving the protocol from source. The canonical definitions live in
+`sidecar/src/protocol/mod.rs` and `sidecar/src/signalling.rs`; if this file
+and the source disagree, the source wins — and this file should be fixed.
+
+## Spinning up a sidecar without KSP
+
+```sh
+cd sidecar
+cargo run --example fake_camera -- /tmp/kerbcam-test-rings 101 "NavCam" &
+cargo run --bin kerbcam-sidecar -- --shm-dir /tmp/kerbcam-test-rings --encoder software
+```
+
+`fake_camera` writes `<flight_id>.info.json` + `<flight_id>.ring` and keeps
+producing an animated test pattern, exactly like the plugin's writer side.
+Run several with distinct flight IDs for multi-camera tests. Ring geometry
+must match the sidecar defaults (4 slots, 1024×576 max).
+
+Against a real KSP install, the sidecar is already running during any flight
+scene; the default endpoint is `127.0.0.1:8088` (settings.cfg `BindAddress` /
+`Port`).
+
+## HTTP endpoints
+
+All on `--http-bind` (default `127.0.0.1:8088`). CORS is wide open.
+
+| Route | Method | Purpose |
+|---|---|---|
+| `/` | GET | bundled web UI (embedded `web/dist/index.html`) |
+| `/health` | GET | liveness + version — first thing to check |
+| `/cameras` | GET | `{ "cameras": [CameraInfo, …] }` for every attached ring |
+| `/offer` | POST | WebRTC signalling (see below) |
+| `/dumpLogs` | GET | `{ "entries": [StatusLogEntry, …] }` — capped ring of every distinct plugin status snapshot since last reset |
+| `/dumpLogs/reset` | POST | clear that ring (perf harnesses call this at run start) |
+| `/profile` | GET | profiling state |
+| `/profile/render` | POST | force every camera subscribed so the plugin renders without a peer (measures plugin cost only; nothing encodes) |
+
+Quick health pass:
+
+```sh
+curl -s http://127.0.0.1:8088/health
+curl -s http://127.0.0.1:8088/cameras | python3 -m json.tool
+```
+
+Expect `/cameras` to list one entry per camera part on the active vessel
+(or per fake_camera), each carrying `flightId`, `partTitle`, `vesselName`,
+`supportsZoom`/`fovMin`/`fovMax`, `supportsPan` + ranges, render/operator
+dims, and lifecycle.
+
+## WebRTC signalling
+
+`POST /offer` body:
+
+```json
+{ "sdp": "<browser offer SDP>", "cameras": [101], "slots": 4 }
+```
+
+- `cameras` — initial flight-ID subscriptions. With no `slots`: empty means
+  "every known camera" (dev convenience).
+- `slots` — number of recv-only video transceivers in the offer. Spare slots
+  idle until a runtime `subscribe`. Omitted = legacy one-track-per-camera.
+
+Response: `{ "sdp": "<answer>", "cameras": [101] }` (echo after dropping
+unknown IDs). A full WebRTC handshake needs a browser or webrtc library —
+from plain curl you can still assert the route exists: a garbage SDP returns
+an error status, not a hang.
+
+For a real end-to-end check with a browser available, load `GET /` with
+`?mock=0` (the bundled page auto-connects) and confirm a moving test pattern.
+
+## Control data channel (`kerbcam-control`)
+
+JSON messages, envelope `{ "type": "<kebab-case>", "content": { … } }`
+(serde `tag = "type", content = "content"`). TypeScript bindings are
+generated into `client-sdk/typescript/src/__generated__/types.ts` — that file
+is the wire-accurate reference for every payload.
+
+Client → sidecar (`ClientMessage`):
+
+| `type` | content | notes |
+|---|---|---|
+| `hello` | – | first message; sidecar replies `hello` + `camera-snapshot` + `settings-state` |
+| `subscribe` / `unsubscribe` | `{ "flightId": n }` | dynamic slot binding; reply is `slot-map` |
+| `set-layers` | `{ "flightId": n, "layers": ["NEAR","SCALED","GALAXY"] }` | server-wide |
+| `set-render-size` | `{ "flightId": n, … }` | even pixels only; capped at ring max |
+| `set-fov` | `{ "flightId": n, "fov": deg }` | ignored when `supportsZoom == false` |
+| `set-pan` | `{ "flightId": n, … }` | absolute; no stock parts support pan yet |
+| `set-pan-rate` / `set-zoom-rate` | `{ "flightId": n, … }` | persistent velocity, −1..=1; zero stops; `Error` reply if unsupported |
+| `set-degrade` | `{ "flightId": n, "level": 0.0–1.0 }` | max-across-subscribers wins |
+| `request-keyframe` | `{ "flightId": n }` | forces IDR next encode tick |
+| `set-throttle-main-screen` | `{ … }` | global; persists to the KSP save |
+| `pong` | – | reply to each server `ping` |
+| `disconnect` | – | graceful teardown; releases all slots immediately |
+
+Sidecar → client (`ServerMessage`): `hello` (version + encoder backend name),
+`camera-snapshot` (full `CameraState` array), `camera-state-changed`,
+`slot-map` (`mid` ↔ `flightId`/null), `adaptive-shed` (with human-readable
+`reason`), `settings-state`, `ping` (every 5 s; client must `pong` — no ping
+for 15 s means the client should tear down), `error` (echoes the offending
+payload).
+
+## What "healthy" looks like
+
+1. `/health` answers immediately.
+2. `/cameras` lists the expected cameras within ~1 s of a ring appearing
+   (registry rescans every second).
+3. After a peer subscribes: sidecar log shows `per-camera encoder
+   initialised` with the expected backend (`libva` on the Deck, `software`
+   elsewhere), then steady frame flow — no `encode failed` streaks.
+4. Killing a fake_camera writer: the camera goes `destroyed` / disappears
+   from `/cameras` and subscribed peers get `camera-state-changed`.
+5. SIGTERM (`kill <pid>`) exits promptly — no hang until SIGKILL.
+6. Adaptive behaviour: `/dumpLogs` entries carry the kspFps / shedLevel /
+   per-camera render-size timeline; `adaptive-shed` messages name a reason.
+
+## Cleanup
+
+```sh
+pkill -f fake_camera; pkill -f kerbcam-sidecar
+rm -rf /tmp/kerbcam-test-rings
+```

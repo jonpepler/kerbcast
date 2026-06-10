@@ -86,13 +86,11 @@ Plugin/                 KSP-side C# (Kerbcam.csproj -> Kerbcam.dll) plus a suite
 GameData/Kerbcam/       committed install-tree pieces (currently HullcamShaders/).
                         The full per-rid tree (plugin DLL plus Sidecar/<rid>/
                         binary) is assembled by CI at release time.
-```
-
-Still planned (not yet present):
-
-```
 live_tests/             Claude-runnable test docs (HTTP endpoints, control-channel
-                        shapes) per the rebuild doc §10.4.
+                        shapes, no-KSP fake_camera harness) per the rebuild doc
+                        §10.4.
+docs/                   user-facing INSTALL/TROUBLESHOOTING plus internal notes
+                        (testing backlog, perf analyses).
 ```
 
 The strategy / planning context for this project lives in the gonogo repo at `local_docs/kerbcam/`: design decisions, performance baselines, ongoing notes. Update both repos when something architectural shifts.

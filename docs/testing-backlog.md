@@ -16,7 +16,7 @@ Captured 2026-05-19. Rust-side unit + integration tests are in good shape (26 pa
 
 ### Quick
 
-- [ ] `live_tests/kerbcam.md`: Claude-runnable instructions for verifying a running sidecar (HTTP endpoints once they exist, control-channel message shapes, common failure modes). Sister doc to `gonogo_claude_tools.sh tele …`.
+- [x] `live_tests/kerbcam.md`: Claude-runnable instructions for verifying a running sidecar (HTTP endpoints once they exist, control-channel message shapes, common failure modes). Sister doc to `gonogo_claude_tools.sh tele …`. *(Added 2026-06-10; validated live against fake_camera + software encoder.)*
 - [ ] Add a CI status badge to the README once the first push to GitHub triggers the workflow.
 
 ### Medium
