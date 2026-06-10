@@ -98,9 +98,15 @@ namespace Kerbcam
         // kerbcam's OWN main-thread cost within a frametime budget by capturing
         // fewer cameras per frame — full resolution + all layers, just less
         // often. Targets kerbcam's cost (not game fps), so it's KSP-independent.
-        // kerbcam NEVER auto-sheds quality; that's a manual/API-only choice.
+        // kerbcam never auto-sheds quality unless AdaptiveQuality opts in.
         // Built in Awake from settings; null until then (guarded at call sites).
         private StaggerBudgetController _staggerController;
+        // Opt-in quality ladder (AdaptiveQuality=true): demotes resolution/FX
+        // layers via KerbcamCamera.ApplyAutoShed once staggering is exhausted,
+        // promotes back after sustained headroom. null when the flag is off,
+        // which keeps the flag-off path bit-for-bit the pre-flag behaviour
+        // (no evaluation, no ApplyAutoShed calls, shedLevel always 0).
+        private AdaptiveQualityController _qualityController;
         // Cameras that actually captured last frame, for the per-camera cost
         // estimate (kerbcamFrameMs / captured).
         private int _lastCapturedCount = 1;
@@ -161,6 +167,11 @@ namespace Kerbcam
 
             _settings = KerbcamSettings.Load();
             _staggerController = BuildStaggerController(_settings);
+            if (_settings.AdaptiveQuality)
+            {
+                _qualityController = BuildQualityController(_settings);
+                Debug.Log("[Kerbcam] stagger quality ladder enabled (AdaptiveQuality=true)");
+            }
 
             try
             {
@@ -657,6 +668,15 @@ namespace Kerbcam
             }
             Debug.Log($"[Kerbcam] tracking {_cameras.Count} Hullcam VDS camera(s)");
 
+            // Freshly built cameras start at the operator-configured quality;
+            // if the opt-in ladder is currently demoted, bring them in line so
+            // a vessel switch can't silently restore a load we just shed.
+            if (_qualityController != null && _qualityController.Level > 0)
+            {
+                for (int i = 0; i < _cameras.Count; i++)
+                    _cameras[i].ApplyAutoShed(_qualityController.Level);
+            }
+
             // Re-apply the throttle we restored above. ReadThrottleDesired
             // is the source of truth — honour the operator's current
             // setting in case they toggled it during the rebuild window.
@@ -703,7 +723,7 @@ namespace Kerbcam
 
             // Regulate the capture budget from kerbcam's own frame cost (lossless
             // temporal degrade — fewer streaming cameras captured per frame).
-            // kerbcam never auto-sheds quality; that's manual/API-only.
+            // Quality stays untouched unless AdaptiveQuality opts in.
             UpdateDegradeLevel();
 
             // Reconcile the per-save Difficulty Setting against our
@@ -1099,9 +1119,10 @@ namespace Kerbcam
                 var sb = new System.Text.StringBuilder(256 + _cameras.Count * 256);
                 sb.Append("{\n");
                 sb.Append($"  \"kspFps\": {_fpsAvg:F2},\n");
-                // shedLevel retained for sidecar wire-compat; kerbcam no longer
-                // auto-sheds quality (manual/API only), so it's always 0.
-                sb.Append("  \"shedLevel\": 0,\n");
+                // shedLevel: 0 unless the opt-in AdaptiveQuality ladder is
+                // active (the controller is null when the flag is off, so the
+                // flag-off output stays byte-identical to the pre-flag plugin).
+                sb.Append($"  \"shedLevel\": {(_qualityController != null ? _qualityController.Level : 0)},\n");
                 sb.Append($"  \"throttleMainScreen\": {(_throttleEffective ? "true" : "false")},\n");
                 // Stagger telemetry — watch the budget regulator converge + tune
                 // MaxKerbcamFrameBudgetMs / MinKspFps. staggerBudget: cameras
@@ -1317,8 +1338,11 @@ namespace Kerbcam
         // Per-tick: regulate the capture budget to hold kerbcam's own per-frame
         // main-thread cost within MaxKerbcamFrameBudgetMs (lossless temporal
         // degrade — fewer cameras per frame, full quality each), tightening
-        // further if game fps falls below the MinKspFps physics floor. kerbcam
-        // NEVER auto-sheds quality; that is a manual/API-only operator choice.
+        // further if game fps falls below the MinKspFps physics floor. Quality
+        // is untouched unless AdaptiveQuality opts in, in which case the
+        // quality ladder below runs AFTER the stagger decision, off the same
+        // signals: demote only once staggering is exhausted, promote only
+        // after sustained headroom.
         // Skips until the fps window has filled — early post-load frames noisy.
         private void UpdateDegradeLevel()
         {
@@ -1337,6 +1361,26 @@ namespace Kerbcam
                 Debug.Log($"[Kerbcam] stagger budget={budget}/{_streamCount} streaming "
                     + $"(kerbcam {_kerbcamFrameMs:F1}ms, {msPerCam:F1}ms/cam, KSP {_fpsAvg:F0}fps, "
                     + $"max {_settings.MaxKerbcamFrameBudgetMs:F0}ms, floor {_settings.MinKspFps:F0}fps)");
+
+            // Opt-in quality ladder, fed the stagger controller's own signals.
+            // The budget passed is the stagger budget BEFORE the MaxCaptureFps
+            // rate cap: the cap is user config, not load, and must not block a
+            // promote. null when AdaptiveQuality=false (nothing evaluated).
+            if (_qualityController != null)
+            {
+                int qBefore = _qualityController.Level;
+                int qLevel = _qualityController.Evaluate(
+                    _kerbcamFrameMs, budget, _streamCount, _fpsAvg, Time.unscaledTime);
+                if (qLevel != qBefore)
+                {
+                    Debug.Log($"[Kerbcam] stagger quality level={qLevel}/{KerbcamCamera.MaxShedLevel} "
+                        + $"({_qualityController.LastChangeReason}; kerbcam {_kerbcamFrameMs:F1}ms, "
+                        + $"KSP {_fpsAvg:F0}fps, budget {budget}/{_streamCount}, "
+                        + $"max {_settings.MaxKerbcamFrameBudgetMs:F0}ms, floor {_settings.MinKspFps:F0}fps)");
+                    for (int i = 0; i < _cameras.Count; i++)
+                        _cameras[i].ApplyAutoShed(qLevel);
+                }
+            }
         }
 
         // Build the stagger budget regulator from settings. MaxKerbcamFrameBudgetMs
@@ -1348,6 +1392,20 @@ namespace Kerbcam
             return new StaggerBudgetController(
                 budgetMs,
                 initialBudget: 1,
+                minKspFps: s.MinKspFps);
+        }
+
+        // Build the opt-in quality ladder from the same targets as the stagger
+        // regulator (the two share the ms budget and the fps floor, so demote
+        // engages exactly where staggering runs out of room). Level 0 is the
+        // configured Width/Height/layers; the ladder never goes above it.
+        private static AdaptiveQualityController BuildQualityController(KerbcamSettings s)
+        {
+            double budgetMs = s.MaxKerbcamFrameBudgetMs > 0f ? s.MaxKerbcamFrameBudgetMs : 1e6;
+            return new AdaptiveQualityController(
+                enabled: true,
+                maxLevel: KerbcamCamera.MaxShedLevel,
+                budgetMs: budgetMs,
                 minKspFps: s.MinKspFps);
         }
 

@@ -111,6 +111,7 @@
        net10 console Main never leaks into the net48 plugin DLL. (ControlBlock.cs
        itself lives under Kerbcam/ and is still included.) -->
   <ItemGroup>
+    <Compile Remove="AdaptiveQualityController.Tests/**/*.cs" />
     <Compile Remove="ControlBlock.Tests/**/*.cs" />
     <Compile Remove="ShedController.Tests/**/*.cs" />
     <Compile Remove="StaggerBudgetController.Tests/**/*.cs" />

@@ -72,11 +72,16 @@ namespace Kerbcam
         // software fallback). Set explicitly to trade bandwidth for image
         // quality. Applies to every stream; only read at sidecar launch.
         public int BitrateBps { get; private set; } = 0;
-        // Opt-in QUALITY shedding (resolution + FX-layer cascade). Default
-        // false: by default kerbcam degrades *temporally* instead (capture
-        // staggering scales cuts up as fps drops — see ReadbackScheduler), which
-        // keeps full image quality. Set true to also drop resolution/FX layers
-        // under load.
+        // Opt-in adaptive QUALITY ladder (resolution + FX-layer cascade,
+        // see KerbcamCamera.ShedTable) driven by AdaptiveQualityController.
+        // Default false: by default kerbcam only degrades temporally (capture
+        // staggering), which keeps full image quality, and the flag-off
+        // behaviour is bit-for-bit the pre-flag plugin: the controller is not
+        // even constructed. When true, kerbcam demotes quality once staggering
+        // is exhausted and promotes it back, slowly, after sustained headroom;
+        // it never promotes past the configured Width/Height/layers.
+        public bool AdaptiveQuality { get; private set; } = false;
+
         // Per-camera capture-rate CEILING (stream target). Cameras are
         // round-robined so they don't all render + read back on the same frame,
         // and each captures at MOST this rate rather than the full game fps. Set
@@ -94,8 +99,8 @@ namespace Kerbcam
         // 8 streaming — comfortably above the MinKspFps floor while using the
         // headroom a lower budget would leave idle). Set 0 to remove the ms cap
         // entirely, making MinKspFps the control target ("capture everything down
-        // to that fps floor"). kerbcam NEVER drops quality to hit this — that's a
-        // manual/API-only choice.
+        // to that fps floor"). kerbcam never drops quality to hit this unless
+        // AdaptiveQuality (opt-in, above) is enabled.
         public float MaxKerbcamFrameBudgetMs { get; private set; } = 24f;
 
         // Physics-floor safety (one-way). If game fps drops below this, kerbcam
@@ -350,6 +355,7 @@ namespace Kerbcam
             ApplyInt(node, "Width", v => settings.Width = v);
             ApplyInt(node, "Height", v => settings.Height = v);
             ApplyInt(node, "BitrateBps", v => settings.BitrateBps = v);
+            ApplyBool(node, "AdaptiveQuality", v => settings.AdaptiveQuality = v);
             ApplyBool(node, "AutoSpawnSidecar", v => settings.AutoSpawnSidecar = v);
             ApplyFloat(node, "MaxCaptureFps", v => settings.MaxCaptureFps = v);
             ApplyFloat(node, "MaxKerbcamFrameBudgetMs", v => settings.MaxKerbcamFrameBudgetMs = v);

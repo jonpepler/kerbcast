@@ -87,6 +87,23 @@ absent from both uses the built-in default. The release zip never contains
 `PluginData/`, so the file persists through reinstalls. KSP.log reports which
 of the two files were loaded at flight-scene start.
 
+### Adaptive quality (opt-in)
+
+By default kerbcam only adapts *temporally* under load: it captures fewer of
+the streaming cameras per frame, at full resolution, and never touches image
+quality on its own. Setting `AdaptiveQuality = true` adds a second, lossy
+stage: when the capture staggering has no room left (one camera per frame and
+still over budget, or KSP below the `MinKspFps` floor), kerbcam steps render
+quality down (resolution first, then FX layers), and steps it back up, one
+level at a time, only after roughly 30 seconds of sustained headroom plus a
+cooldown after any drop. Quality never rises above the `Width`/`Height` and
+layers you configured. Every change is logged to KSP.log as
+`[Kerbcam] stagger quality` with the reason.
+
+It ships **off** because the no-quality-shedding behaviour is the measured
+Steam Deck (tier-1) baseline; with the flag off, nothing about that baseline
+changes.
+
 ## Updating / uninstalling
 
 - **Update:** delete `GameData/Kerbcam/` and extract the new zip. If you keep
