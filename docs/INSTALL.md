@@ -48,7 +48,9 @@ GameData/Kerbcam/
 │   ├── osx-arm64/
 │   └── win-x64/
 ├── HullcamShaders/           prebuilt Hullcam shader bundle (Linux fix)
-├── kerbcam-shaders           kerbcam's atmospheric-FX shader bundle
+├── kerbcam-shaders           kerbcam's atmospheric-FX shader bundle (Linux)
+├── kerbcam-shaders.windows   same bundle, Windows (d3d11) shader variants
+├── kerbcam-shaders.osx       same bundle, macOS (metal) shader variants
 ├── settings.cfg              all configuration, commented
 ├── Kerbcam.version           KSP-AVC version manifest
 └── LICENSE

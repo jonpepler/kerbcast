@@ -336,7 +336,9 @@ jobs:
         with:
           unity-version: ${{ env.UNITY_VERSION }}
           version-file: "None"
-          build-targets: StandaloneLinux64
+          # Windows/macOS modules are for the kerbcam-shaders per-platform
+          # bundles; the HullcamVDS shaders.linux build stays Linux-only.
+          build-targets: StandaloneLinux64 StandaloneWindows64 StandaloneOSX
           cache-installation: true
 
       - name: Activate Unity Personal license
@@ -357,13 +359,13 @@ jobs:
             -logFile -
           cp Bundles-linux/shaders shaders.linux
 
-      - name: Build kerbcam-shaders
+      - name: Build kerbcam-shaders (linux, windows, osx)
         working-directory: ci/kerbcam-shaders
         run: |
           "$UNITY_EDITOR_PATH" \
             -batchmode -nographics -quit \
             -projectPath "$(pwd)" \
-            -executeMethod KerbcamCI.BuildKerbcamShaders.BuildLinux \
+            -executeMethod KerbcamCI.BuildKerbcamShaders.BuildAll \
             -buildTarget Linux64 \
             -logFile -
 
@@ -402,7 +404,12 @@ jobs:
           chmod +x GameData/Kerbcam/Sidecar/osx-arm64/kerbcam-sidecar
 
           cp hullcam/HullCameraAssets/shaders.linux GameData/Kerbcam/HullcamShaders/
+          # Linux keeps the legacy unsuffixed name (pre-multi-platform installs
+          # and the loader's fallback both expect it); Windows/macOS get
+          # platform suffixes per the HullcamShaders/shaders.linux precedent.
           cp ci/kerbcam-shaders/Bundles-linux/kerbcam-shaders GameData/Kerbcam/
+          cp ci/kerbcam-shaders/Bundles-windows/kerbcam-shaders GameData/Kerbcam/kerbcam-shaders.windows
+          cp ci/kerbcam-shaders/Bundles-osx/kerbcam-shaders GameData/Kerbcam/kerbcam-shaders.osx
 
           cp Plugin/settings.cfg GameData/Kerbcam/
 
