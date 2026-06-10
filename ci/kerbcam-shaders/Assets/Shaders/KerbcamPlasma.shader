@@ -388,8 +388,16 @@ Shader "Kerbcam/Plasma"
                 // Two-layer alpha shape (cf. Firefly): the streak builds up
                 // alpha (constructive); the wrap eats alpha through the noise
                 // (destructive) to give the "wisps tearing off the body" feel.
-                float alphaConstruct = streak * 0.85 + wrapHead * 0.75;
-                float alphaDestruct  = wrapHead * (1.0 - noiseSharp * 0.6);
+                //
+                // The wrap terms are FEATHERED by widthFade: wrap applied
+                // uniformly across a strip quad lights the whole triangle
+                // pair edge-to-edge, which reads as hard polygonal facets
+                // (and stacks additively into a blown-out fan near the
+                // nose). The streak term already carries widthFade; the
+                // wrap must too, or the strip boundary is visible.
+                float wrapSoft = wrapHead * widthFade;
+                float alphaConstruct = streak * 0.85 + wrapSoft * 0.55;
+                float alphaDestruct  = wrapSoft * (1.0 - noiseSharp * 0.6);
                 float layerMix = 1.0 - i.windFront; // leeward fragments get more of the wispy layer
                 float glow = lerp(alphaConstruct, alphaDestruct, layerMix);
 
