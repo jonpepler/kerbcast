@@ -180,6 +180,20 @@ namespace KerbcamCI
 
                 ApplyGlobals(fx.globals, fixtureDir, fx.textures);
 
+                // Windward depth prepass — AFTER ApplyGlobals so it overrides
+                // the fixture's placeholder depth map + matrices with a real
+                // render of the proxy vessel from upwind (what KSP's FXCamera
+                // publishes in-game). Without it the plasma wrap term — the
+                // white wind sheath hugging the windward surfaces — is zero
+                // in every preview. Only runs when no fixture-provided depth
+                // texture exists. Must render BEFORE FX objects are added to
+                // the scene so it measures the proxy alone.
+                RenderTexture depthRt = null;
+                if (fx.textures == null || string.IsNullOrEmpty(fx.textures.fxDepthMap))
+                {
+                    depthRt = RenderWindwardDepth(sceneRoot.transform, windDir, profile);
+                }
+
                 Material mat = new Material(shader);
                 ApplyMaterialInputs(mat, fx.inputs, shaderId);
 
@@ -217,6 +231,11 @@ namespace KerbcamCI
                 Object.DestroyImmediate(tex);
                 Object.DestroyImmediate(rt);
                 Object.DestroyImmediate(mat);
+                if (depthRt != null)
+                {
+                    Shader.SetGlobalTexture("_FXDepthMap", null);
+                    Object.DestroyImmediate(depthRt);
+                }
             }
             finally
             {
@@ -597,6 +616,68 @@ namespace KerbcamCI
                 }
             }
             return FxSilhouette.FromCorners(corners, windDir);
+        }
+
+        // Render the proxy vessel's depth as seen from upwind into an RT and
+        // publish it (plus the matching matrices/planes) as the _FXDepthMap
+        // globals — the same contract KSP's FXCamera fulfils in-game. The
+        // plasma shader's wrapFromDepthMap converts (fragmentDepth - sampled)
+        // × (far - near) into metres downstream of the windward surface, so
+        // both this depth encoding and _FXProjectionNear/Far must be linear01
+        // over the same range (the CIDepth replacement shader guarantees it).
+        // Orthographic — only relative depth matters, and ortho keeps the
+        // linear01 encoding exact across the frame.
+        private static RenderTexture RenderWindwardDepth(Transform root, Vector3 windDir, FxSilhouette profile)
+        {
+            var depthShader = Shader.Find("Kerbcam/CIDepth");
+            if (depthShader == null)
+            {
+                Debug.LogWarning("[Kerbcam-CI] Kerbcam/CIDepth shader missing — wind wrap layer will be absent");
+                return null;
+            }
+
+            const float near = 0.5f;
+            const float far = 80f;
+            var rt = new RenderTexture(256, 256, 24, RenderTextureFormat.ARGBFloat)
+            {
+                name = "FxPreviewDepthRT",
+                antiAliasing = 1,
+                filterMode = FilterMode.Bilinear,
+            };
+
+            var camGo = new GameObject("__fx_depth_camera");
+            camGo.transform.SetParent(root, false);
+            try
+            {
+                float upwind = profile.ForwardStandoff + 5f;
+                camGo.transform.position = root.position + windDir * upwind;
+                Vector3 helperUp = Mathf.Abs(windDir.y) < 0.99f ? Vector3.up : Vector3.forward;
+                camGo.transform.rotation = Quaternion.LookRotation(-windDir, helperUp);
+
+                var cam = camGo.AddComponent<Camera>();
+                cam.enabled = false;
+                cam.orthographic = true;
+                cam.orthographicSize = Mathf.Max(profile.RadiusMajor * 1.6f,
+                    (profile.ForwardStandoff + profile.AftStandoff) * 0.75f);
+                cam.nearClipPlane = near;
+                cam.farClipPlane = far;
+                cam.clearFlags = CameraClearFlags.SolidColor;
+                cam.backgroundColor = Color.white; // far plane = "nothing upwind here"
+                cam.targetTexture = rt;
+                cam.RenderWithShader(depthShader, "");
+                cam.targetTexture = null;
+
+                Shader.SetGlobalTexture("_FXDepthMap", rt);
+                Shader.SetGlobalMatrix("_FXDepthCamMatrix", cam.worldToCameraMatrix);
+                Shader.SetGlobalMatrix("_FXDepthProjMatrix", cam.projectionMatrix);
+                Shader.SetGlobalFloat("_FXProjectionNear", near);
+                Shader.SetGlobalFloat("_FXProjectionFar", far);
+                return rt;
+            }
+            finally
+            {
+                Object.DestroyImmediate(camGo);
+            }
         }
 
         private static Vector3 WindDirFromInputs(FxFixture.Inputs inputs)

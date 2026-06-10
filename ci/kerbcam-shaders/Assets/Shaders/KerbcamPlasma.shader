@@ -311,15 +311,23 @@ Shader "Kerbcam/Plasma"
                 float lengthPreset = lerp(0.6, 2.6, fxState);
                 float wobblePreset = lerp(0.25, 1.4, fxState);
 
-                // Intensity ramps both length and wobble. _FxLength /
-                // _FXWobble are KSP-tuned multipliers; the max() floor below
-                // doubles as a fallback when KSP isn't publishing (unset
-                // globals read as 0) so the trail is still visible during
-                // pad iteration / early flight init.
+                // _FxLength / _FXWobble are KSP-tuned multipliers; the max()
+                // floor below doubles as a fallback when KSP isn't publishing
+                // (unset globals read as 0) so the trail is still visible
+                // during pad iteration / early flight init.
+                //
+                // Length scales with intensity through a FLOOR, not raw
+                // _Intensity: the fragment stage multiplies brightness by
+                // _Intensity again, so a raw factor here suppressed low-mach
+                // output QUADRATICALLY — at transonic intensities the white
+                // wind streaks were centimetre stubble at quarter brightness,
+                // i.e. invisible. With the floor, cold wind keeps a readable
+                // streak length and fades by brightness alone.
                 float fxLen     = max(_FxLength, 0.6);
                 float fxWobble  = max(_FXWobble, 0.4);
-                float baseLen   = lengthPreset * fxLen * _Intensity;
-                float wobble    = wobblePreset * fxWobble * _Intensity;
+                float lenRamp   = lerp(0.45, 1.0, saturate(_Intensity));
+                float baseLen   = lengthPreset * fxLen * lenRamp;
+                float wobble    = wobblePreset * fxWobble * lenRamp;
 
                 // Triangle centroid windward score → emission gate.
                 float windFrontTri = (wf0 + wf1 + wf2) * (1.0 / 3.0);
