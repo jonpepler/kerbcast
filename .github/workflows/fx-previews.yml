@@ -1,0 +1,104 @@
+name: fx-previews
+
+# Renders the FX preview PNGs from the fixtures in ci/kerbcam-shaders/Fixtures.
+# Each fixture sets up a proxy vessel + camera, applies the FX shaders via
+# CommandBuffer at AfterForwardAlpha (same hook as runtime), then renders one
+# frame to PNG. Output PNGs become a CI artifact so we can iterate on the
+# shaders without flying KSP. See RenderFxPreviews.cs for the full
+# description; the fixtures live alongside it.
+#
+# NON-BLOCKING and informational: nothing depends on this workflow. The
+# blocking correctness checks (bundle build, per-shader render smoke test,
+# blit determinism) all live in build-kerbcam-shaders.yml; this one exists
+# so a human can look at how the FX renders actually turned out.
+#
+# Trigger: workflow_run after build-kerbcam-shaders completes successfully,
+# plus workflow_dispatch for manual runs and pushes touching this file.
+#
+# Auth: uses buildalon/activate-unity-license@v2 with UNITY_USERNAME +
+# UNITY_PASSWORD repo secrets, same as build-kerbcam-shaders.yml.
+
+on:
+  workflow_run:
+    workflows: [build-kerbcam-shaders]
+    types: [completed]
+  push:
+    paths:
+      - '.github/workflows/fx-previews.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  previews:
+    name: Render FX preview PNGs
+    runs-on: ubuntu-22.04
+    # workflow_run also fires when the build fails or is cancelled; only
+    # render previews for shader bundles that actually built green.
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+
+    env:
+      UNITY_VERSION: 2019.4.40f1 (ffc62b691db5)
+
+    steps:
+      # workflow_run events execute against the DEFAULT BRANCH ref, so a
+      # plain checkout could render previews for a different commit than the
+      # one that built the bundles. Pin to the triggering run's head sha.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Set up Unity Hub + Editor
+        uses: buildalon/unity-setup@v2
+        with:
+          unity-version: ${{ env.UNITY_VERSION }}
+          version-file: 'None'
+          # Same module set as build-kerbcam-shaders.yml even though the
+          # previews only need the Linux editor: an identical install means
+          # cache-installation reuses the editor that workflow cached.
+          build-targets: StandaloneLinux64
+          modules: windows-mono mac-mono
+          cache-installation: true
+
+      - name: Activate Unity Personal license
+        uses: buildalon/activate-unity-license@v2
+        with:
+          license: 'Personal'
+          username: ${{ secrets.UNITY_USERNAME }}
+          password: ${{ secrets.UNITY_PASSWORD }}
+
+      # `-nographics` is intentionally OMITTED on the render step: the flag
+      # disables Unity's graphics device entirely, which would make
+      # Camera.Render() and RenderTexture readback no-ops. We wrap in
+      # `xvfb-run` so the runner has a (virtual) display for the GL context.
+      - name: Install xvfb
+        run: sudo apt-get update && sudo apt-get install -y xvfb
+
+      - name: Render FX preview PNGs
+        working-directory: ci/kerbcam-shaders
+        # LLVMpipe fill cost scales with proxy triangle count (one strip per
+        # windward triangle, strip area independent of triangle size). With
+        # the real-part-density nose cone the full fixture x shader x view
+        # matrix takes several minutes; 15 min still fails reasonably fast on
+        # a genuine LLVMpipe hang without killing healthy renders.
+        timeout-minutes: 15
+        run: |
+          xvfb-run -a "$UNITY_EDITOR_PATH" \
+            -batchmode -quit \
+            -projectPath "$(pwd)" \
+            -executeMethod KerbcamCI.RenderFxPreviews.RenderAll \
+            -buildTarget Linux64 \
+            -logFile -
+          echo "--- preview PNGs ---"
+          ls -la Previews/ || true
+
+      # always() so a hung/failed render still uploads everything rendered
+      # before it: a partial artifact beats losing the whole review cycle.
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: fx-previews
+          path: ci/kerbcam-shaders/Previews/
+          retention-days: 30
+          if-no-files-found: warn

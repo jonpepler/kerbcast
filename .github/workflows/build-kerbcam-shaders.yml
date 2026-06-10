@@ -8,6 +8,11 @@ name: build-kerbcam-shaders
 # plus kerbcam-shaders.windows and kerbcam-shaders.osx, following the
 # HullcamShaders/shaders.linux platform-suffix precedent.
 #
+# Blocking checks only: bundle build, a per-shader render smoke test on the
+# just-built Linux bundle, and the Hullcam blit determinism test. The slow
+# FX preview rendering lives in the non-blocking fx-previews.yml workflow,
+# which runs after this one succeeds.
+#
 # Auth: uses buildalon/activate-unity-license@v2 with UNITY_USERNAME +
 # UNITY_PASSWORD repo secrets. Same pattern as build-hullcam-shaders.yml.
 #
@@ -73,6 +78,50 @@ jobs:
           echo "--- output bundles ---"
           ls -la Bundles-linux/ Bundles-windows/ Bundles-osx/
 
+      # Both render tests below need a real graphics device: `-nographics`
+      # disables it entirely, turning Camera.Render(), Graphics.Blit and
+      # RenderTexture readback into no-ops. xvfb gives the runner a virtual
+      # display for the GL context.
+      - name: Install xvfb
+        run: sudo apt-get update && sudo apt-get install -y xvfb
+
+      # Per-shader render smoke test on the just-built Linux bundle: every
+      # shader in it must report isSupported, render through a material onto
+      # a small deterministic scene, and produce output that is neither the
+      # magenta error pattern nor all-zero. Catches "bundle built but a
+      # shader is broken" in seconds; judging how the FX actually LOOK stays
+      # with the fx-previews.yml renders.
+      - name: Shader render smoke test
+        working-directory: ci/kerbcam-shaders
+        timeout-minutes: 10
+        run: |
+          xvfb-run -a "$UNITY_EDITOR_PATH" \
+            -batchmode -quit \
+            -projectPath "$(pwd)" \
+            -executeMethod KerbcamCI.ShaderSmoke.RenderAll \
+            -buildTarget Linux64 \
+            -logFile -
+
+      # Regression net for the per-camera Hullcam filter blit (c00fe16):
+      # compiles the plugin's HullcamFilterBlit.cs verbatim (via the
+      # Assets/Editor/SharedHullcamBlit symlink), loads the committed
+      # GameData/Kerbcam/HullcamShaders/shaders.linux MovieTime shader, and
+      # asserts each filter mode's blit output is byte-identical under
+      # hostile writes to the shared static material (plus reticle on/off
+      # policy vs a no-title baseline, plus a control that the legacy
+      # shared-static path visibly flickers). Same xvfb arrangement as the
+      # smoke test: -nographics would no-op Graphics.Blit and ReadPixels.
+      - name: Hullcam filter blit determinism test
+        working-directory: ci/kerbcam-shaders
+        timeout-minutes: 10
+        run: |
+          xvfb-run -a "$UNITY_EDITOR_PATH" \
+            -batchmode -quit \
+            -projectPath "$(pwd)" \
+            -executeMethod KerbcamCI.HullcamBlitDeterminism.RunAll \
+            -buildTarget Linux64 \
+            -logFile -
+
       - name: Copy bundles into GameData
         run: |
           cp ci/kerbcam-shaders/Bundles-linux/kerbcam-shaders GameData/Kerbcam/kerbcam-shaders
@@ -87,65 +136,3 @@ jobs:
             GameData/Kerbcam/kerbcam-shaders.windows
             GameData/Kerbcam/kerbcam-shaders.osx
           retention-days: 30
-
-      # Render FX preview PNGs from the fixtures in ci/kerbcam-shaders/Fixtures.
-      # Each fixture sets up a proxy vessel + camera, applies KerbcamPlasma via
-      # CommandBuffer at AfterForwardAlpha (same hook as runtime), then renders
-      # one frame to PNG. Output PNGs become a CI artifact so we can iterate on
-      # the shader without flying KSP. See RenderFxPreviews.cs for the full
-      # description; placeholder fixtures live alongside it.
-      #
-      # `-nographics` is intentionally OMITTED here: the flag disables Unity's
-      # graphics device entirely, which would make Camera.Render() and
-      # RenderTexture readback no-ops. We wrap in `xvfb-run` so the runner has
-      # a (virtual) display for the GL context.
-      - name: Install xvfb
-        run: sudo apt-get update && sudo apt-get install -y xvfb
-
-      - name: Render FX preview PNGs
-        working-directory: ci/kerbcam-shaders
-        # LLVMpipe fill cost scales with proxy triangle count (one strip per
-        # windward triangle, strip area independent of triangle size). With
-        # the real-part-density nose cone the full fixture × shader × view
-        # matrix takes several minutes; 15 min still fails reasonably fast on
-        # a genuine LLVMpipe hang without killing healthy renders.
-        timeout-minutes: 15
-        run: |
-          xvfb-run -a "$UNITY_EDITOR_PATH" \
-            -batchmode -quit \
-            -projectPath "$(pwd)" \
-            -executeMethod KerbcamCI.RenderFxPreviews.RenderAll \
-            -buildTarget Linux64 \
-            -logFile -
-          echo "--- preview PNGs ---"
-          ls -la Previews/ || true
-
-      # always() so a hung/failed render still uploads everything rendered
-      # before it — a partial artifact beats losing the whole review cycle.
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: fx-previews
-          path: ci/kerbcam-shaders/Previews/
-          retention-days: 30
-          if-no-files-found: warn
-
-      # Regression net for the per-camera Hullcam filter blit (c00fe16):
-      # compiles the plugin's HullcamFilterBlit.cs verbatim (via the
-      # Assets/Editor/SharedHullcamBlit symlink), loads the committed
-      # GameData/Kerbcam/HullcamShaders/shaders.linux MovieTime shader, and
-      # asserts each filter mode's blit output is byte-identical under
-      # hostile writes to the shared static material (plus reticle on/off
-      # policy vs a no-title baseline, plus a control that the legacy
-      # shared-static path visibly flickers). Same xvfb arrangement as the
-      # FX previews: -nographics would no-op Graphics.Blit and ReadPixels.
-      - name: Hullcam filter blit determinism test
-        working-directory: ci/kerbcam-shaders
-        timeout-minutes: 10
-        run: |
-          xvfb-run -a "$UNITY_EDITOR_PATH" \
-            -batchmode -quit \
-            -projectPath "$(pwd)" \
-            -executeMethod KerbcamCI.HullcamBlitDeterminism.RunAll \
-            -buildTarget Linux64 \
-            -logFile -
