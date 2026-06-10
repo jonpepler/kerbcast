@@ -42,6 +42,7 @@ namespace Kerbcam
         private static readonly int _IntensityId = Shader.PropertyToID("_Intensity");
         private static readonly int _WindDirId = Shader.PropertyToID("_WindDirWorld");
         private static readonly int _FxStateId = Shader.PropertyToID("_FxState");
+        private static readonly int _FxDepthMapId = Shader.PropertyToID("_FXDepthMap");
 
         // Intensity used by ForceAtmosphericFx — moderate, flight-like.
         private const float _forcedIntensity = 0.6f;
@@ -107,6 +108,15 @@ namespace Kerbcam
         public void Render(in FxFrameState state)
         {
             if (_material == null || _cam == null || _cb == null) return;
+
+            /* KSP only publishes _FXDepthMap once its FXCamera renders
+               (stock aero FX active). Until then the global is unset and the
+               shader's wrap term samples garbage — the skin pass is pure
+               wrap, so that read as glowing patches popping in and out
+               behind the craft in cold flight. White = far plane = wrap 0;
+               KSP's own SetGlobalTexture simply overwrites this later. */
+            if (Shader.GetGlobalTexture(_FxDepthMapId) == null)
+                Shader.SetGlobalTexture(_FxDepthMapId, Texture2D.whiteTexture);
 
             float intensity = KerbcamSettings.ForceAtmosphericFx
                 ? _forcedIntensity
