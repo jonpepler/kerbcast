@@ -49,6 +49,8 @@ mod imp {
         );
     }
 
+    use super::super::annexb::split_annexb_into;
+    use super::super::convert::rgba_to_nv12_planes;
     use super::super::{EncodeConfig, EncodeError, EncoderBackend, Nal, RawFrame};
 
     pub struct Libva {
@@ -635,15 +637,11 @@ mod imp {
         }
     }
 
-    /// BT.601 limited-range RGB → NV12 conversion. Writes the Y plane into
-    /// `dst.data_mut(0)` and the interleaved UV plane into `dst.data_mut(1)`,
-    /// respecting each plane's `stride`. We do BT.601 (not BT.709) for
-    /// consistency with libavutil's default for SD/low-resolution content;
-    /// camera tiles in the 768×768 range live in that bucket and matching
-    /// the decoder's default avoids a colour-space mismatch in the browser.
+    /// BT.601 limited-range RGB → NV12 conversion into an AVFrame. Extracts
+    /// the Y and UV plane slices + strides from `dst` and delegates the
+    /// pixel math to the shared `convert::rgba_to_nv12_planes` (also used
+    /// by the Media Foundation backend on Windows).
     fn rgba_to_nv12_into(rgba: &[u8], width: u32, height: u32, dst: &mut VideoFrame) {
-        let w = width as usize;
-        let h = height as usize;
         let y_stride = dst.stride(0);
         let uv_stride = dst.stride(1);
         // Snapshot the strides so we can release the immutable borrows
@@ -666,96 +664,12 @@ mod imp {
                 )
             }
         };
-
-        // Y plane: per-pixel.
-        for y in 0..h {
-            let row = y * y_stride;
-            for x in 0..w {
-                let src = (y * w + x) * 4;
-                let r = rgba[src] as i32;
-                let g = rgba[src + 1] as i32;
-                let b = rgba[src + 2] as i32;
-                // BT.601 limited-range Y' coefficients, fixed-point Q8.
-                // Y' = 16 + (66R + 129G + 25B + 128) >> 8
-                let yv = (66 * r + 129 * g + 25 * b + 128) >> 8;
-                y_plane[row + x] = (yv + 16).clamp(0, 255) as u8;
-            }
-        }
-
-        // UV plane: 2x2-averaged chroma, interleaved U then V per sample.
-        let cw = w / 2;
-        let ch = h / 2;
-        for cy in 0..ch {
-            for cx in 0..cw {
-                // Average a 2×2 RGB block to reduce chroma aliasing — same
-                // approach the standard NV12 conversion uses.
-                let mut sr = 0i32;
-                let mut sg = 0i32;
-                let mut sb = 0i32;
-                for dy in 0..2 {
-                    for dx in 0..2 {
-                        let px = (cx * 2 + dx, cy * 2 + dy);
-                        let src = (px.1 * w + px.0) * 4;
-                        sr += rgba[src] as i32;
-                        sg += rgba[src + 1] as i32;
-                        sb += rgba[src + 2] as i32;
-                    }
-                }
-                let r = sr / 4;
-                let g = sg / 4;
-                let b = sb / 4;
-                // BT.601 limited-range U/V coefficients, fixed-point Q8.
-                let u = ((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128;
-                let v = ((112 * r - 94 * g - 18 * b + 128) >> 8) + 128;
-                let row = cy * uv_stride;
-                uv_plane[row + cx * 2] = u.clamp(0, 255) as u8;
-                uv_plane[row + cx * 2 + 1] = v.clamp(0, 255) as u8;
-            }
-        }
-    }
-
-    /// Split an Annex-B bytestream into individual NAL units by scanning for
-    /// 3-byte (`00 00 01`) and 4-byte (`00 00 00 01`) start codes. Each
-    /// emitted `Nal` includes its leading start code so the WebRTC
-    /// packetiser can parse the NAL header byte directly.
-    fn split_annexb_into(bytes: &[u8], out: &mut Vec<Nal>) {
-        // Find start-code offsets, then carve the buffer between consecutive
-        // offsets.
-        let mut starts: Vec<usize> = Vec::new();
-        let mut i = 0;
-        while i + 3 <= bytes.len() {
-            // 4-byte first so we don't double-count.
-            if i + 4 <= bytes.len() && bytes[i..i + 4] == [0, 0, 0, 1] {
-                starts.push(i);
-                i += 4;
-            } else if bytes[i..i + 3] == [0, 0, 1] {
-                starts.push(i);
-                i += 3;
-            } else {
-                i += 1;
-            }
-        }
-        if starts.is_empty() {
-            // No start codes found — emit the entire packet as a single NAL.
-            // h264_vaapi shouldn't produce this, but defensive: better one
-            // possibly-malformed NAL than silently dropping data.
-            if !bytes.is_empty() {
-                out.push(Nal(bytes.to_vec()));
-            }
-            return;
-        }
-        for w in starts.windows(2) {
-            let (a, b) = (w[0], w[1]);
-            out.push(Nal(bytes[a..b].to_vec()));
-        }
-        // Final NAL runs to end of buffer.
-        let last = *starts.last().unwrap();
-        out.push(Nal(bytes[last..].to_vec()));
+        rgba_to_nv12_planes(rgba, width, height, y_plane, y_stride, uv_plane, uv_stride);
     }
 
     #[cfg(test)]
     mod tests {
-        use super::super::super::{EncodeConfig, EncoderBackend, Nal, RawFrame};
+        use super::super::super::{EncodeConfig, EncoderBackend, RawFrame};
         use super::*;
 
         fn cfg() -> EncodeConfig {
@@ -772,34 +686,6 @@ mod imp {
             // valid bitstream from. Not a stress test, just "did anything
             // come out at all".
             vec![0x80; (width * height * 4) as usize]
-        }
-
-        #[test]
-        fn split_annexb_handles_3byte_and_4byte_start_codes() {
-            // Two NALs: first with 4-byte start code, second with 3-byte.
-            // NAL header bytes 0x67 (SPS) and 0x68 (PPS) are valid H.264.
-            let buf = [
-                0x00, 0x00, 0x00, 0x01, 0x67, 0xAA, 0xBB, // NAL 1 (SPS-shaped)
-                0x00, 0x00, 0x01, 0x68, 0xCC, // NAL 2 (PPS-shaped)
-            ];
-            let mut out: Vec<Nal> = Vec::new();
-            split_annexb_into(&buf, &mut out);
-            assert_eq!(out.len(), 2, "expected 2 NALs, got {}", out.len());
-            // NAL header is the first byte after the start code. Mask off
-            // the forbidden + ref_idc bits to read the nal_unit_type.
-            assert_eq!(out[0].0[4] & 0x1F, 7, "first NAL should be SPS (type 7)");
-            assert_eq!(out[1].0[3] & 0x1F, 8, "second NAL should be PPS (type 8)");
-        }
-
-        #[test]
-        fn split_annexb_emits_full_buffer_when_no_start_code() {
-            // h264_vaapi shouldn't do this, but the defensive branch must
-            // still emit data rather than dropping it on the floor.
-            let buf = [0xDE, 0xAD, 0xBE, 0xEF];
-            let mut out: Vec<Nal> = Vec::new();
-            split_annexb_into(&buf, &mut out);
-            assert_eq!(out.len(), 1);
-            assert_eq!(out[0].0, buf);
         }
 
         #[test]

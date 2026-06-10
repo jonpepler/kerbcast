@@ -77,6 +77,25 @@ typeshare = "1"
 # offer a feature gate that splits the codec module from format intra-crate.
 ffmpeg-next = { version = "8", default-features = false, features = ["codec", "format"] }
 
+[target.'cfg(windows)'.dependencies]
+# Tier-2 hardware H.264 encode on Windows via Media Foundation hardware
+# encoder MFTs (vendor-generic: AMD VCN, Intel Quick Sync, NVIDIA NVENC
+# all register one). Microsoft's official bindings; the feature list is
+# the minimal set the mediafoundation backend touches:
+#   MediaFoundation        MFTEnumEx, IMFTransform, ICodecAPI, media
+#                          types, samples
+#   System_Com             CoInitializeEx + CoTaskMemFree
+#   System_Ole / System_Variant   VARIANT plumbing for ICodecAPI values
+#                          (VARIANT is gated on Com+Ole+Variant together)
+#   Foundation             VARIANT_BOOL + HRESULT helpers
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Media_MediaFoundation",
+    "Win32_System_Com",
+    "Win32_System_Ole",
+    "Win32_System_Variant",
+] }
+
 [build-dependencies]
 # Used by build.rs to compile ffi_shim.c on Linux. The shim provides C-side
 # accessors for AVCodecContext fields whose offsets may differ between the

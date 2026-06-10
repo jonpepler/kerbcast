@@ -116,6 +116,45 @@ payload).
 6. Adaptive behaviour: `/dumpLogs` entries carry the kspFps / shedLevel /
    per-camera render-size timeline; `adaptive-shed` messages name a reason.
 
+## Windows Media Foundation smoke test (real hardware only)
+
+The tier-2 `mediafoundation` backend (hardware H.264 encoder MFTs: AMD
+VCN, Intel Quick Sync, NVIDIA NVENC all register one) can only be
+exercised on a real Windows machine with a GPU; CI runners have no
+hardware MFT and correctly fall through to software. To verify on, say,
+the RX 9070 XT box:
+
+```powershell
+# terminal 1
+cd sidecar
+cargo run --example fake_camera -- $env:TEMP\kerbcam-test-rings 101 "NavCam"
+# terminal 2
+cd sidecar
+cargo run --bin kerbcam-sidecar -- --shm-dir $env:TEMP\kerbcam-test-rings
+```
+
+(no `--encoder` flag: auto-select must pick Media Foundation by itself;
+`--encoder mediafoundation` forces it if you need to bypass auto-select
+while debugging.)
+
+Checklist:
+
+1. Open `http://127.0.0.1:8088/` in a browser and subscribe to the
+   camera. The control channel's `hello` reply carries
+   `encoderBackend: "h264 mft (media foundation)"`; with `software` there
+   instead, the probe found no hardware MFT (check GPU drivers).
+2. Sidecar log shows `per-camera encoder initialised` with
+   `backend="h264 mft (media foundation)"`, preceded by a debug-level
+   `Media Foundation encoder initialised` line naming the vendor MFT
+   (e.g. `AMDh264Encoder`) when run with `RUST_LOG=debug`.
+3. The test pattern animates smoothly and `request-keyframe` over the
+   control channel recovers the picture (forces an IDR through
+   CODECAPI_AVEncVideoForceKeyFrame).
+4. No `encode failed` streaks in the log across a few minutes of
+   streaming; a streak ending in `encoder dropped after N consecutive
+   failures` means the MFT wedged and the session fell back to software
+   on reinit, which is worth a bug report with the log attached.
+
 ## Cleanup
 
 ```sh

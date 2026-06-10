@@ -1,19 +1,24 @@
 //! Encoder backend trait + factory + stub implementations per OS tier.
 //!
 //! See the gonogo repo's `local_docs/ocisly_state_and_rebuild.md` §2.3.
-//! Tier-1 is libva (Steam Deck Linux). Tier-2 is VideoToolbox (macOS) and
-//! NVENC (Windows/NVIDIA). Software fallback (OpenH264 / x264) ships always
-//! to guarantee any host can encode at reduced quality.
+//! Tier-1 is libva (Steam Deck Linux). Tier-2 is VideoToolbox (macOS),
+//! NVENC (Windows/NVIDIA, stub) and Media Foundation (Windows, vendor-
+//! generic hardware MFTs). Software fallback (OpenH264 / x264) ships
+//! always to guarantee any host can encode at reduced quality.
 
 use clap::ValueEnum;
 use thiserror::Error;
 
+mod annexb;
+mod convert;
 mod libva;
+mod mediafoundation;
 mod nvenc;
 mod software;
 mod videotoolbox;
 
 pub use libva::Libva;
+pub use mediafoundation::MediaFoundation;
 pub use nvenc::Nvenc;
 pub use software::Software;
 pub use videotoolbox::VideoToolbox;
@@ -26,6 +31,7 @@ pub enum EncoderChoice {
     Libva,
     Videotoolbox,
     Nvenc,
+    Mediafoundation,
     Software,
 }
 
@@ -38,6 +44,7 @@ pub fn select_backend(choice: EncoderChoice) -> Box<dyn EncoderBackend> {
         EncoderChoice::Libva => Box::new(Libva::new()),
         EncoderChoice::Videotoolbox => Box::new(VideoToolbox::new()),
         EncoderChoice::Nvenc => Box::new(Nvenc::new()),
+        EncoderChoice::Mediafoundation => Box::new(MediaFoundation::new()),
         EncoderChoice::Software => Box::new(Software::new()),
     }
 }
@@ -116,12 +123,17 @@ pub trait EncoderBackend: Send {
 }
 
 /// Pick the best available backend for the current platform. Tier-1 first
-/// (libva on Linux), tier-2 next (VideoToolbox / NVENC), software last.
+/// (libva on Linux), tier-2 next (VideoToolbox / NVENC / Media
+/// Foundation), software last. Media Foundation sits after NVENC so a
+/// future NVIDIA-specific path still wins where present, while
+/// vendor-generic hardware MF encode beats software everywhere else.
+/// Keep this candidate list in lockstep with `selected_backend_name`.
 pub fn auto_select() -> Box<dyn EncoderBackend> {
-    let candidates: [Box<dyn EncoderBackend>; 4] = [
+    let candidates: [Box<dyn EncoderBackend>; 5] = [
         Box::new(Libva::new()),
         Box::new(VideoToolbox::new()),
         Box::new(Nvenc::new()),
+        Box::new(MediaFoundation::new()),
         Box::new(Software::new()),
     ];
     for b in candidates {
@@ -161,12 +173,14 @@ pub fn resolve_bitrate_bps(explicit: Option<u32>, backend: &dyn EncoderBackend) 
 
 /// Return the name of the backend that `auto_select` would choose, without
 /// allocating a full encoder. Probe results are cached via OnceLock so this
-/// is cheap after the first call.
+/// is cheap after the first call. Keep this candidate list in lockstep
+/// with `auto_select`.
 pub fn selected_backend_name() -> &'static str {
-    let candidates: [Box<dyn EncoderBackend>; 4] = [
+    let candidates: [Box<dyn EncoderBackend>; 5] = [
         Box::new(Libva::new()),
         Box::new(VideoToolbox::new()),
         Box::new(Nvenc::new()),
+        Box::new(MediaFoundation::new()),
         Box::new(Software::new()),
     ];
     for b in candidates {

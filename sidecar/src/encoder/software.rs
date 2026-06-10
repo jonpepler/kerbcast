@@ -1,8 +1,8 @@
 //! Software H.264 encoder via Cisco OpenH264 (bundled source, no system
 //! deps). The "always available" fallback in the EncoderBackend tier
 //! ladder — every host can encode here, just at lower performance than
-//! the hardware backends (libva on Linux, VideoToolbox on macOS, NVENC
-//! on Windows).
+//! the hardware backends (libva on Linux, VideoToolbox on macOS, Media
+//! Foundation on Windows).
 //!
 //! Input is RGBA8888 (4 bytes/pixel, top-down, tightly packed) per the
 //! `RawFrame` contract. We convert to YUV420P (I420) for OpenH264, which
