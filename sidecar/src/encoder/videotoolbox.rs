@@ -33,6 +33,10 @@ impl EncoderBackend for VideoToolbox {
         false
     }
 
+    fn is_hardware(&self) -> bool {
+        true
+    }
+
     fn init(&mut self, _cfg: EncodeConfig) -> Result<(), EncodeError> {
         Err(EncodeError::Unavailable)
     }

@@ -93,6 +93,13 @@ pub trait EncoderBackend: Send {
     /// at `--encoder=auto` enumeration; backends with `false` are skipped.
     fn is_available(&self) -> bool;
 
+    /// True when encoding runs on dedicated hardware (VAAPI, NVENC,
+    /// VideoToolbox) rather than the CPU. Drives the default bitrate:
+    /// hardware sessions default higher than the software fallback.
+    /// Deliberately no default impl, so every new backend has to
+    /// classify itself.
+    fn is_hardware(&self) -> bool;
+
     /// Allocate the encoder session for `cfg`. Must be called before `encode`.
     fn init(&mut self, cfg: EncodeConfig) -> Result<(), EncodeError>;
 
@@ -127,6 +134,31 @@ pub fn auto_select() -> Box<dyn EncoderBackend> {
     Box::new(Software::new())
 }
 
+/// Default encode bitrate (bps) for hardware backends when the operator
+/// passes no `--bitrate-bps`. Hardware encode is cheap enough per frame
+/// that we can spend the extra bits on picture quality.
+pub const DEFAULT_HARDWARE_BITRATE_BPS: u32 = 4_000_000;
+
+/// Default encode bitrate (bps) for the software fallback. The
+/// long-standing conservative default the CPU budget was tuned around.
+pub const DEFAULT_SOFTWARE_BITRATE_BPS: u32 = 1_500_000;
+
+/// Backend-classified default bitrate: hardware backends get headroom,
+/// the software fallback stays conservative.
+pub fn default_bitrate_bps(backend: &dyn EncoderBackend) -> u32 {
+    if backend.is_hardware() {
+        DEFAULT_HARDWARE_BITRATE_BPS
+    } else {
+        DEFAULT_SOFTWARE_BITRATE_BPS
+    }
+}
+
+/// Resolve the effective session bitrate: an explicit operator value
+/// always wins; otherwise the default derives from the selected backend.
+pub fn resolve_bitrate_bps(explicit: Option<u32>, backend: &dyn EncoderBackend) -> u32 {
+    explicit.unwrap_or_else(|| default_bitrate_bps(backend))
+}
+
 /// Return the name of the backend that `auto_select` would choose, without
 /// allocating a full encoder. Probe results are cached via OnceLock so this
 /// is cheap after the first call.
@@ -143,4 +175,47 @@ pub fn selected_backend_name() -> &'static str {
         }
     }
     Software::new().name()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn classification_matches_backend_tier() {
+        assert!(!Software::new().is_hardware());
+        assert!(Libva::new().is_hardware());
+        assert!(VideoToolbox::new().is_hardware());
+        assert!(Nvenc::new().is_hardware());
+    }
+
+    #[test]
+    fn software_backend_defaults_to_the_conservative_bitrate() {
+        assert_eq!(
+            default_bitrate_bps(&Software::new()),
+            DEFAULT_SOFTWARE_BITRATE_BPS
+        );
+        assert_eq!(resolve_bitrate_bps(None, &Software::new()), 1_500_000);
+    }
+
+    #[test]
+    fn hardware_backends_default_higher() {
+        // Classification is static per type, so no real hardware (or even
+        // an available backend) is needed here.
+        assert_eq!(resolve_bitrate_bps(None, &Libva::new()), 4_000_000);
+        assert_eq!(resolve_bitrate_bps(None, &VideoToolbox::new()), 4_000_000);
+        assert_eq!(resolve_bitrate_bps(None, &Nvenc::new()), 4_000_000);
+    }
+
+    #[test]
+    fn explicit_bitrate_wins_over_any_backend_default() {
+        assert_eq!(
+            resolve_bitrate_bps(Some(2_000_000), &Libva::new()),
+            2_000_000
+        );
+        assert_eq!(
+            resolve_bitrate_bps(Some(2_000_000), &Software::new()),
+            2_000_000
+        );
+    }
 }

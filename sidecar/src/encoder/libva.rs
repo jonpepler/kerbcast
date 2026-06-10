@@ -287,6 +287,10 @@ mod imp {
             Self::probe()
         }
 
+        fn is_hardware(&self) -> bool {
+            true
+        }
+
         fn init(&mut self, cfg: EncodeConfig) -> Result<(), EncodeError> {
             if cfg.width == 0 || cfg.height == 0 {
                 return Err(EncodeError::Invalid("zero-sized dimensions".into()));
@@ -957,6 +961,12 @@ mod imp {
 
         fn is_available(&self) -> bool {
             false
+        }
+
+        fn is_hardware(&self) -> bool {
+            // The stub still classifies as hardware so bitrate defaults
+            // stay consistent with the real Linux impl.
+            true
         }
 
         fn init(&mut self, _cfg: EncodeConfig) -> Result<(), EncodeError> {

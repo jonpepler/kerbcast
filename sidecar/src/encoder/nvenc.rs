@@ -30,6 +30,10 @@ impl EncoderBackend for Nvenc {
         false
     }
 
+    fn is_hardware(&self) -> bool {
+        true
+    }
+
     fn init(&mut self, _cfg: EncodeConfig) -> Result<(), EncodeError> {
         Err(EncodeError::Unavailable)
     }

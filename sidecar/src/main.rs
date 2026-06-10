@@ -23,7 +23,9 @@ use tracing::{info, warn};
 use webrtc::media::Sample;
 
 use kerbcam_sidecar::cameras::{CameraRegistry, CameraState};
-use kerbcam_sidecar::encoder::{select_backend, EncodeConfig, EncoderChoice, RawFrame, Software};
+use kerbcam_sidecar::encoder::{
+    resolve_bitrate_bps, select_backend, EncodeConfig, EncoderChoice, RawFrame, Software,
+};
 use kerbcam_sidecar::protocol::{
     AdaptiveShedPayload, CameraLifecycle, CameraState as ProtocolCameraState,
     CameraStateChangedPayload, ServerMessage, SettingsStatePayload,
@@ -66,8 +68,12 @@ struct Cli {
     #[arg(long, default_value_t = 30)]
     fps: u32,
 
-    #[arg(long, default_value_t = 1_500_000)]
-    bitrate_bps: u32,
+    /// Target encode bitrate in bits per second. When omitted, the default
+    /// derives from the selected encoder backend: hardware backends
+    /// (libva/videotoolbox/nvenc) get 4 Mbps, the software fallback stays
+    /// at 1.5 Mbps.
+    #[arg(long)]
+    bitrate_bps: Option<u32>,
 
     /// Polling interval (ms) for the consumer loop while at least one
     /// peer is subscribed. When no peer is subscribed the loop sleeps for
@@ -118,6 +124,23 @@ async fn main() -> Result<()> {
         "kerbcam sidecar starting",
     );
 
+    // Resolve the effective bitrate once, here: AppState and the consume
+    // loop both take the resolved value, so nothing downstream needs to
+    // know whether the operator passed --bitrate-bps or not.
+    let backend_for_default = select_backend(cli.encoder);
+    let bitrate_bps = resolve_bitrate_bps(cli.bitrate_bps, backend_for_default.as_ref());
+    if cli.bitrate_bps.is_some() {
+        info!(bitrate_bps, "bitrate set explicitly via --bitrate-bps");
+    } else {
+        info!(
+            bitrate_bps,
+            backend = backend_for_default.name(),
+            hardware = backend_for_default.is_hardware(),
+            "no --bitrate-bps flag; default chosen from the encoder backend",
+        );
+    }
+    drop(backend_for_default);
+
     let ring_cfg = MmapRingConfig {
         slot_count: cli.slot_count,
         max_width: cli.max_width,
@@ -138,7 +161,7 @@ async fn main() -> Result<()> {
         peers: peers.clone(),
         encoder_choice: cli.encoder,
         fps: cli.fps,
-        bitrate_bps: cli.bitrate_bps,
+        bitrate_bps,
     };
 
     let http_listener = TcpListener::bind(cli.http_bind).await.map_err(|e| {
@@ -175,7 +198,7 @@ async fn main() -> Result<()> {
         Duration::from_millis(cli.idle_interval_ms),
         Duration::from_secs(1), // rescan cadence
         cli.fps,
-        cli.bitrate_bps,
+        bitrate_bps,
     );
 
     // SIGTERM is what the plugin's process kill, systemd and container
@@ -680,5 +703,36 @@ async fn encode_and_fan_out(
     drop(tracks);
     if pruned > 0 {
         cam.release(pruned);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kerbcam_sidecar::encoder::{Nvenc, Software};
+
+    #[test]
+    fn bitrate_flag_absent_is_distinguishable_from_explicit() {
+        // No clap default: an omitted flag must parse as None so the
+        // backend-aware default can kick in downstream.
+        let absent = Cli::try_parse_from(["kerbcam-sidecar"]).unwrap();
+        assert_eq!(absent.bitrate_bps, None);
+
+        let explicit =
+            Cli::try_parse_from(["kerbcam-sidecar", "--bitrate-bps", "1500000"]).unwrap();
+        assert_eq!(explicit.bitrate_bps, Some(1_500_000));
+    }
+
+    #[test]
+    fn explicit_flag_wins_regardless_of_backend_class() {
+        let cli = Cli::try_parse_from(["kerbcam-sidecar", "--bitrate-bps", "2000000"]).unwrap();
+        assert_eq!(
+            resolve_bitrate_bps(cli.bitrate_bps, &Nvenc::new()),
+            2_000_000
+        );
+        assert_eq!(
+            resolve_bitrate_bps(cli.bitrate_bps, &Software::new()),
+            2_000_000
+        );
     }
 }

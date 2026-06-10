@@ -57,6 +57,10 @@ impl EncoderBackend for Software {
         true
     }
 
+    fn is_hardware(&self) -> bool {
+        false
+    }
+
     fn init(&mut self, cfg: EncodeConfig) -> Result<(), EncodeError> {
         if cfg.width == 0 || cfg.height == 0 {
             return Err(EncodeError::Invalid("zero-sized dimensions".into()));
@@ -215,6 +219,11 @@ mod tests {
     #[test]
     fn always_available() {
         assert!(Software::new().is_available());
+    }
+
+    #[test]
+    fn classified_as_software() {
+        assert!(!Software::new().is_hardware());
     }
 
     #[test]
