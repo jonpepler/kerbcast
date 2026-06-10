@@ -122,6 +122,7 @@
     <Compile Remove="MmapFrameRing.Tests/**/*.cs" />
     <Compile Remove="PhaseTimings.Tests/**/*.cs" />
     <Compile Remove="SettingsLayer.Tests/**/*.cs" />
+    <Compile Remove="QualityClamp.Tests/**/*.cs" />
   </ItemGroup>
 
 </Project>

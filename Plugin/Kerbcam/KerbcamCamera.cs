@@ -520,15 +520,17 @@ namespace Kerbcam
 
         /// <summary>
         /// Update the operator-set ceiling for render size. Adaptive
-        /// downscale can render below this; never above. Currently only
-        /// settable at construction; runtime API for resolution is a
-        /// future addition.
+        /// downscale and the viewer quality clamp can render below this;
+        /// never above. Currently only settable at construction; runtime
+        /// API for resolution is a future addition.
         /// </summary>
         public void SetOperatorRenderSize(int width, int height)
         {
             OperatorWidth = width;
             OperatorHeight = height;
-            SetRenderSize(width, height);
+            // Recompute through the one quality path so any in-effect shed
+            // level / viewer clamp scales from the new ceiling.
+            ApplyEffectiveQuality();
         }
 
         private static void DumpModelTransforms(Part part)
@@ -959,21 +961,67 @@ namespace Kerbcam
 
         public static int MaxShedLevel => ShedTable.Length - 1;
 
+        // The two quality inputs that compose into the effective render
+        // size. _shedLevel is owned by the adaptive machinery (KerbcamCore's
+        // AdaptiveQualityController via ApplyAutoShed); _viewerLevel by the
+        // viewer's quality preset (control block via PollControlFile). They
+        // never touch each other — ApplyEffectiveQuality min()s their scales.
+        private int _shedLevel;
+        private int _viewerLevel;
+
+        /// <summary>Currently-applied viewer quality level (index into
+        /// QualityClamp.ViewerScales; 0 = no viewer clamp).</summary>
+        public int ViewerLevel => _viewerLevel;
+
+        /// <summary>
+        /// Apply an adaptive-controller quality level. Stores the level and
+        /// recomputes the effective size/layers; the viewer clamp composes
+        /// via min() inside ApplyEffectiveQuality, so a demote always wins
+        /// over a viewer target and a promote hands control back to it.
+        /// </summary>
         public void ApplyAutoShed(int level)
         {
             if (level < 0) level = 0;
             if (level > MaxShedLevel) level = MaxShedLevel;
-            var (resScale, drop) = ShedTable[level];
+            _shedLevel = level;
+            ApplyEffectiveQuality();
+        }
 
-            int targetW = MakeEven((int)(OperatorWidth * resScale));
-            int targetH = MakeEven((int)(OperatorHeight * resScale));
-            if (targetW < 2) targetW = 2;
-            if (targetH < 2) targetH = 2;
+        /// <summary>
+        /// Apply a viewer-requested quality clamp (sidecar control block's
+        /// viewer_level; 0 = full / no clamp). Only ever lowers resolution
+        /// below the operator ceiling — layers are untouched (those belong
+        /// to the operator mask and the shed cascade) and the adaptive
+        /// controller's state is never read or written here.
+        /// </summary>
+        public void SetViewerQualityLevel(int level)
+        {
+            int clamped = QualityClamp.ClampViewerLevel(level);
+            if (_viewerLevel == clamped) return;
+            _viewerLevel = clamped;
+            Debug.Log($"[Kerbcam] cam={FlightId} viewer quality level → {clamped} "
+                + $"(scale {QualityClamp.ViewerScales[clamped]:F2})");
+            ApplyEffectiveQuality();
+        }
+
+        // THE single resolution-change path. Every quality input (operator
+        // ceiling changes, adaptive shed moves, viewer clamp moves) funnels
+        // here, so the pooled-RT SetRenderSize mechanism is the only way
+        // render dims ever change. effective = min(ceiling, shed, viewer).
+        private void ApplyEffectiveQuality()
+        {
+            var (resScale, drop) = ShedTable[_shedLevel];
+            float scale = QualityClamp.EffectiveScale(resScale, _viewerLevel);
+
+            int targetW = QualityClamp.ScaleDimension(OperatorWidth, scale);
+            int targetH = QualityClamp.ScaleDimension(OperatorHeight, scale);
             if (targetW != RenderWidth || targetH != RenderHeight)
             {
                 SetRenderSize(targetW, targetH);
             }
 
+            // Layer dropping stays purely shed-driven: viewers can lower
+            // resolution but never which layers render.
             var targetLayers = _operatorLayers & ~drop;
             if (_layers != targetLayers)
             {
@@ -981,8 +1029,6 @@ namespace Kerbcam
                 ApplyLayers();
             }
         }
-
-        private static int MakeEven(int v) => v - (v & 1);
 
         // Cached list of scaled-body renderers (one per celestial body that has
         // one). Built once on first scaled render; bodies are fixed for the
@@ -1074,6 +1120,14 @@ namespace Kerbcam
                     SetOperatorLayers((CameraLayers)snap.LayersMask);
                     Debug.Log($"[Kerbcam] cam={FlightId} operator layers → {_operatorLayers}");
                 }
+
+                // Viewer quality clamp. Absent means auto (level 0 — no
+                // clamp); SetViewerQualityLevel no-ops when unchanged, so
+                // re-published snapshots are free. Applies even when the
+                // AdaptiveQuality flag is off: the viewer clamp rides the
+                // same ApplyEffectiveQuality path with _shedLevel pinned 0.
+                SetViewerQualityLevel(
+                    snap.ViewerLevel.HasValue ? (int)snap.ViewerLevel.Value : 0);
 
                 // Absolute FoV is applied only when its seq changes (see
                 // _lastFovSeq) so the stale fov re-published on unrelated writes /
