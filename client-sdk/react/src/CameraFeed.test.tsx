@@ -234,6 +234,21 @@ describe("CameraFeed - camera selection", () => {
     ]);
   });
 
+  it("caps the menu height and scrolls instead of overflowing", async () => {
+    const many = Array.from({ length: 20 }, (_, i) =>
+      makeCamera({ flightId: 100 + i, cameraName: `Cam ${String(i + 1).padStart(2, "0")}` }),
+    );
+    const { client } = await buildConnectedSource(many);
+
+    renderFeed(client, { flightId: null });
+
+    fireEvent.click(screen.getByRole("button", { name: /cam 01/i }));
+
+    const style = getComputedStyle(screen.getByRole("menu"));
+    expect(style.overflowY).toBe("auto");
+    expect(style.maxHeight).toBe("min(40vh, 300px)");
+  });
+
   it("disambiguates same-named cameras by part title", async () => {
     const { client } = await buildConnectedSource([
       makeCamera({ flightId: 42, cameraName: "NavCam", vesselName: "Kerbal X", partTitle: "NavCam" }),

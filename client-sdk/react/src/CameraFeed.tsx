@@ -1083,17 +1083,22 @@ const StepButtons = styled.div`
 const CameraMenu = styled.div`
   margin-top: 4px;
   max-width: 260px;
+  /* Cap the list so a long camera roster scrolls instead of spilling past
+     the tile/viewport. 40vh keeps it sane on short windows; 300px on tall. */
+  max-height: min(40vh, 300px);
   display: flex;
   flex-direction: column;
   background: rgba(0, 0, 0, 0.85);
   border: 1px solid rgba(255, 255, 255, 0.3);
   border-radius: 4px;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
 `;
 
 const CameraMenuItem = styled.button<{ $selected: boolean }>`
   display: block;
   width: 100%;
+  flex-shrink: 0;
   padding: 6px 8px;
   text-align: left;
   background: ${(p) =>
