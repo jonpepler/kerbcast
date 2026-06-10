@@ -477,3 +477,51 @@ jobs:
             Plugin/obj/Release/Kerbcam.dll \
             --title "kerbcam ${TAG}" \
             --notes-file release-notes.md
+
+      # Kerbcam.ckan pins an exact version + download URL + hashes (users
+      # install via manual .ckan import while the repo stays off the public
+      # CKAN index). Hand-pinning went stale within a day of v0.18.0, so
+      # re-pin from the zip we just published. Runs on main, not the tag:
+      # the pin must land where users fetch the raw file from.
+      - name: Re-pin Kerbcam.ckan on main
+        if: startsWith(github.ref_name, 'v')
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          ZIP="${{ env.RELEASE_ZIP }}"
+          SIZE="$(stat -c%s "$ZIP")"
+          SHA1="$(sha1sum "$ZIP" | awk '{print toupper($1)}')"
+          SHA256="$(sha256sum "$ZIP" | awk '{print toupper($1)}')"
+
+          git fetch origin main
+          # The assemble step overwrites tracked files (built shader bundles)
+          # in the working tree; nothing there is needed anymore, discard.
+          git checkout -f -B main origin/main
+
+          python3 - "$TAG" "$SIZE" "$SHA1" "$SHA256" <<'EOF'
+          import json
+          import sys
+          tag, size, sha1, sha256 = sys.argv[1:5]
+          path = "Kerbcam.ckan"
+          with open(path) as f:
+              m = json.load(f)
+          m["version"] = tag.lstrip("v")
+          m["download"] = [
+              f"https://github.com/jonpepler/kerbcam/releases/download/{tag}/kerbcam-{tag}.zip"
+          ]
+          m["download_size"] = int(size)
+          m["download_hash"] = {"sha1": sha1, "sha256": sha256}
+          with open(path, "w") as f:
+              json.dump(m, f, indent=4)
+              f.write("\n")
+          EOF
+
+          if git diff --quiet Kerbcam.ckan; then
+            echo "Kerbcam.ckan already pins ${TAG}; nothing to do"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Kerbcam.ckan
+          git commit -m "chore(ckan): pin ${TAG}"
+          git push origin main
