@@ -168,8 +168,13 @@ namespace Kerbcam
                 // fires for mod DLLs (KSP loads them post-init), so the
                 // updater MonoBehaviour that pumps OpenGLAsyncReadbackRequest
                 // never auto-attaches. Spawn it ourselves on a dedicated
-                // DontDestroyOnLoad GameObject.
-                if (AsyncReadbackUpdater.instance == null)
+                // DontDestroyOnLoad GameObject. OpenGLCore only, mirroring the
+                // vendor's own auto-spawn gate: on D3D11/Metal the wrapper
+                // uses Unity's native AsyncGPUReadback and the pump's Update
+                // P/Invokes a native lib we only ship for Linux, throwing
+                // DllNotFoundException every frame.
+                if (SystemInfo.graphicsDeviceType == UnityEngine.Rendering.GraphicsDeviceType.OpenGLCore
+                    && AsyncReadbackUpdater.instance == null)
                 {
                     _readbackUpdaterGo = new GameObject("Kerbcam_AsyncReadbackUpdater");
                     UnityEngine.Object.DontDestroyOnLoad(_readbackUpdaterGo);
