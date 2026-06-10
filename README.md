@@ -5,7 +5,7 @@ A from-scratch successor to OCISLY for streaming Kerbal Space Program camera fee
 ## What it does
 
 - Streams HullcamVDS camera sources to a browser via the bundled kerbcam web UI or through [@jonpepler/kerbcam](https://github.com/jonpepler/kerbcam/pkgs/npm/kerbcam), a TypeScript SDK
-- Supports performance tweak options to keep fps reasonable through degrading resolution, shedding render layers, and adding 'realistic' noise at sour era ce
+- Supports performance tweak options to keep fps reasonable through degrading resolution, shedding render layers, and adding 'realistic' noise at source
 - Honours each camera's `cameraMode` so B&W / CRT / night-vision variants look like they do in the in-game Hullcam GUI
 - Supports a data channel for sending control data (eg zoom)
 - Fixes and patches long term issues with OCISLY and Hullcam on Linux
@@ -30,6 +30,8 @@ Issues and PRs are welcome, particularly if you'd like to 'adopt' macOS or Windo
 ## Install
 
 Grab the latest `kerbcam-*.zip` from the [releases page](https://github.com/jonpepler/kerbcam/releases) and follow the install steps in that release's notes. The steps live with each release rather than here because they can change between versions; the release notes are always correct for the build you download. You'll also need [Hullcam VDS Continued](https://github.com/linuxgurugamer/HullcamVDSContinued).
+
+For the longer version — multi-device setup, configuration, what's in the bundle — see [docs/INSTALL.md](docs/INSTALL.md). If something doesn't work, [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) walks the common failures.
 
 ## Differences to OCISLY
 
@@ -65,7 +67,7 @@ The idle row (0 connected) shows that cameras attached to a vessel cost nothing 
 - [ ] Publish NetKAN metadata to CKAN's indexer
 - [ ] Create SpaceDock listing
 - [ ] KSP Forums post
-- [ ] User-facing install and quickstart docs
+- [x] User-facing install and quickstart docs
 
 ## Future work
 
