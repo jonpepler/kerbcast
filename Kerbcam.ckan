@@ -4,7 +4,7 @@
     "name": "kerbcam",
     "abstract": "Streams KSP Hullcam VDS camera feeds to a browser over WebRTC (hardware H.264).",
     "author": "Jon Pepler",
-    "version": "0.18.0",
+    "version": "0.18.1",
     "ksp_version_min": "1.12.0",
     "ksp_version_max": "1.12.99",
     "license": "CC-BY-NC-SA-4.0",
@@ -26,12 +26,12 @@
         }
     ],
     "download": [
-        "https://github.com/jonpepler/kerbcam/releases/download/v0.18.0/kerbcam-v0.18.0.zip"
+        "https://github.com/jonpepler/kerbcam/releases/download/v0.18.1/kerbcam-v0.18.1.zip"
     ],
-    "download_size": 64804112,
+    "download_size": 64805831,
     "download_hash": {
-        "sha1": "3F387CA755A344295F1B97D32B3ED722E243C6FD",
-        "sha256": "82024B8CF4833B8114468B9EEB17BFF8A99FAC1797C3BD560F9AE5E8954F3187"
+        "sha1": "8C9B7F196EF2D8077C917D9C22233492E807D88D",
+        "sha256": "1E3FC5697CAE2D805D3D9064646023BAC6CE268ECC3E96606CEA46459618E2C5"
     },
     "download_content_type": "application/zip"
 }
