@@ -460,6 +460,43 @@ mod tests {
         }
     }
 
+    /// Cross-language layout contract: the committed fixture is written by
+    /// the C# plugin writer (Plugin/MmapFrameRing.Tests `--write-fixture`,
+    /// which also asserts regen == committed on every run). Reading it back
+    /// exactly here means the two language sides of the ring layout cannot
+    /// silently drift. Copied to a temp path first — open() maps read-write.
+    #[test]
+    fn csharp_written_fixture_reads_back_exactly() {
+        let fixture = concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/frame_ring_v1.ring");
+        let path = tmp_path("csfixture");
+        fs::copy(fixture, &path).unwrap();
+
+        let cfg = MmapRingConfig {
+            slot_count: 4,
+            max_width: 32,
+            max_height: 18,
+        };
+        let ring = MmapFrameRing::open(&path, cfg).unwrap();
+        let frame = ring.latest().unwrap().expect("fixture must contain frames");
+
+        // Second of the two fixture frames: pattern (i*11+29)&0xFF @ 1235.5.
+        assert_eq!(frame.width, 32);
+        assert_eq!(frame.height, 18);
+        assert_eq!(frame.stride_bytes, 32 * 4);
+        assert_eq!(frame.sequence, 2);
+        assert_eq!(frame.capture_ts_ms, 1235.5);
+        let want: Vec<u8> = (0..32usize * 18 * 4)
+            .map(|i| ((i * 11 + 29) & 0xFF) as u8)
+            .collect();
+        assert_eq!(
+            frame.pixels, want,
+            "latest frame pixels must match the C# writer's second pattern"
+        );
+
+        drop(ring);
+        fs::remove_file(&path).ok();
+    }
+
     #[test]
     fn create_then_latest_is_none_until_produced() {
         let path = tmp_path("empty");

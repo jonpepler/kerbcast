@@ -18,4 +18,12 @@
     <Compile Include="../Kerbcam/MmapFrameRing.cs" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- The cross-language golden ring; the Rust reader test consumes the
+         same file. Copied next to the binary for the regen comparison. -->
+    <None Include="../../sidecar/testdata/frame_ring_v1.ring"
+          Link="frame_ring_v1.ring"
+          CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>
