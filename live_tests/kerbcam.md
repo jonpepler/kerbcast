@@ -19,9 +19,29 @@ producing an animated test pattern, exactly like the plugin's writer side.
 Run several with distinct flight IDs for multi-camera tests. Ring geometry
 must match the sidecar defaults (4 slots, 1024×576 max).
 
-Against a real KSP install, the sidecar is already running during any flight
-scene; the default endpoint is `127.0.0.1:8088` (settings.cfg `BindAddress` /
-`Port`).
+Against a real KSP install, the sidecar runs once per KSP session: the first
+flight scene spawns it and it stays up across scene changes, reverts, and
+trips through the KSC until KSP exits (KerbcamSidecarHost owns the process;
+the per-flight KerbcamCore only registers/unregisters cameras). The default
+endpoint is `127.0.0.1:8088` (settings.cfg `BindAddress` / `Port`).
+
+### Session lifecycle / orphan protection
+
+- A scene change shows up in the sidecar log as `camera ring removed (normal
+  teardown)` for every camera, then `camera ring attached` when the next
+  flight loads. Peers are NOT torn down; each gets a fresh `camera-snapshot`
+  push on any ring churn, and slots still bound to a re-attached flight id
+  log `re-attached camera rebound to surviving peer subscriptions` and
+  resume streaming without a browser-side re-subscribe.
+- The plugin touches `<shm-dir>/global.heartbeat` ~1Hz for the whole
+  session. Once that file has been seen, a stale mtime beyond
+  `--heartbeat-timeout-secs` (default 90; 0 disables) on two consecutive
+  checks makes the sidecar log `plugin heartbeat stale` and exit: that is
+  the KSP-crashed-without-killing-us path. The no-KSP harness above never
+  writes the file, so the watch never arms there.
+- A sidecar crash mid-session is relaunched by the plugin with growing
+  backoff (5s, 10s, ...; 5 attempts, budget refunded after 60s of healthy
+  uptime); entering a flight scene relaunches immediately.
 
 ## HTTP endpoints
 

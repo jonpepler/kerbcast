@@ -34,7 +34,7 @@ KSP (Steam Deck) ── plugin DLL ──┐ shared-mem ring ┌── sidecar (
                                   └──── ◇ ─────────┘
 ```
 
-One mod download: the plugin and the per-rid sidecar binary ship together in `GameData/Kerbcam/`. The plugin auto-launches the sidecar on `Awake()`, kills it on `OnDestroy()`. From the user's perspective: drop in GameData, start KSP, it works.
+One mod download: the plugin and the per-rid sidecar binary ship together in `GameData/Kerbcam/`. The sidecar runs once per KSP session: the session-persistent KerbcamSidecarHost spawns it on the first flight scene, keeps it alive across scene changes (scene exits are just camera-ring churn), and kills it on game exit; a ~1Hz heartbeat file lets the sidecar self-exit if KSP dies hard. From the user's perspective: drop in GameData, start KSP, it works.
 
 ## Repo layout
 

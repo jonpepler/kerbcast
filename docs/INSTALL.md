@@ -59,8 +59,10 @@ GameData/Kerbcam/
 └── LICENSE
 ```
 
-The plugin launches the right sidecar for your OS automatically when the
-flight scene loads and stops it when you leave. Nothing else to run.
+The plugin launches the right sidecar for your OS automatically the first
+time a flight scene loads, keeps it running for the whole KSP session (scene
+changes, reverts, and trips through the KSC do not restart it, and connected
+browsers stay connected), and stops it when KSP exits. Nothing else to run.
 
 ## Configuration
 
@@ -86,6 +88,18 @@ Precedence is per key: the user file wins over the shipped file, and any key
 absent from both uses the built-in default. The release zip never contains
 `PluginData/`, so the file persists through reinstalls. KSP.log reports which
 of the two files were loaded at flight-scene start.
+
+### When settings changes apply
+
+The sidecar runs once per KSP session, so settings split into two groups:
+
+- **Per KSP launch:** `BindAddress`, `Port`, `Width`, `Height`, `BitrateBps`,
+  `AutoSpawnSidecar`. These are passed to the sidecar when it starts, so
+  editing them mid-game does nothing until you restart KSP. The plugin logs a
+  `[Kerbcam]` warning if it notices they changed while a sidecar is running.
+- **Per flight-scene entry:** everything else (camera layer/FX/resolution
+  overrides, adaptive-performance ceilings, filter toggles). Re-read every
+  time a flight loads, as before.
 
 ### Adaptive quality (opt-in)
 
