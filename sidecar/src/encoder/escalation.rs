@@ -1,0 +1,295 @@
+//! Reactive per-camera escalation from hardware to software encode.
+//!
+//! Consumer GPUs cap concurrent hardware encode sessions, and behaviour
+//! at the cap varies by driver. The mode observed in the field (AMD RX
+//! 9070 XT, 13 cameras, Media Foundation): sessions past the cap init
+//! cleanly, grant input credits and accept frames forever, but never
+//! emit a single NAL. No error ever surfaces, so the consume loop's
+//! error-streak reinit never fires and the WebRTC track stays black.
+//!
+//! `SessionHealth` is the per-camera state machine that catches this:
+//! a session that stays silent for `SILENT_SESSION_FRAME_LIMIT` encode
+//! calls (or gets dropped by the error-streak path) counts as one
+//! strike; at `SESSION_STRIKE_LIMIT` consecutive strikes the camera is
+//! pinned to the software fallback. Escalation is per camera (the
+//! cameras that won hardware sessions keep them) and purely reactive:
+//! no upfront vendor session-cap detection.
+
+use super::{select_backend, EncoderBackend, EncoderChoice, Software};
+
+/// Encode calls a hardware session may answer with zero NALs before it
+/// is declared silent and dropped. A healthy hardware encoder emits
+/// within a frame or two of the first input; ~3 s at 30 fps is patient
+/// enough for any real pipelining depth.
+pub const SILENT_SESSION_FRAME_LIMIT: u32 = 90;
+
+/// Consecutive dropped sessions (silent or persistently erroring)
+/// before the camera's encode is pinned to the software fallback.
+pub const SESSION_STRIKE_LIMIT: u32 = 2;
+
+/// What the consume loop must do after recording a session-health event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionVerdict {
+    /// Session still within patience; keep feeding it.
+    Continue,
+    /// Drop the session; the next frame reinitialises on whatever
+    /// backend `select` picks.
+    DropSession,
+    /// Drop the session; this camera is software-only from now on.
+    /// Returned exactly once per camera; gates the operator warn.
+    EscalateToSoftware,
+}
+
+/// Per-camera encode-session health. Mutated only under the camera's
+/// encoder lock, so a plain std Mutex around it never contends.
+#[derive(Debug, Default)]
+pub struct SessionHealth {
+    silent_frames: u32,
+    session_strikes: u32,
+    forced_software: bool,
+}
+
+impl SessionHealth {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The current session produced output: real NALs prove the backend
+    /// works at this load, so clear the silent counter and all strikes.
+    pub fn note_output(&mut self) {
+        self.silent_frames = 0;
+        self.session_strikes = 0;
+    }
+
+    /// The current session accepted a frame but emitted nothing. Only
+    /// meaningful for hardware sessions; the caller gates on
+    /// `is_hardware()` so a buffering software encoder is never struck.
+    pub fn note_silent_frame(&mut self) -> SessionVerdict {
+        self.silent_frames += 1;
+        if self.silent_frames < SILENT_SESSION_FRAME_LIMIT {
+            return SessionVerdict::Continue;
+        }
+        self.silent_frames = 0;
+        self.strike()
+    }
+
+    /// The current session was dropped for persistent encode errors, or
+    /// failed to initialise at all.
+    pub fn note_session_error(&mut self) -> SessionVerdict {
+        self.silent_frames = 0;
+        self.strike()
+    }
+
+    fn strike(&mut self) -> SessionVerdict {
+        if self.forced_software {
+            // Already escalated; software sessions don't strike further.
+            return SessionVerdict::DropSession;
+        }
+        self.session_strikes += 1;
+        if self.session_strikes >= SESSION_STRIKE_LIMIT {
+            self.forced_software = true;
+            SessionVerdict::EscalateToSoftware
+        } else {
+            SessionVerdict::DropSession
+        }
+    }
+
+    pub fn forced_software(&self) -> bool {
+        self.forced_software
+    }
+
+    /// Backend for the camera's next encoder session: the configured
+    /// choice until escalation, the software fallback after.
+    pub fn select(&self, choice: EncoderChoice) -> Box<dyn EncoderBackend> {
+        if self.forced_software {
+            Box::new(Software::new())
+        } else {
+            select_backend(choice)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::{EncodeConfig, EncodeError, Nal, RawFrame};
+    use super::*;
+
+    /// Hardware-flavoured backend that initialises fine, accepts every
+    /// frame, and never emits output: the session-cap failure mode.
+    struct SilentBackend {
+        inits: u32,
+        encodes: u32,
+    }
+
+    impl SilentBackend {
+        fn new() -> Self {
+            Self {
+                inits: 0,
+                encodes: 0,
+            }
+        }
+    }
+
+    impl EncoderBackend for SilentBackend {
+        fn name(&self) -> &'static str {
+            "silent fake hw"
+        }
+        fn is_available(&self) -> bool {
+            true
+        }
+        fn is_hardware(&self) -> bool {
+            true
+        }
+        fn init(&mut self, _cfg: EncodeConfig) -> Result<(), EncodeError> {
+            self.inits += 1;
+            Ok(())
+        }
+        fn encode(&mut self, _frame: &RawFrame<'_>) -> Result<Vec<Nal>, EncodeError> {
+            self.encodes += 1;
+            Ok(Vec::new())
+        }
+        fn request_keyframe(&mut self) {}
+        fn close(&mut self) {}
+    }
+
+    fn frame_pixels() -> Vec<u8> {
+        vec![0u8; 2 * 2 * 4]
+    }
+
+    /// Drive one session the way the consume loop does: init, feed
+    /// frames, record silence per zero-NAL encode, stop when the health
+    /// machine says drop. Returns the verdict and frames fed.
+    fn run_silent_session(
+        health: &mut SessionHealth,
+        backend: &mut SilentBackend,
+    ) -> (SessionVerdict, u32) {
+        backend
+            .init(EncodeConfig {
+                width: 2,
+                height: 2,
+                fps: 30,
+                bitrate_bps: 500_000,
+            })
+            .expect("fake init never fails");
+        let pixels = frame_pixels();
+        let mut fed = 0u32;
+        loop {
+            let nals = backend
+                .encode(&RawFrame {
+                    width: 2,
+                    height: 2,
+                    data: &pixels,
+                    capture_ts_ms: 0.0,
+                })
+                .expect("fake encode never errors");
+            fed += 1;
+            assert!(nals.is_empty(), "silent fake must never emit");
+            let verdict = if backend.is_hardware() {
+                health.note_silent_frame()
+            } else {
+                SessionVerdict::Continue
+            };
+            if verdict != SessionVerdict::Continue {
+                backend.close();
+                return (verdict, fed);
+            }
+        }
+    }
+
+    #[test]
+    fn escalates_after_strike_limit_silent_sessions() {
+        let mut health = SessionHealth::new();
+        let mut backend = SilentBackend::new();
+
+        // First silent session: dropped for reinit, not yet escalated.
+        let (verdict, fed) = run_silent_session(&mut health, &mut backend);
+        assert_eq!(verdict, SessionVerdict::DropSession);
+        assert_eq!(
+            fed, SILENT_SESSION_FRAME_LIMIT,
+            "bounded patience per session"
+        );
+        assert!(!health.forced_software());
+
+        // Second silent session: escalate, exactly at the strike limit.
+        let (verdict, fed) = run_silent_session(&mut health, &mut backend);
+        assert_eq!(verdict, SessionVerdict::EscalateToSoftware);
+        assert_eq!(fed, SILENT_SESSION_FRAME_LIMIT);
+        assert!(health.forced_software());
+        assert_eq!(backend.inits, SESSION_STRIKE_LIMIT);
+
+        // Software fallback engages for this camera's next session.
+        assert!(!health.select(EncoderChoice::Mediafoundation).is_hardware());
+    }
+
+    #[test]
+    fn escalation_verdict_fires_exactly_once() {
+        let mut health = SessionHealth::new();
+        let mut backend = SilentBackend::new();
+        let mut escalations = 0;
+        for _ in 0..5 {
+            let (verdict, _) = run_silent_session(&mut health, &mut backend);
+            if verdict == SessionVerdict::EscalateToSoftware {
+                escalations += 1;
+            }
+        }
+        // The warn is gated on the EscalateToSoftware verdict, so this
+        // is also "warn fires once".
+        assert_eq!(escalations, 1);
+    }
+
+    #[test]
+    fn other_cameras_keep_their_configured_backend() {
+        let mut starved = SessionHealth::new();
+        let healthy = SessionHealth::new();
+        let mut backend = SilentBackend::new();
+        for _ in 0..SESSION_STRIKE_LIMIT {
+            run_silent_session(&mut starved, &mut backend);
+        }
+        assert!(starved.forced_software());
+        assert!(!healthy.forced_software());
+        // Escalation is per camera: the healthy one still selects the
+        // configured (hardware) backend, the starved one software.
+        assert!(healthy.select(EncoderChoice::Mediafoundation).is_hardware());
+        assert!(!starved.select(EncoderChoice::Mediafoundation).is_hardware());
+    }
+
+    #[test]
+    fn real_output_clears_strikes() {
+        let mut health = SessionHealth::new();
+        let mut backend = SilentBackend::new();
+        // One silent session = one strike.
+        let (verdict, _) = run_silent_session(&mut health, &mut backend);
+        assert_eq!(verdict, SessionVerdict::DropSession);
+        // Next session produces output: strikes reset.
+        health.note_output();
+        // A later silent session starts the count over: drop, not escalate.
+        let (verdict, _) = run_silent_session(&mut health, &mut backend);
+        assert_eq!(verdict, SessionVerdict::DropSession);
+        assert!(!health.forced_software());
+    }
+
+    #[test]
+    fn error_streak_sessions_count_toward_escalation() {
+        let mut health = SessionHealth::new();
+        assert_eq!(health.note_session_error(), SessionVerdict::DropSession);
+        assert_eq!(
+            health.note_session_error(),
+            SessionVerdict::EscalateToSoftware
+        );
+        assert!(health.forced_software());
+        // Further failures on the software path just drop the session.
+        assert_eq!(health.note_session_error(), SessionVerdict::DropSession);
+    }
+
+    #[test]
+    fn intra_session_silence_below_limit_is_tolerated() {
+        let mut health = SessionHealth::new();
+        for _ in 0..(SILENT_SESSION_FRAME_LIMIT - 1) {
+            assert_eq!(health.note_silent_frame(), SessionVerdict::Continue);
+        }
+        // Output arrives just in time: nothing was struck.
+        health.note_output();
+        assert!(!health.forced_software());
+        assert_eq!(health.note_silent_frame(), SessionVerdict::Continue);
+    }
+}

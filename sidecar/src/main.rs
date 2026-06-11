@@ -24,7 +24,8 @@ use webrtc::media::Sample;
 
 use kerbcam_sidecar::cameras::{CameraRegistry, CameraState};
 use kerbcam_sidecar::encoder::{
-    resolve_bitrate_bps, select_backend, EncodeConfig, EncoderChoice, RawFrame, Software,
+    resolve_bitrate_bps, select_backend, EncodeConfig, EncoderBackend, EncoderChoice, RawFrame,
+    SessionVerdict, Software, SILENT_SESSION_FRAME_LIMIT,
 };
 use kerbcam_sidecar::protocol::{
     AdaptiveShedPayload, CameraLifecycle, CameraState as ProtocolCameraState,
@@ -461,6 +462,35 @@ async fn broadcast_destroyed_cameras(
     }
 }
 
+/// Close and forget a camera's encoder session so the next frame
+/// re-runs init, and reset the per-session counters that describe it.
+fn drop_encoder_session(
+    cam: &Arc<CameraState>,
+    encoder_guard: &mut tokio::sync::MutexGuard<'_, Option<Box<dyn EncoderBackend>>>,
+) {
+    if let Some(mut backend) = encoder_guard.take() {
+        backend.close();
+    }
+    cam.encoder_width.store(0, Ordering::Release);
+    cam.encoder_height.store(0, Ordering::Release);
+    cam.encoder_bitrate.store(0, Ordering::Release);
+    cam.encode_failure_streak.store(0, Ordering::Release);
+}
+
+/// The one operator-facing line when a camera gives up on hardware
+/// encode. Fired exactly once per camera, gated by the
+/// EscalateToSoftware verdict.
+fn warn_escalated(cam: &Arc<CameraState>, backend_name: &str, what_happened: &str) {
+    warn!(
+        flight_id = cam.flight_id,
+        camera = %cam.camera_name,
+        part = %cam.part_title,
+        backend = backend_name,
+        "{what_happened}; this camera now encodes in software \
+         (likely concurrent hardware encode session limit). Other cameras keep hardware."
+    );
+}
+
 async fn encode_and_fan_out(
     cam: &Arc<CameraState>,
     encoder_choice: EncoderChoice,
@@ -602,13 +632,16 @@ async fn encode_and_fan_out(
             fps,
             bitrate_bps: effective_bps,
         };
-        let mut backend = select_backend(encoder_choice);
+        // The session-health machine picks the backend: the configured
+        // choice normally, the software fallback once this camera has
+        // been escalated (consecutive silent/failed hardware sessions).
+        let mut backend = cam.session_health.lock().unwrap().select(encoder_choice);
         if let Err(e) = backend.init(cfg.clone()) {
             // Hardware backend failed (e.g. VAAPI probe passed but
             // avcodec_open2 rejected the resolution or profile). Fall back
             // to software immediately rather than retrying the same failing
             // backend every frame.
-            warn!(flight_id = cam.flight_id, error = %e, "encoder init failed; falling back to software");
+            warn!(flight_id = cam.flight_id, error = %e, backend = backend.name(), "encoder init failed; falling back to software");
             backend = Box::new(Software::new());
             if let Err(e2) = backend.init(cfg) {
                 warn!(flight_id = cam.flight_id, error = %e2, "software fallback init failed");
@@ -629,6 +662,8 @@ async fn encode_and_fan_out(
         *encoder_guard = Some(backend);
     }
     let encoder = encoder_guard.as_mut().unwrap();
+    let backend_name = encoder.name();
+    let backend_is_hardware = encoder.is_hardware();
 
     let nals = match encoder.encode(&RawFrame {
         width: frame.width,
@@ -644,31 +679,57 @@ async fn encode_and_fan_out(
             // A persistently-failing encoder session (wedged VAAPI
             // context, driver reset) never heals by retrying encode();
             // peers would stall forever on an open track. Drop it after
-            // a sustained streak so the next frame re-runs init — which
-            // already falls back to software when hardware init fails.
+            // a sustained streak so the next frame re-runs init. The
+            // session-health strike means a backend whose fresh sessions
+            // keep failing too escalates to software instead of cycling
+            // the same broken hardware forever.
             let streak = cam.encode_failure_streak.fetch_add(1, Ordering::AcqRel) + 1;
             warn!(flight_id = cam.flight_id, error = %e, streak, "encode failed");
             if streak >= ENCODE_FAILURE_REINIT_THRESHOLD {
-                if let Some(mut backend) = encoder_guard.take() {
-                    backend.close();
-                }
-                cam.encoder_width.store(0, Ordering::Release);
-                cam.encoder_height.store(0, Ordering::Release);
-                cam.encoder_bitrate.store(0, Ordering::Release);
-                cam.encode_failure_streak.store(0, Ordering::Release);
+                drop_encoder_session(cam, &mut encoder_guard);
                 warn!(
                     flight_id = cam.flight_id,
+                    backend = backend_name,
                     "encoder dropped after {streak} consecutive failures; will reinit on next frame"
                 );
+                let verdict = cam.session_health.lock().unwrap().note_session_error();
+                if verdict == SessionVerdict::EscalateToSoftware {
+                    warn_escalated(cam, backend_name, "consecutive sessions kept failing");
+                }
             }
             return;
         }
     };
-    drop(encoder_guard);
 
     if nals.is_empty() {
+        // Zero NALs from one encode() call is legal (encoder still
+        // buffering), but a hardware session that stays silent for
+        // SILENT_SESSION_FRAME_LIMIT straight calls is the GPU
+        // concurrent-session-limit signature: it inits cleanly, accepts
+        // every frame, errors never, emits nothing. Field case: AMD RX
+        // 9070 XT via Media Foundation, 13 cameras, the last-added few
+        // streamed black with zero log evidence. Strike the session;
+        // enough strikes pin this camera to the software encoder.
+        if backend_is_hardware {
+            let verdict = cam.session_health.lock().unwrap().note_silent_frame();
+            if verdict != SessionVerdict::Continue {
+                drop_encoder_session(cam, &mut encoder_guard);
+                warn!(
+                    flight_id = cam.flight_id,
+                    camera = %cam.camera_name,
+                    backend = backend_name,
+                    frames = SILENT_SESSION_FRAME_LIMIT,
+                    "hardware encode session accepted frames but never produced output; dropping it"
+                );
+                if verdict == SessionVerdict::EscalateToSoftware {
+                    warn_escalated(cam, backend_name, "sessions init fine but stay silent");
+                }
+            }
+        }
         return;
     }
+    cam.session_health.lock().unwrap().note_output();
+    drop(encoder_guard);
 
     // Concatenate NALs into the Annex-B bytestream webrtc-rs expects.
     let total_len: usize = nals.iter().map(|n| n.0.len()).sum();

@@ -11,12 +11,14 @@ use thiserror::Error;
 
 mod annexb;
 mod convert;
+mod escalation;
 mod libva;
 mod mediafoundation;
 mod nvenc;
 mod software;
 mod videotoolbox;
 
+pub use escalation::{SessionHealth, SessionVerdict, SILENT_SESSION_FRAME_LIMIT};
 pub use libva::Libva;
 pub use mediafoundation::MediaFoundation;
 pub use nvenc::Nvenc;

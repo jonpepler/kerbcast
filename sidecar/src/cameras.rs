@@ -23,7 +23,7 @@ use tokio::sync::{Mutex, RwLock};
 use tracing::{info, warn};
 use webrtc::track::track_local::track_local_static_sample::TrackLocalStaticSample;
 
-use crate::encoder::EncoderBackend;
+use crate::encoder::{EncoderBackend, SessionHealth};
 use crate::protocol::{CameraLifecycle, CameraState as ProtocolCameraState, Layer};
 use crate::shared_mem::{ControlBlock, MmapFrameRing, MmapRingConfig};
 
@@ -289,6 +289,13 @@ pub struct CameraState {
     /// otherwise a wedged encoder session stalls subscribed peers
     /// forever while only emitting warn logs.
     pub encode_failure_streak: AtomicU32,
+    /// Session-level escalation state: hardware sessions that stay
+    /// silent (init fine, accept frames, never emit a NAL, the GPU
+    /// concurrent-session-limit signature) or persistently error
+    /// strike toward pinning this camera to the software fallback.
+    /// std Mutex: only touched under the encoder lock, never across
+    /// an await.
+    pub session_health: std::sync::Mutex<SessionHealth>,
     /// Most-recent target bitrate, computed as the min across active
     /// subscribers' REMB estimates (so the slowest receiver doesn't
     /// drop the whole stream). 0 = no REMB received yet; consume loop
@@ -727,6 +734,7 @@ impl CameraRegistry {
                             encoder_height: AtomicU32::new(0),
                             encoder_bitrate: AtomicU32::new(0),
                             encode_failure_streak: AtomicU32::new(0),
+                            session_health: std::sync::Mutex::new(SessionHealth::new()),
                             target_bitrate_bps: AtomicU32::new(0),
                             bandwidth_estimates: Mutex::new(std::collections::HashMap::new()),
                             degrade_levels: Mutex::new(std::collections::HashMap::new()),
