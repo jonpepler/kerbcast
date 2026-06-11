@@ -248,6 +248,11 @@ const Root = styled.div`
   border-top: 1px solid var(--kc-border);
   background: var(--kc-surface);
   flex-shrink: 0;
+  /* Tiles are positioned elements with chrome up to z-index 3, so they paint
+     over an unpositioned panel wherever the grid overlaps it. Lift the panel
+     above the feeds; the portaled camera menu (z-index 1000) stays on top. */
+  position: relative;
+  z-index: 10;
 `;
 
 const DevHeader = styled.div`

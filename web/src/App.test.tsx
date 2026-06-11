@@ -500,6 +500,15 @@ describe("App - dev panel controls", () => {
     expect(cmd).toBeTruthy();
     expect(cmd?.content.level).toBeCloseTo(0.5, 1);
   });
+
+  it("stacks above the tile feeds (which carry chrome up to z-index 3)", async () => {
+    await openDebugWithCamera();
+
+    const panel = screen.getByRole("region", { name: /developer panel/i });
+    const style = getComputedStyle(panel);
+    expect(style.position).toBe("relative");
+    expect(Number(style.zIndex)).toBeGreaterThan(3);
+  });
 });
 
 // ---------------------------------------------------------------------------
