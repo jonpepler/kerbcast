@@ -702,6 +702,40 @@ describe("CameraFeed - quality control", () => {
     ).toBe("true");
   });
 
+  it("portals the open quality menu to document.body so tile clipping cannot cut it off", async () => {
+    const { client } = await buildConnectedSource();
+    const { container } = renderFeed(client, {
+      flightId: 42,
+      enableQualityControl: true,
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /quality/i }));
+
+    const menu = screen.getByRole("menu", { name: "Quality" });
+    // Same portal contract as the camera menu: on document.body, outside
+    // the tile's DOM subtree, fixed so no ancestor overflow can clip it.
+    expect(menu.parentElement).toBe(document.body);
+    expect(container.contains(menu)).toBe(false);
+    expect(getComputedStyle(menu).position).toBe("fixed");
+  });
+
+  it("pointer-down inside the portaled quality menu keeps it open; outside dismisses it", async () => {
+    const { client } = await buildConnectedSource();
+    renderFeed(client, { flightId: 42, enableQualityControl: true });
+
+    fireEvent.click(screen.getByRole("button", { name: /quality/i }));
+    expect(screen.getByRole("menu", { name: "Quality" })).toBeTruthy();
+
+    // A press inside the portaled menu is not "outside" even though it is
+    // outside the tile's subtree.
+    fireEvent.pointerDown(screen.getByRole("menuitemradio", { name: "Auto" }));
+    expect(screen.getByRole("menu", { name: "Quality" })).toBeTruthy();
+
+    // A press anywhere else dismisses.
+    fireEvent.pointerDown(document.body);
+    expect(screen.queryByRole("menu", { name: "Quality" })).toBeNull();
+  });
+
   it("Escape closes the quality menu", async () => {
     const { client } = await buildConnectedSource();
     renderFeed(client, { flightId: 42, enableQualityControl: true });

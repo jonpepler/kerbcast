@@ -24,34 +24,125 @@ import { isCameraDestroyed } from "./lifecycle";
 const PAN_BALL_RADIUS = 15; // pixel deflection bound (full = rate 1)
 const MENU_MAX_WIDTH = 260; // matches CameraMenu's CSS cap
 const MENU_MAX_HEIGHT = 300; // matches CameraMenu's min(40vh, 300px) cap
+const QUALITY_MENU_MAX_WIDTH = 220; // matches QualityMenu's CSS cap
+const QUALITY_MENU_MAX_HEIGHT = 220; // matches QualityMenu's min(40vh, 220px) cap
 const MENU_GAP = 4; // trigger-to-menu spacing
 const MENU_EDGE = 8; // minimum inset from the viewport edge
 
 /*
- * Fixed-position style for the portaled camera menu, anchored to the trigger
- * button. Opens downward by default; flips above the trigger when there is
- * not enough room below but there is above, otherwise clamps to the viewport.
+ * Geometry of a portaled dropdown: the CSS size caps of the menu (the
+ * helper clamps as if the menu fills them) and which edge of the trigger
+ * the menu hangs from: "start" lines the menu's left edge up with the
+ * trigger's (camera picker), "end" lines the right edges up (quality
+ * button at the action bar's corner).
  */
-function computeMenuPosition(trigger: HTMLElement): React.CSSProperties {
+interface MenuAnchor {
+  maxWidth: number;
+  maxHeight: number;
+  align: "start" | "end";
+}
+
+/*
+ * Fixed-position style for a portaled menu, anchored to its trigger button.
+ * Opens downward by default; flips above the trigger when there is not
+ * enough room below but there is above, otherwise clamps to the viewport.
+ */
+function computeMenuPosition(
+  trigger: HTMLElement,
+  anchor: MenuAnchor,
+): React.CSSProperties {
   const rect = trigger.getBoundingClientRect();
   const vw = window.innerWidth;
   const vh = window.innerHeight;
-  const width = Math.min(MENU_MAX_WIDTH, vw - 2 * MENU_EDGE);
-  const left = Math.min(
-    Math.max(rect.left, MENU_EDGE),
-    Math.max(MENU_EDGE, vw - width - MENU_EDGE),
-  );
-  const menuH = Math.min(0.4 * vh, MENU_MAX_HEIGHT);
+  const width = Math.min(anchor.maxWidth, vw - 2 * MENU_EDGE);
+  /* Inline offset from the aligned viewport edge, clamped so a full-width
+     menu still fits inside the opposite edge. */
+  const inset = Math.max(MENU_EDGE, vw - width - MENU_EDGE);
+  const inline: React.CSSProperties =
+    anchor.align === "start"
+      ? { left: Math.min(Math.max(rect.left, MENU_EDGE), inset) }
+      : { right: Math.min(Math.max(vw - rect.right, MENU_EDGE), inset) };
+  const menuH = Math.min(0.4 * vh, anchor.maxHeight);
   const fitsBelow = rect.bottom + MENU_GAP + menuH <= vh - MENU_EDGE;
   const fitsAbove = rect.top - MENU_GAP - menuH >= MENU_EDGE;
   if (!fitsBelow && fitsAbove) {
-    return { left, bottom: vh - rect.top + MENU_GAP };
+    return { ...inline, bottom: vh - rect.top + MENU_GAP };
   }
   const top = Math.min(
     rect.bottom + MENU_GAP,
     Math.max(MENU_EDGE, vh - MENU_EDGE - menuH),
   );
-  return { left, top };
+  return { ...inline, top };
+}
+
+/*
+ * Shared behaviour for a dropdown portaled to document.body: fixed position
+ * computed from the trigger's rect (so tile overflow cannot clip it),
+ * re-anchored on window resize/scroll while open, Escape to close with focus
+ * returned to the trigger, and portal-aware outside-pointer-down dismissal
+ * (menuRef points at the portaled menu, so clicks inside it stay "inside").
+ * One menu at a time falls out of the dismissal: opening another menu's
+ * trigger is an outside press for this one.
+ */
+function usePortalMenu({ maxWidth, maxHeight, align }: MenuAnchor) {
+  const [open, setOpen] = useState(false);
+  const [position, setPosition] = useState<React.CSSProperties | null>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (!open) {
+      setPosition(null);
+      return;
+    }
+    const update = () => {
+      const trigger = triggerRef.current;
+      if (trigger) {
+        setPosition(computeMenuPosition(trigger, { maxWidth, maxHeight, align }));
+      }
+    };
+    update();
+    window.addEventListener("resize", update);
+    window.addEventListener("scroll", update, true);
+    return () => {
+      window.removeEventListener("resize", update);
+      window.removeEventListener("scroll", update, true);
+    };
+  }, [open, maxWidth, maxHeight, align]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        setOpen(false);
+        triggerRef.current?.focus();
+      }
+    };
+    const onPointerDown = (e: PointerEvent) => {
+      if (
+        !menuRef.current?.contains(e.target as Node) &&
+        !triggerRef.current?.contains(e.target as Node)
+      ) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    document.addEventListener("pointerdown", onPointerDown);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      document.removeEventListener("pointerdown", onPointerDown);
+    };
+  }, [open]);
+
+  const toggle = useCallback(() => setOpen((v) => !v), []);
+  /** Close after an item pick, returning focus to the trigger. */
+  const close = useCallback(() => {
+    setOpen(false);
+    triggerRef.current?.focus();
+  }, []);
+
+  return { open, toggle, close, position, menuRef, triggerRef };
 }
 
 /** Round n to the nearest even integer, minimum 2 (H.264 chroma requirement). */
@@ -543,62 +634,11 @@ const CameraFeedInner = forwardRef<CameraFeedHandle, CameraFeedProps>(
     const canStep = cameras.length > 1;
     const menuId = useId();
     const [chromePinned, setChromePinned] = useState(false);
-    const [menuOpen, setMenuOpen] = useState(false);
-    const menuRef = useRef<HTMLDivElement>(null);
-    const menuTriggerRef = useRef<HTMLButtonElement>(null);
-    const [menuPosition, setMenuPosition] = useState<React.CSSProperties | null>(
-      null,
-    );
-
-    /*
-     * The menu portals to document.body (fixed position) so the tile's
-     * overflow clipping cannot cut it off. Anchor it to the trigger at open
-     * and re-anchor on window resize/scroll while open.
-     */
-    useEffect(() => {
-      if (!menuOpen) {
-        setMenuPosition(null);
-        return;
-      }
-      const update = () => {
-        const trigger = menuTriggerRef.current;
-        if (trigger) setMenuPosition(computeMenuPosition(trigger));
-      };
-      update();
-      window.addEventListener("resize", update);
-      window.addEventListener("scroll", update, true);
-      return () => {
-        window.removeEventListener("resize", update);
-        window.removeEventListener("scroll", update, true);
-      };
-    }, [menuOpen]);
-
-    // Escape closes the menu; outside pointer-down dismisses it.
-    // (menuRef points at the portaled menu, so clicks inside it stay "inside".)
-    useEffect(() => {
-      if (!menuOpen) return;
-      const onKeyDown = (e: KeyboardEvent) => {
-        if (e.key === "Escape") {
-          e.stopPropagation();
-          setMenuOpen(false);
-          menuTriggerRef.current?.focus();
-        }
-      };
-      const onPointerDown = (e: PointerEvent) => {
-        if (
-          !menuRef.current?.contains(e.target as Node) &&
-          !menuTriggerRef.current?.contains(e.target as Node)
-        ) {
-          setMenuOpen(false);
-        }
-      };
-      document.addEventListener("keydown", onKeyDown);
-      document.addEventListener("pointerdown", onPointerDown);
-      return () => {
-        document.removeEventListener("keydown", onKeyDown);
-        document.removeEventListener("pointerdown", onPointerDown);
-      };
-    }, [menuOpen]);
+    const cameraMenu = usePortalMenu({
+      maxWidth: MENU_MAX_WIDTH,
+      maxHeight: MENU_MAX_HEIGHT,
+      align: "start",
+    });
 
     const cameraLabel = useMemo(() => buildCameraLabeler(cameras), [cameras]);
     const title = camera ? cameraLabel(camera) : "Camera Feed";
@@ -613,45 +653,22 @@ const CameraFeedInner = forwardRef<CameraFeedHandle, CameraFeedProps>(
       enableQualityControl && flightId !== null && camera !== null;
     const qualityThrottled = Boolean(camera?.qualityLimitedBy);
     const qualityMenuId = useId();
-    const [qualityMenuOpen, setQualityMenuOpen] = useState(false);
-    const qualityMenuRef = useRef<HTMLDivElement>(null);
-    const qualityTriggerRef = useRef<HTMLButtonElement>(null);
-
-    // Same dismissal contract as the camera menu: Escape closes (returning
-    // focus to the trigger), pointer-down outside dismisses.
-    useEffect(() => {
-      if (!qualityMenuOpen) return;
-      const onKeyDown = (e: KeyboardEvent) => {
-        if (e.key === "Escape") {
-          e.stopPropagation();
-          setQualityMenuOpen(false);
-          qualityTriggerRef.current?.focus();
-        }
-      };
-      const onPointerDown = (e: PointerEvent) => {
-        if (
-          !qualityMenuRef.current?.contains(e.target as Node) &&
-          !qualityTriggerRef.current?.contains(e.target as Node)
-        ) {
-          setQualityMenuOpen(false);
-        }
-      };
-      document.addEventListener("keydown", onKeyDown);
-      document.addEventListener("pointerdown", onPointerDown);
-      return () => {
-        document.removeEventListener("keydown", onKeyDown);
-        document.removeEventListener("pointerdown", onPointerDown);
-      };
-    }, [qualityMenuOpen]);
+    // Same portal/anchor/dismissal machinery as the camera menu, hung from
+    // the right edge of its action-bar trigger.
+    const qualityMenu = usePortalMenu({
+      maxWidth: QUALITY_MENU_MAX_WIDTH,
+      maxHeight: QUALITY_MENU_MAX_HEIGHT,
+      align: "end",
+    });
+    const closeQualityMenu = qualityMenu.close;
 
     const selectQuality = useCallback(
       (preset: QualityPreset | null) => {
         if (flightId === null) return;
         void client.camera(flightId).setQuality(preset);
-        setQualityMenuOpen(false);
-        qualityTriggerRef.current?.focus();
+        closeQualityMenu();
       },
-      [client, flightId],
+      [client, flightId, closeQualityMenu],
     );
 
     const topOverlay = (
@@ -660,12 +677,12 @@ const CameraFeedInner = forwardRef<CameraFeedHandle, CameraFeedProps>(
           <TopTitle>
             {hasCameras ? (
               <TitleButton
-                ref={menuTriggerRef}
+                ref={cameraMenu.triggerRef}
                 type="button"
                 aria-haspopup="menu"
-                aria-expanded={menuOpen}
+                aria-expanded={cameraMenu.open}
                 aria-controls={menuId}
-                onClick={() => setMenuOpen((v) => !v)}
+                onClick={cameraMenu.toggle}
               >
                 <TitleButton__Text>{title}</TitleButton__Text>
                 <ChevronDownIcon aria-hidden="true" />
@@ -696,16 +713,16 @@ const CameraFeedInner = forwardRef<CameraFeedHandle, CameraFeedProps>(
           )}
         </TitleRow>
 
-        {menuOpen &&
+        {cameraMenu.open &&
           hasCameras &&
-          menuPosition &&
+          cameraMenu.position &&
           createPortal(
             <CameraMenu
-              ref={menuRef}
+              ref={cameraMenu.menuRef}
               id={menuId}
               role="menu"
               aria-label="Camera"
-              style={menuPosition}
+              style={cameraMenu.position}
             >
               {cameras.map((c) => (
                 <CameraMenuItem
@@ -716,8 +733,7 @@ const CameraFeedInner = forwardRef<CameraFeedHandle, CameraFeedProps>(
                   $selected={c.flightId === flightId}
                   onClick={() => {
                     onSelectCamera?.(c.flightId);
-                    setMenuOpen(false);
-                    menuTriggerRef.current?.focus();
+                    cameraMenu.close();
                   }}
                 >
                   {cameraLabel(c)} ({c.vesselName})
@@ -766,19 +782,19 @@ const CameraFeedInner = forwardRef<CameraFeedHandle, CameraFeedProps>(
           {actions?.map(renderAction)}
           {qualityAvailable && (
             <OverlayIconButton
-              ref={qualityTriggerRef}
+              ref={qualityMenu.triggerRef}
               type="button"
               aria-label="Quality"
               aria-haspopup="menu"
-              aria-expanded={qualityMenuOpen}
+              aria-expanded={qualityMenu.open}
               aria-controls={qualityMenuId}
               title={
                 qualityThrottled
                   ? "Quality (throttled by adaptive performance)"
                   : "Quality"
               }
-              $active={qualityMenuOpen}
-              onClick={() => setQualityMenuOpen((v) => !v)}
+              $active={qualityMenu.open}
+              onClick={qualityMenu.toggle}
             >
               <QualityIcon />
               {qualityThrottled && <ThrottledDot aria-hidden="true" />}
@@ -832,41 +848,47 @@ const CameraFeedInner = forwardRef<CameraFeedHandle, CameraFeedProps>(
             />
             {topOverlay}
             {actionBar}
-            {qualityAvailable && qualityMenuOpen && camera && (
-              <QualityMenu
-                ref={qualityMenuRef}
-                id={qualityMenuId}
-                role="menu"
-                aria-label="Quality"
-              >
-                <CameraMenuItem
-                  type="button"
-                  role="menuitemradio"
-                  aria-checked={camera.viewerQuality == null}
-                  $selected={camera.viewerQuality == null}
-                  onClick={() => selectQuality(null)}
+            {qualityAvailable &&
+              qualityMenu.open &&
+              qualityMenu.position &&
+              camera &&
+              createPortal(
+                <QualityMenu
+                  ref={qualityMenu.menuRef}
+                  id={qualityMenuId}
+                  role="menu"
+                  aria-label="Quality"
+                  style={qualityMenu.position}
                 >
-                  Auto
-                </CameraMenuItem>
-                {QUALITY_PRESETS.map(({ preset, label, scale }) => (
                   <CameraMenuItem
-                    key={preset}
                     type="button"
                     role="menuitemradio"
-                    aria-checked={camera.viewerQuality === preset}
-                    $selected={camera.viewerQuality === preset}
-                    onClick={() => selectQuality(preset)}
+                    aria-checked={camera.viewerQuality == null}
+                    $selected={camera.viewerQuality == null}
+                    onClick={() => selectQuality(null)}
                   >
-                    {label} ({presetDim(camera.operatorWidth, scale)}×
-                    {presetDim(camera.operatorHeight, scale)})
+                    Auto
                   </CameraMenuItem>
-                ))}
-                <QualityMeta role="status">
-                  now {camera.renderWidth}×{camera.renderHeight}
-                  {qualityThrottled ? " · throttled" : ""}
-                </QualityMeta>
-              </QualityMenu>
-            )}
+                  {QUALITY_PRESETS.map(({ preset, label, scale }) => (
+                    <CameraMenuItem
+                      key={preset}
+                      type="button"
+                      role="menuitemradio"
+                      aria-checked={camera.viewerQuality === preset}
+                      $selected={camera.viewerQuality === preset}
+                      onClick={() => selectQuality(preset)}
+                    >
+                      {label} ({presetDim(camera.operatorWidth, scale)}×
+                      {presetDim(camera.operatorHeight, scale)})
+                    </CameraMenuItem>
+                  ))}
+                  <QualityMeta role="status">
+                    now {camera.renderWidth}×{camera.renderHeight}
+                    {qualityThrottled ? " · throttled" : ""}
+                  </QualityMeta>
+                </QualityMenu>,
+                document.body,
+              )}
             {isDestroyed && (
               <SignalLostOverlay role="status" aria-label="Signal lost">
                 <SignalLostText>SIGNAL LOST</SignalLostText>
@@ -1348,21 +1370,23 @@ const TopMeta = styled.div`
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.9);
 `;
 
-/* The quality picker: anchored under the action bar's corner. Visible
-   whenever open (independent of the hover-revealed chrome) so it doesn't
-   vanish mid-interaction when the pointer leaves the action bar. */
+/* The quality picker: portaled to document.body like CameraMenu, hung from
+   its action-bar trigger (fixed position set inline from the trigger rect)
+   so tile clipping cannot cut it off and it survives the hover-revealed
+   chrome fading while the pointer is over the menu. */
 const QualityMenu = styled.div`
-  position: absolute;
-  top: 34px;
-  right: 8px;
-  z-index: 4;
+  position: fixed;
+  z-index: 1000;
   min-width: 140px;
+  max-width: min(220px, calc(100vw - 16px));
+  max-height: min(40vh, 220px);
   display: flex;
   flex-direction: column;
   background: rgba(0, 0, 0, 0.85);
   border: 1px solid rgba(255, 255, 255, 0.3);
   border-radius: 4px;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
 `;
 
 /* Effective-state footer of the quality menu: what the camera is actually
