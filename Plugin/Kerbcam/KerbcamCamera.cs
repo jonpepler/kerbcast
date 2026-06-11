@@ -310,7 +310,7 @@ namespace Kerbcam
             new HullcamFilterBlit(typeof(CameraFilter));
         // Bound once in the constructor so the per-frame Run call
         // allocates no closure.
-        private readonly Action _filterRenderPass;
+        private readonly Action<RenderTexture, RenderTexture> _filterRenderPass;
         // kerbcam's own NightVision material, used instead of HullcamVDS's
         // additive-shift filter when the shader bundle is available.
         private Material _nvMaterial;
@@ -453,11 +453,13 @@ namespace Kerbcam
         /* The filter pass HullcamFilterBlit.Run redirects: Hullcam's
            CameraFilter writes its uniforms and runs its Graphics.Blit via
            the mtShader static, which Run points at this camera's private
-           material for exactly these two calls. */
-        private void RenderFilterPass()
+           material for exactly these two calls. Parameterised by source
+           and destination so Run's one-time orientation probe can push its
+           test frame through the same pass. */
+        private void RenderFilterPass(RenderTexture src, RenderTexture dst)
         {
             _cameraFilter.RenderTitlePage(true, _hullcamTitleTex);
-            _cameraFilter.RenderImageWithFilter(_captureRt, _readbackRt);
+            _cameraFilter.RenderImageWithFilter(src, dst);
         }
 
         // Select (or lazily create) the pooled render-target set for this size
@@ -1550,8 +1552,15 @@ namespace Kerbcam
                        _TitleTex=noneTX inside their own blit (no reticle);
                        DockingCam, BWFilm, ColorFilm, ColorLoResTV and
                        ColorHiResTV leave the title alone (reticle shown),
-                       matching Hullcam's in-game view of each mode. */
-                    _filterBlit.Run(_filterRenderPass);
+                       matching Hullcam's in-game view of each mode.
+
+                       On top-left-UV-origin APIs (D3D11, Metal) Run also
+                       measures the pass's vertical orientation once and
+                       appends a compensating flip when the pass inverts;
+                       see the HullcamFilterBlit header. Gate is
+                       SystemInfo.graphicsUVStartsAtTop, so the GL/Deck
+                       path is untouched. */
+                    _filterBlit.Run(_filterRenderPass, _captureRt, _readbackRt);
                 }
                 else
                 {

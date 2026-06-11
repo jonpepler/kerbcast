@@ -36,7 +36,15 @@
 //       (the shader actually ran, no silent magenta/no-op pass);
 //   (d) control: the LEGACY shared-static path, with the same hostile
 //       writes interleaved, is NOT stable for ColorHiResTV or NightVision,
-//       proving this harness detects the bug it guards against.
+//       proving this harness detects the bug it guards against;
+//   (e) orientation: a vertically asymmetric frame (top red, bottom blue)
+//       through a reticle-showing and a reticle-suppressing class keeps
+//       its top half on top, and the orientation probe in
+//       HullcamFilterBlit reads the pass as upright. glcore here is the
+//       parity-neutral bottom-left-UV-origin case; the top-left-origin
+//       (D3D11/Metal) inversion is what Run's
+//       SystemInfo.graphicsUVStartsAtTop-gated probe compensates at
+//       runtime.
 // Pass/fail report via Debug.Log; throws on failure so the editor exits
 // non-zero (the BuildKerbcamShaders pattern).
 //
@@ -183,6 +191,29 @@ namespace KerbcamCI
                     $"{name}: LEGACY shared-static path flickers under hostile writes (harness can see the bug)");
             }
 
+            /* Orientation: a vertically asymmetric frame (top half red,
+               bottom half blue) through a reticle-showing and a
+               reticle-suppressing class must come out with the input's top
+               half still on top. glcore (this runner, and the tier-1 Deck)
+               is the bottom-left-UV-origin case where the chain is
+               parity-neutral as-is and Run's probe gate stays closed; the
+               top-left-origin (D3D11/Metal) case is the asymmetric one the
+               SystemInfo.graphicsUVStartsAtTop-gated probe in
+               HullcamFilterBlit.Run measures and compensates at runtime.
+               MeasurePassInverted is also asserted directly so the probe's
+               own read of an upright pass is pinned here. */
+            foreach (var name in new[] { "ColorHiResTV", "BWHiResTV" })
+            {
+                var mode = FindMode(name);
+                bool upright;
+                string orientDetail;
+                bool measured = RunOrientation(mode, sharedMat, tex, out upright, out orientDetail);
+                Check(upright,
+                    $"{name}: asymmetric frame keeps its top half on top through Run{orientDetail}");
+                Check(!measured,
+                    $"{name}: MeasurePassInverted reports upright on a bottom-left-origin API");
+            }
+
             Debug.Log($"[Kerbcam-CI] HullcamBlitDeterminism: {failures.Count} failure(s)");
             if (failures.Count > 0)
                 throw new Exception(
@@ -209,20 +240,20 @@ namespace KerbcamCI
             for (int i = 0; i < n; i++)
             {
                 Clobber(sharedMat, tex, i);
-                rig.Run(() =>
+                rig.Run((s, d) =>
                 {
                     var mt = FakeCameraFilterStatics.SharedMaterial;
                     TitlePage(mt, title, tex.Reticle);
                     if (mode.Apply == null)
                     {
-                        Graphics.Blit(src, dst);
+                        Graphics.Blit(s, d);
                     }
                     else
                     {
                         mode.Apply(mt, tex);
-                        Graphics.Blit(src, dst, mt);
+                        Graphics.Blit(s, d, mt);
                     }
-                });
+                }, src, dst);
                 Clobber(sharedMat, tex, i + 7);
                 outputs.Add(ReadBack(dst));
             }
@@ -250,6 +281,101 @@ namespace KerbcamCI
                 outputs.Add(ReadBack(dst));
             }
             return outputs;
+        }
+
+        /* Orientation check: top-red/bottom-blue frame through a fresh rig
+           (title on, exactly the plugin's call shape). Returns via out
+           params whether the output kept the red half on top and what
+           MeasurePassInverted said about the same pass; the caller asserts
+           upright=true and measured=false on this bottom-left-origin
+           runner. Uprightness is judged by red-vs-blue channel dominance
+           per half, falling back to luminance for monochrome classes
+           (red's 0.299 luma beats blue's 0.114 through every monotonic
+           MovieTime transform). */
+        private static bool RunOrientation(
+            Mode mode, Material sharedMat, Tex tex,
+            out bool upright, out string detail)
+        {
+            var asymSrc = MakeOrientationSourceRT();
+            var asymDst = new RenderTexture(_width, _height, 0, RenderTextureFormat.ARGB32)
+            {
+                name = "HullcamBlitDeterminism_orient_dst",
+                antiAliasing = 1,
+            };
+            var rig = new Kerbcam.HullcamFilterBlit(typeof(FakeCameraFilterStatics));
+            Action<RenderTexture, RenderTexture> pass = (s, d) =>
+            {
+                var mt = FakeCameraFilterStatics.SharedMaterial;
+                TitlePage(mt, true, tex.Reticle);
+                mode.Apply(mt, tex);
+                Graphics.Blit(s, d, mt);
+            };
+            try
+            {
+                rig.Run(pass, asymSrc, asymDst);
+                byte[] outBytes = ReadBack(asymDst);
+
+                /* Raw RGBA32 rows are bottom-up; compare the outer row
+                   quarters (clear of the central reticle band). */
+                int bytesPerRow = _width * 4;
+                int quarter = _height / 4;
+                double topR = 0, topB = 0, topLum = 0, botR = 0, botB = 0, botLum = 0;
+                for (int y = 0; y < quarter; y++)
+                {
+                    int bot = y * bytesPerRow;
+                    int top = (_height - 1 - y) * bytesPerRow;
+                    for (int x = 0; x < _width; x++)
+                    {
+                        int bo = bot + x * 4, to = top + x * 4;
+                        botR += outBytes[bo]; botB += outBytes[bo + 2];
+                        botLum += outBytes[bo] + outBytes[bo + 1] + outBytes[bo + 2];
+                        topR += outBytes[to]; topB += outBytes[to + 2];
+                        topLum += outBytes[to] + outBytes[to + 1] + outBytes[to + 2];
+                    }
+                }
+                double texels = (double)quarter * _width;
+                double channelScore = ((topR - topB) - (botR - botB)) / texels;
+                double lumScore = (topLum - botLum) / texels;
+                const double eps = 5.0;
+                upright = Math.Abs(channelScore) >= eps
+                    ? channelScore > 0
+                    : lumScore > eps;
+                detail = $" (channelScore={channelScore:F1}, lumScore={lumScore:F1})";
+
+                return Kerbcam.HullcamFilterBlit.MeasurePassInverted(pass);
+            }
+            finally
+            {
+                if (rig.Material != null)
+                    UnityEngine.Object.DestroyImmediate(rig.Material);
+                if (!ReferenceEquals(FakeCameraFilterStatics.SharedMaterial, sharedMat))
+                    throw new Exception("orientation Run failed to restore the shared static");
+                asymSrc.Release();
+                UnityEngine.Object.DestroyImmediate(asymSrc);
+                asymDst.Release();
+                UnityEngine.Object.DestroyImmediate(asymDst);
+            }
+        }
+
+        // Top half red, bottom half blue: the vertically asymmetric frame
+        // for the orientation assertion.
+        private static RenderTexture MakeOrientationSourceRT()
+        {
+            var px = new Color32[_width * _height];
+            for (int y = 0; y < _height; y++)
+                for (int x = 0; x < _width; x++)
+                    px[y * _width + x] = y >= _height / 2
+                        ? new Color32(255, 0, 0, 255)   // pixel rows run bottom-up
+                        : new Color32(0, 0, 255, 255);
+            var tex = MakeTexture("orient_frame", _width, _height, px);
+            var rt = new RenderTexture(_width, _height, 0, RenderTextureFormat.ARGB32)
+            {
+                name = "HullcamBlitDeterminism_orient_src",
+                antiAliasing = 1,
+            };
+            Graphics.Blit(tex, rt);
+            UnityEngine.Object.DestroyImmediate(tex);
+            return rt;
         }
 
         // Mirrors CameraFilter.RenderTitlePage: kerbcam calls it with

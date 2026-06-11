@@ -20,7 +20,23 @@
    camera ever writes; the finally restores the real static immediately, so
    Hullcam's own in-game rendering (OnRenderImage, later in the frame) is
    untouched. If reflection or the shared material is unavailable, Run falls
-   back to the legacy shared-static path rather than dropping the filter. */
+   back to the legacy shared-static path rather than dropping the filter.
+
+   Orientation: the MovieTime shader has no UNITY_UV_STARTS_AT_TOP handling
+   (Hullcam only ever ran it inside OnRenderImage, where Unity compensates
+   the Direct3D-style top-left UV origin itself). Driven by a manual
+   Graphics.Blit chain that compensation is absent, and on top-left-origin
+   APIs (D3D11, Metal) the redirected pass can come out vertically inverted
+   while bottom-left-origin GL is correct (the v0.19.0 Windows regression).
+   Rather than hardcoding which APIs or filter classes invert, Run measures
+   it once per camera: on SystemInfo.graphicsUVStartsAtTop platforms only,
+   the first Run pushes a vertically asymmetric probe frame through the
+   camera's own redirected pass and reads back which half landed on top. If
+   the pass inverted, every subsequent Run appends one compensating vertical
+   flip to the destination. On bottom-left-origin platforms (the tier-1
+   Deck) the gate is false, the probe never executes and the chain is
+   byte-identical to the unprobed path; the headless determinism harness
+   pins that on glcore. */
 
 using System;
 using System.Collections.Generic;
@@ -41,6 +57,13 @@ namespace Kerbcam
 
         private readonly Type _filterType;
         private Material _material;
+        /* Orientation state, resolved by the first redirected Run. True
+           once the probe has run (or been skipped by the UV-origin gate);
+           _compensateFlip then says whether this camera's pass needs the
+           corrective vertical flip. Per camera, not static: the probe runs
+           the camera's own filter class. */
+        private bool _orientationKnown;
+        private bool _compensateFlip;
 
         /// <param name="filterType">The type holding the static filter
         /// state: HullcamVDS.CameraFilter in the plugin, a same-shaped fake
@@ -56,13 +79,18 @@ namespace Kerbcam
 
         /// <summary>
         /// Execute one filter pass (the caller's RenderTitlePage plus
-        /// RenderImageWithFilter calls) with the holder type's mtShader
-        /// static redirected to this camera's private material, restoring
-        /// the shared material in a finally. Falls back to running the pass
-        /// against the untouched shared static when the field, the shared
-        /// material, or the private material is unavailable.
+        /// RenderImageWithFilter calls, parameterised by source and
+        /// destination) with the holder type's mtShader static redirected
+        /// to this camera's private material, restoring the shared material
+        /// in a finally. On top-left-UV-origin graphics APIs the first call
+        /// probes the pass's vertical orientation and, when the pass
+        /// inverts, every call appends a compensating flip to dst. Falls
+        /// back to running the pass against the untouched shared static
+        /// when the field, the shared material, or the private material is
+        /// unavailable.
         /// </summary>
-        public void Run(Action renderPass)
+        public void Run(Action<RenderTexture, RenderTexture> renderPass,
+            RenderTexture src, RenderTexture dst)
         {
             var mtField = MtShaderField();
             var sharedMt = mtField != null ? mtField.GetValue(null) as Material : null;
@@ -73,7 +101,25 @@ namespace Kerbcam
                 mtField.SetValue(null, _material);
                 try
                 {
-                    renderPass();
+                    if (!_orientationKnown)
+                    {
+                        /* Gate on actual platform semantics, never on
+                           Application.platform: bottom-left-origin GL
+                           (the Deck) short-circuits and never probes,
+                           keeping this path identical to the unprobed
+                           one. Probed inside the redirect window so the
+                           measurement exercises exactly the pass the
+                           camera will run. */
+                        _compensateFlip = SystemInfo.graphicsUVStartsAtTop
+                            && MeasurePassInverted(renderPass);
+                        _orientationKnown = true;
+                        if (_compensateFlip)
+                            Debug.Log(
+                                "[Kerbcam] filter blit measured vertically inverted on this graphics API; compensating");
+                    }
+                    renderPass(src, dst);
+                    if (_compensateFlip)
+                        FlipVertical(dst);
                 }
                 finally
                 {
@@ -82,8 +128,103 @@ namespace Kerbcam
             }
             else
             {
-                renderPass();
+                renderPass(src, dst);
             }
+        }
+
+        /* One-time orientation probe: a white-top/black-bottom frame goes
+           through the camera's own redirected pass; whichever half is
+           brighter in the output says whether the pass kept or inverted
+           vertical orientation. The white/black ordering survives every
+           MovieTime transform the filter classes apply (monochrome dot,
+           positive contrast scale, brightness add, non-negative vignette
+           and overlay multiplies), and the title overlay cannot contaminate
+           the read: suppressing classes rewrite _TitleTex to a transparent
+           texture, and the dockingdisplay crosshair's alpha hugs the centre
+           axes while the probe compares the outer row quarters. Ambiguous
+           or failed reads default to upright (no compensation, the pre-fix
+           behaviour) with a warning. Internal so the determinism harness
+           can assert it reports upright on glcore. */
+        internal static bool MeasurePassInverted(
+            Action<RenderTexture, RenderTexture> renderPass)
+        {
+            const int size = 8;
+            RenderTexture probeSrc = null, probeDst = null;
+            Texture2D pattern = null, result = null;
+            var prevActive = RenderTexture.active;
+            try
+            {
+                /* Texture2D pixel rows run bottom-up: indices y >= size/2
+                   are the TOP half of the image. */
+                var px = new Color32[size * size];
+                for (int y = 0; y < size; y++)
+                    for (int x = 0; x < size; x++)
+                        px[y * size + x] = y >= size / 2
+                            ? new Color32(255, 255, 255, 255)
+                            : new Color32(0, 0, 0, 255);
+                pattern = new Texture2D(size, size, TextureFormat.RGBA32, false);
+                pattern.SetPixels32(px);
+                pattern.Apply(false, false);
+
+                probeSrc = RenderTexture.GetTemporary(size, size, 0, RenderTextureFormat.ARGB32);
+                probeDst = RenderTexture.GetTemporary(size, size, 0, RenderTextureFormat.ARGB32);
+                // Default-material blit: the one upload path Unity keeps
+                // orientation-correct on every API.
+                Graphics.Blit(pattern, probeSrc);
+                renderPass(probeSrc, probeDst);
+
+                result = new Texture2D(size, size, TextureFormat.RGBA32, false);
+                RenderTexture.active = probeDst;
+                result.ReadPixels(new Rect(0, 0, size, size), 0, 0);
+                result.Apply();
+                var outPx = result.GetPixels32();
+
+                float top = 0f, bottom = 0f;
+                int quarter = size / 4;
+                for (int y = 0; y < quarter; y++)
+                    for (int x = 0; x < size; x++)
+                    {
+                        Color32 b = outPx[y * size + x];
+                        Color32 t = outPx[(size - 1 - y) * size + x];
+                        bottom += b.r + b.g + b.b;
+                        top += t.r + t.g + t.b;
+                    }
+                // ~8/255 per channel per texel of separation required.
+                float margin = 8f * 3f * quarter * size;
+                if (Mathf.Abs(top - bottom) < margin)
+                {
+                    Debug.LogWarning(
+                        "[Kerbcam] filter orientation probe inconclusive; assuming upright");
+                    return false;
+                }
+                return bottom > top;
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning(
+                    $"[Kerbcam] filter orientation probe failed ({ex.Message}); assuming upright");
+                return false;
+            }
+            finally
+            {
+                RenderTexture.active = prevActive;
+                if (probeSrc != null) RenderTexture.ReleaseTemporary(probeSrc);
+                if (probeDst != null) RenderTexture.ReleaseTemporary(probeDst);
+                if (pattern != null) UnityEngine.Object.DestroyImmediate(pattern);
+                if (result != null) UnityEngine.Object.DestroyImmediate(result);
+            }
+        }
+
+        /* In-place vertical mirror of rt via a temporary, the same
+           scale/offset Blit technique as KerbcamCamera's horizontal-flip
+           correction (default-material scale/offset blits are
+           orientation-neutral on both UV conventions). */
+        private static void FlipVertical(RenderTexture rt)
+        {
+            var tmp = RenderTexture.GetTemporary(rt.descriptor);
+            Graphics.Blit(rt, tmp, new Vector2(1f, -1f), new Vector2(0f, 1f));
+            Graphics.Blit(tmp, rt);
+            RenderTexture.ReleaseTemporary(tmp);
         }
 
         /// <summary>Destroy the private material (camera teardown).</summary>
