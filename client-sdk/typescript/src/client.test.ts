@@ -780,7 +780,7 @@ describe("KerbcamClient", () => {
           processedStream,
           setIntensity,
           setSource,
-          setStaticOnStall: vi.fn(),
+          setShowStatic: vi.fn(),
           destroy: vi.fn(),
         });
       try {
@@ -824,7 +824,7 @@ describe("KerbcamClient", () => {
           processedStream,
           setIntensity: vi.fn(),
           setSource,
-          setStaticOnStall: vi.fn(),
+          setShowStatic: vi.fn(),
           destroy: vi.fn(),
         });
       try {
@@ -943,7 +943,7 @@ describe("KerbcamClient", () => {
           processedStream,
           setIntensity: vi.fn(),
           setSource: vi.fn(),
-          setStaticOnStall: vi.fn(),
+          setShowStatic: vi.fn(),
           destroy,
         });
       try {
@@ -974,16 +974,16 @@ describe("KerbcamClient", () => {
   describe("stall surface (handle mirror of the pipeline's stall detector)", () => {
     /*
      * Stub pipeline that captures the options the handle creates it with, so
-     * tests can fire the onStallChange callback and inspect the staticOnStall
+     * tests can fire the onStallChange callback and inspect the showStatic
      * seed without a real canvas.
      */
     function makePipelineSpy() {
-      const setStaticOnStall = vi.fn();
+      const setShowStatic = vi.fn();
       const pipeline = {
         processedStream: new MediaStream(),
         setIntensity: vi.fn(),
         setSource: vi.fn(),
-        setStaticOnStall,
+        setShowStatic,
         destroy: vi.fn(),
       };
       let opts: Parameters<typeof noise.tryCreateNoisePipeline>[2];
@@ -994,7 +994,7 @@ describe("KerbcamClient", () => {
           return pipeline;
         });
       return {
-        setStaticOnStall,
+        setShowStatic,
         createSpy,
         fireStall: (stalled: boolean) => opts?.onStallChange?.(stalled),
         creationOptions: () => opts,
@@ -1046,7 +1046,7 @@ describe("KerbcamClient", () => {
       }
     });
 
-    it("setStallStatic seeds pipeline creation and forwards live changes", async () => {
+    it("setShowStatic seeds pipeline creation and forwards live changes", async () => {
       const spy = makePipelineSpy();
       try {
         const sidecar = new MockSidecar();
@@ -1054,19 +1054,19 @@ describe("KerbcamClient", () => {
         const cam = client.camera(42);
 
         // Default on; flipping before any pipeline exists just stores it.
-        expect(cam.stallStatic).toBe(true);
-        cam.setStallStatic(false);
-        expect(cam.stallStatic).toBe(false);
+        expect(cam.showStatic).toBe(true);
+        cam.setShowStatic(false);
+        expect(cam.showStatic).toBe(false);
         expect(spy.creationOptions()).toBeUndefined();
 
         // The pipeline built on track arrival carries the stored setting.
         sidecar.deliverTrack("0", {} as MediaStreamTrack);
-        expect(spy.creationOptions()?.staticOnStall).toBe(false);
+        expect(spy.creationOptions()?.showStatic).toBe(false);
 
         // Runtime flips forward to the live pipeline.
-        cam.setStallStatic(true);
-        expect(cam.stallStatic).toBe(true);
-        expect(spy.setStaticOnStall).toHaveBeenLastCalledWith(true);
+        cam.setShowStatic(true);
+        expect(cam.showStatic).toBe(true);
+        expect(spy.setShowStatic).toHaveBeenLastCalledWith(true);
       } finally {
         spy.createSpy.mockRestore();
       }

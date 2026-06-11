@@ -4,7 +4,7 @@
  *  - a source that stalls after delivering frames gets the static ramped in
  *    over STALL_RAMP_MS on top of the held last frame (layer alpha 0 -> 1);
  *  - the first decoded frame drops the static immediately (no ramp out);
- *  - `staticOnStall: false` freezes the last frame with no static at all;
+ *  - `showStatic: false` freezes the last frame with no static at all;
  *  - a source that never decoded a frame keeps the immediate full-static
  *    "waiting" look;
  *  - stall transitions surface through `onStallChange`.
@@ -232,12 +232,12 @@ describe("noise pipeline stall presentation", () => {
     }
   });
 
-  it("staticOnStall: false freezes the last frame with no static", () => {
+  it("showStatic: false freezes the last frame with no static", () => {
     const env = installStallEnv();
     try {
       const onStallChange = vi.fn();
       const pipeline = tryCreateNoisePipeline(fakeStream(), 0.05, {
-        staticOnStall: false,
+        showStatic: false,
         onStallChange,
       });
 
@@ -257,7 +257,7 @@ describe("noise pipeline stall presentation", () => {
       expect(env.putImageData).not.toHaveBeenCalled();
 
       // Runtime re-enable brings the static back on the next draw.
-      pipeline?.setStaticOnStall(true);
+      pipeline?.setShowStatic(true);
       env.setNow(1700);
       env.draw();
       expect(env.putImageData).toHaveBeenCalled();
@@ -284,6 +284,31 @@ describe("noise pipeline stall presentation", () => {
       expect(noiseDraw(records)?.alpha).toBe(1);
       // Nothing restored under it: the only drawImage is the noise canvas.
       expect(records.filter((r) => r.kind === "drawImage")).toHaveLength(1);
+      pipeline?.destroy();
+    } finally {
+      env.restore();
+    }
+  });
+
+  it("showStatic: false skips noise on the sourceless path", () => {
+    const env = installStallEnv();
+    try {
+      const pipeline = tryCreateNoisePipeline(null, 1.0, { showStatic: false });
+      expect(pipeline).not.toBeNull();
+
+      env.putImageData.mockClear();
+      const records = env.draw();
+
+      /* Sourceless + showStatic off: only the black fillRect, no noise composite. */
+      expect(records).toHaveLength(1);
+      expect(records[0]?.kind).toBe("fillRect");
+      expect(env.putImageData).not.toHaveBeenCalled();
+
+      /* Re-enable at runtime: noise appears on the next draw. */
+      pipeline?.setShowStatic(true);
+      env.draw();
+      expect(env.putImageData).toHaveBeenCalled();
+
       pipeline?.destroy();
     } finally {
       env.restore();

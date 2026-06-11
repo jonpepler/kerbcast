@@ -1,26 +1,27 @@
 import { useEffect, useRef } from "react";
 import { X } from "lucide-react";
 import styled from "styled-components";
-import { applyTheme, saveDebug, saveStaticOnStale, saveTheme } from "./settings";
+import { applyTheme, saveDebug, saveShowStatic, saveTheme } from "./settings";
 import type { ThemePreference } from "./settings";
 
 interface SettingsProps {
   theme: ThemePreference;
   debug: boolean;
-  staticOnStale: boolean;
+  /** Effective (resolved) value of the show-static setting. */
+  showStatic: boolean;
   onThemeChange: (t: ThemePreference) => void;
   onDebugChange: (enabled: boolean) => void;
-  onStaticOnStaleChange: (enabled: boolean) => void;
+  onShowStaticChange: (enabled: boolean) => void;
   onClose: () => void;
 }
 
 export function Settings({
   theme,
   debug,
-  staticOnStale,
+  showStatic,
   onThemeChange,
   onDebugChange,
-  onStaticOnStaleChange,
+  onShowStaticChange,
   onClose,
 }: SettingsProps): React.JSX.Element {
   const panelRef = useRef<HTMLDivElement>(null);
@@ -54,9 +55,9 @@ export function Settings({
     onDebugChange(enabled);
   };
 
-  const handleStaticOnStale = (enabled: boolean) => {
-    saveStaticOnStale(enabled);
-    onStaticOnStaleChange(enabled);
+  const handleShowStatic = (enabled: boolean) => {
+    saveShowStatic(enabled);
+    onShowStaticChange(enabled);
   };
 
   return (
@@ -85,12 +86,15 @@ export function Settings({
         </FieldRow>
 
         <FieldRow>
-          <FieldLabel htmlFor="kc-static-toggle">Static on stale feeds</FieldLabel>
+          <div>
+            <FieldLabel htmlFor="kc-static-toggle">Show static</FieldLabel>
+            <FieldHint>Default follows your system reduced-motion preference</FieldHint>
+          </div>
           <input
             id="kc-static-toggle"
             type="checkbox"
-            checked={staticOnStale}
-            onChange={(e) => handleStaticOnStale(e.target.checked)}
+            checked={showStatic}
+            onChange={(e) => handleShowStatic(e.target.checked)}
             style={{ accentColor: "var(--kc-accent)", width: "1rem", height: "1rem" }}
           />
         </FieldRow>
@@ -194,6 +198,13 @@ const FieldLabel = styled.label`
   font-size: 0.8rem;
   color: var(--kc-text);
   cursor: pointer;
+`;
+
+const FieldHint = styled.p`
+  margin: 0.15rem 0 0;
+  font-size: 0.68rem;
+  color: var(--kc-text-muted);
+  opacity: 0.7;
 `;
 
 const NativeSelect = styled.select`

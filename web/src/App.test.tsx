@@ -540,7 +540,7 @@ describe("App - settings", () => {
     expect(localStorage.getItem("kerbcam:debug")).toBe("true");
   });
 
-  it("static-on-stale toggle is on by default and persists when switched off", async () => {
+  it("show-static toggle is on by default and persists when switched off", async () => {
     const { client, openSidecar } = buildFixture([]);
     await renderApp(client);
     await act(async () => { openSidecar(); });
@@ -548,17 +548,17 @@ describe("App - settings", () => {
     fireEvent.click(screen.getByRole("button", { name: /settings/i }));
     await waitFor(() => screen.getByRole("dialog"));
 
-    const cb = screen.getByRole("checkbox", { name: /static on stale feeds/i }) as HTMLInputElement;
+    const cb = screen.getByRole("checkbox", { name: /show static/i }) as HTMLInputElement;
     expect(cb.checked).toBe(true);
 
     await act(async () => {
       fireEvent.click(cb);
     });
-    expect(localStorage.getItem("kerbcam:staticOnStale")).toBe("false");
+    expect(localStorage.getItem("kerbcam:showStatic")).toBe("false");
   });
 
-  it("static-on-stale=off is restored on the next visit", async () => {
-    localStorage.setItem("kerbcam:staticOnStale", "false");
+  it("show-static=off is restored on the next visit", async () => {
+    localStorage.setItem("kerbcam:showStatic", "false");
 
     const { client, openSidecar } = buildFixture([]);
     await renderApp(client);
@@ -567,11 +567,11 @@ describe("App - settings", () => {
     fireEvent.click(screen.getByRole("button", { name: /settings/i }));
     await waitFor(() => screen.getByRole("dialog"));
 
-    const cb = screen.getByRole("checkbox", { name: /static on stale feeds/i }) as HTMLInputElement;
+    const cb = screen.getByRole("checkbox", { name: /show static/i }) as HTMLInputElement;
     expect(cb.checked).toBe(false);
   });
 
-  it("static-on-stale flows through the tiles to the camera handles", async () => {
+  it("show-static flows through the tiles to the camera handles", async () => {
     saveTiles([{ flightId: 1, spotlit: false }]);
     const { client, openSidecar } = buildFixture([
       makeCamera({ flightId: 1, cameraName: "Alpha" }),
@@ -581,20 +581,35 @@ describe("App - settings", () => {
 
     // The tile's CameraFeed pushes the current setting (default on).
     await waitFor(() => {
-      expect(client.camera(1).stallStatic).toBe(true);
+      expect(client.camera(1).showStatic).toBe(true);
     });
 
     fireEvent.click(screen.getByRole("button", { name: /settings/i }));
     await waitFor(() => screen.getByRole("dialog"));
     await act(async () => {
-      fireEvent.click(screen.getByRole("checkbox", { name: /static on stale feeds/i }));
+      fireEvent.click(screen.getByRole("checkbox", { name: /show static/i }));
     });
 
     // Switching it off reaches the handle: stalled feeds now freeze with the
     // badge instead of ramping static in.
     await waitFor(() => {
-      expect(client.camera(1).stallStatic).toBe(false);
+      expect(client.camera(1).showStatic).toBe(false);
     });
+  });
+
+  it("show-static defaults to off when prefers-reduced-motion is set", async () => {
+    const mq = { matches: true, addEventListener: vi.fn(), removeEventListener: vi.fn() };
+    vi.spyOn(window, "matchMedia").mockReturnValue(mq as unknown as MediaQueryList);
+
+    const { client, openSidecar } = buildFixture([]);
+    await renderApp(client);
+    await act(async () => { openSidecar(); });
+
+    fireEvent.click(screen.getByRole("button", { name: /settings/i }));
+    await waitFor(() => screen.getByRole("dialog"));
+
+    const cb = screen.getByRole("checkbox", { name: /show static/i }) as HTMLInputElement;
+    expect(cb.checked).toBe(false);
   });
 });
 

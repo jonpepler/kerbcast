@@ -37,8 +37,8 @@ export interface KerbcamCameraHandle {
    * Transitions are emitted as `stall` events.
    */
   readonly stalled: boolean;
-  /** Current {@link setStallStatic} setting. */
-  readonly stallStatic: boolean;
+  /** Current {@link setShowStatic} setting. */
+  readonly showStatic: boolean;
 
   setLayers(layers: Layer[]): Promise<void>;
   setRenderSize(width: number, height: number): Promise<void>;
@@ -79,14 +79,13 @@ export interface KerbcamCameraHandle {
   configure(options: { noise?: Partial<NoiseConfig> }): void;
 
   /**
-   * Choose the stall presentation baked into `mediaStream`: `true`
-   * (default) ramps the TV static in over the held last frame when the
-   * source stalls; `false` freezes the last frame with no static, leaving
-   * the staleness indication to the consumer's chrome (watch the `stall`
-   * event / {@link stalled}). Sourceless static (signal loss /
-   * camera-switch gap) is unaffected.
+   * Choose whether animated static is drawn (default true). When false:
+   * a stalled source holds its last decoded frame with no noise (the
+   * consumer's chrome carries the staleness indicator via the `stall`
+   * event / {@link stalled}), and a sourceless path clears to black
+   * without noise so only the text overlay renders.
    */
-  setStallStatic(enabled: boolean): void;
+  setShowStatic(enabled: boolean): void;
 
   on<K extends keyof KerbcamCameraEvents>(
     event: K,
@@ -467,8 +466,8 @@ class CameraHandle
   private _sourceless = false;
   /** Stall state mirrored from the pipeline's onStallChange callback. */
   private _stalled = false;
-  /** Stall presentation (static vs frozen frame); survives pipeline rebuilds. */
-  private _stallStatic = true;
+  /** Whether animated static is drawn; survives pipeline rebuilds. */
+  private _showStatic = true;
   private readonly client: KerbcamClient;
 
   constructor(flightId: number, client: KerbcamClient) {
@@ -489,8 +488,8 @@ class CameraHandle
     return this._stalled;
   }
 
-  get stallStatic(): boolean {
-    return this._stallStatic;
+  get showStatic(): boolean {
+    return this._showStatic;
   }
 
   configure(options: { noise?: Partial<NoiseConfig> }): void {
@@ -500,9 +499,9 @@ class CameraHandle
     this._applySource(this._rawStream);
   }
 
-  setStallStatic(enabled: boolean): void {
-    this._stallStatic = enabled;
-    this._noisePipeline?.setStaticOnStall(enabled);
+  setShowStatic(enabled: boolean): void {
+    this._showStatic = enabled;
+    this._noisePipeline?.setShowStatic(enabled);
   }
 
   /** Internal — called by the client when CameraState pushes arrive. */
@@ -551,7 +550,7 @@ class CameraHandle
       if (!this._noisePipeline) {
         const initial = raw ? this._liveIntensity() : SOURCELESS_INTENSITY;
         this._noisePipeline = tryCreateNoisePipeline(raw, initial, {
-          staticOnStall: this._stallStatic,
+          showStatic: this._showStatic,
           onStallChange: (stalled) => this._setStalled(stalled),
         });
       } else {

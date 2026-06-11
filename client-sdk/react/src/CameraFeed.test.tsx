@@ -150,7 +150,7 @@ function renderFeed(
     showDebugInfo?: boolean;
     renderSize?: "auto" | "none";
     enableQualityControl?: boolean;
-    staticOnStale?: boolean;
+    showStatic?: boolean;
     ref?: React.Ref<CameraFeedHandle>;
   },
 ) {
@@ -580,7 +580,7 @@ describe("CameraFeed - SIGNAL LOST overlay", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Stall presentation (staticOnStale)
+// Stall presentation (showStatic prop)
 // ---------------------------------------------------------------------------
 
 /*
@@ -657,24 +657,24 @@ function installStallEnv() {
   };
 }
 
-describe("CameraFeed - stall presentation (staticOnStale)", () => {
-  it("forwards staticOnStale to the displayed camera's handle", async () => {
+describe("CameraFeed - stall presentation (showStatic)", () => {
+  it("forwards showStatic to the displayed camera's handle", async () => {
     const { client } = await buildConnectedSource();
 
     const { unmount } = renderFeed(client, { flightId: 42 });
-    // Default on.
-    expect(client.camera(42).stallStatic).toBe(true);
+    // Default on (no reduced-motion in jsdom).
+    expect(client.camera(42).showStatic).toBe(true);
     unmount();
 
-    renderFeed(client, { flightId: 42, staticOnStale: false });
-    expect(client.camera(42).stallStatic).toBe(false);
+    renderFeed(client, { flightId: 42, showStatic: false });
+    expect(client.camera(42).showStatic).toBe(false);
   });
 
-  it("staticOnStale=false shows the stale badge on stall and clears it when frames resume", async () => {
+  it("showStatic=false shows the stale badge on stall and clears it when frames resume", async () => {
     const env = installStallEnv();
     try {
       const { client, sidecar } = await buildConnectedSource();
-      renderFeed(client, { flightId: 42, staticOnStale: false });
+      renderFeed(client, { flightId: 42, showStatic: false });
 
       // Slot bound by the feed's subscription; deliver the media so the
       // noise pipeline (and its stall detector) attaches to a live source.
@@ -743,7 +743,7 @@ describe("CameraFeed - stall presentation (staticOnStale)", () => {
     const env = installStallEnv();
     try {
       const { client, sidecar } = await buildConnectedSource();
-      renderFeed(client, { flightId: 42, staticOnStale: false });
+      renderFeed(client, { flightId: 42, showStatic: false });
 
       const mid = sidecar.slotMidFor(42);
       await act(async () => {

@@ -23,12 +23,12 @@ const STALL_RAMP_MS = 5000;
 
 export interface NoisePipelineOptions {
   /**
-   * Composite static over a stalled-but-attached source (default true).
-   * When false a stalled source holds its last decoded frame with no
-   * static, so the consumer can mark staleness in its own chrome instead.
-   * Sourceless static (signal loss / camera-switch gap) is unaffected.
+   * Composite animated static over stalled and sourceless states (default
+   * true). When false: a stalled source holds its last decoded frame with no
+   * static (the consumer provides its own staleness chrome), and a sourceless
+   * path clears to black without noise (only the text overlay renders).
    */
-  staticOnStall?: boolean;
+  showStatic?: boolean;
   /** Observe stall transitions (frames stopped / frames resumed). */
   onStallChange?: (stalled: boolean) => void;
 }
@@ -44,8 +44,8 @@ export interface NoisePipeline {
    * gap.
    */
   setSource(stream: MediaStream | null): void;
-  /** Runtime switch for {@link NoisePipelineOptions.staticOnStall}. */
-  setStaticOnStall(enabled: boolean): void;
+  /** Runtime switch for {@link NoisePipelineOptions.showStatic}. */
+  setShowStatic(enabled: boolean): void;
   destroy(): void;
 }
 
@@ -80,7 +80,7 @@ export function tryCreateNoisePipeline(
   noiseCanvas.height = Math.ceil(NOISE_MAX_H / 2);
 
   let intensity = initialIntensity;
-  let staticOnStall = options?.staticOnStall ?? true;
+  let showStatic = options?.showStatic ?? true;
   const onStallChange = options?.onStallChange;
   let rafId: number | null = null;
   let destroyed = false;
@@ -216,6 +216,10 @@ export function tryCreateNoisePipeline(
       // rather than the last live frame.
       ctx.fillStyle = "#000";
       ctx.fillRect(0, 0, cw, ch);
+      if (!showStatic) {
+        rafId = requestAnimationFrame(draw);
+        return;
+      }
     } else if (stalled) {
       // Stall pins the noise to full strength; the handle's degrade-driven
       // intensity (possibly near zero) belongs to a feed that is delivering.
@@ -224,7 +228,7 @@ export function tryCreateNoisePipeline(
         // Restore the held last frame, then ramp a black scrim in step with
         // the static so the fully-ramped look matches the sourceless one.
         ctx.drawImage(lastFrameCanvas, 0, 0, cw, ch);
-        if (!staticOnStall) {
+        if (!showStatic) {
           // Frozen last frame, no static: the consumer's chrome carries the
           // staleness indicator instead.
           rafId = requestAnimationFrame(draw);
@@ -240,7 +244,7 @@ export function tryCreateNoisePipeline(
         // immediate full-static look; nothing to soften from.
         ctx.fillStyle = "#000";
         ctx.fillRect(0, 0, cw, ch);
-        if (!staticOnStall) {
+        if (!showStatic) {
           rafId = requestAnimationFrame(draw);
           return;
         }
@@ -298,8 +302,8 @@ export function tryCreateNoisePipeline(
       intensity = level;
     },
     setSource,
-    setStaticOnStall(enabled: boolean) {
-      staticOnStall = enabled;
+    setShowStatic(enabled: boolean) {
+      showStatic = enabled;
     },
     destroy() {
       destroyed = true;

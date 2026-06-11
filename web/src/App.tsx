@@ -11,10 +11,10 @@ import { ShedBanner } from "./ShedBanner";
 import {
   applyTheme,
   loadDebug,
-  loadStaticOnStale,
+  loadShowStatic,
   loadTheme,
   saveDebug,
-  saveStaticOnStale,
+  saveShowStatic,
   saveTheme,
 } from "./settings";
 import type { ThemePreference } from "./settings";
@@ -54,9 +54,17 @@ export function App({ client }: AppProps): React.JSX.Element {
     return t;
   });
   const [debug, setDebug] = useState<boolean>(() => loadDebug());
-  const [staticOnStale, setStaticOnStale] = useState<boolean>(() =>
-    loadStaticOnStale(),
+  /*
+   * showStaticExplicit: null = auto (resolve from prefers-reduced-motion),
+   * true/false = explicit user override stored in localStorage.
+   */
+  const [showStaticExplicit, setShowStaticExplicit] = useState<boolean | null>(
+    () => loadShowStatic(),
   );
+  const showStatic =
+    showStaticExplicit !== null
+      ? showStaticExplicit
+      : !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   const [settingsOpen, setSettingsOpen] = useState(false);
 
   // Tile state
@@ -83,10 +91,10 @@ export function App({ client }: AppProps): React.JSX.Element {
           <Settings
             theme={theme}
             debug={debug}
-            staticOnStale={staticOnStale}
+            showStatic={showStatic}
             onThemeChange={(t: ThemePreference) => { saveTheme(t); applyTheme(t); setTheme(t); }}
             onDebugChange={(d: boolean) => { saveDebug(d); setDebug(d); }}
-            onStaticOnStaleChange={(s: boolean) => { saveStaticOnStale(s); setStaticOnStale(s); }}
+            onShowStaticChange={(s: boolean) => { saveShowStatic(s); setShowStaticExplicit(s); }}
             onClose={() => setSettingsOpen(false)}
           />
         )}
@@ -105,7 +113,7 @@ export function App({ client }: AppProps): React.JSX.Element {
             tiles={tiles}
             onTilesChange={setTiles}
             showDebugInfo={debug}
-            staticOnStale={staticOnStale}
+            showStatic={showStatic}
           />
           {debug && (
             <DevPanel client={client} tileFlightIds={tileFlightIds} />

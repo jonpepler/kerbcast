@@ -251,15 +251,14 @@ export interface CameraFeedProps {
   /** Show resolution + encoder readout. Default false. */
   showDebugInfo?: boolean;
   /**
-   * Stall presentation. `true` (default): when the feed's frames stop
-   * arriving, TV static ramps in over ~5 s on top of the last received
-   * frame, and drops the instant frames resume. `false`: the last frame
-   * stays frozen, slightly dimmed, with a small "stale" badge, so a frozen
-   * frame can never pass for a live one. Applies to the camera handle this
-   * feed displays (last mounted feed wins). Signal-lost static for
-   * destroyed cameras is unaffected.
+   * Whether to show animated static. `true`: stall ramps noise in over the
+   * held last frame; sourceless path shows live noise. `false`: stall freezes
+   * the last frame with a dim scrim and stale badge; sourceless path shows a
+   * plain black background. `undefined` (default): auto mode, reads
+   * `prefers-reduced-motion: reduce` at mount and follows changes at runtime
+   * (reduced motion defaults to off, normal motion defaults to on).
    */
-  staticOnStale?: boolean;
+  showStatic?: boolean;
   /**
    * "auto" (default): ResizeObserver drives `setRenderSize` at a 16:9 crop,
    * debounced 500 ms. "none": no render-size feedback.
@@ -321,7 +320,7 @@ const CameraFeedInner = forwardRef<CameraFeedHandle, CameraFeedProps>(
       onSelectCamera,
       onDisplayedCameraChange,
       showDebugInfo = false,
-      staticOnStale = true,
+      showStatic,
       renderSize = "auto",
       emptyMessage = "No camera feeds - start a vessel with Hullcam parts installed",
       enableFullscreen = false,
@@ -334,6 +333,24 @@ const CameraFeedInner = forwardRef<CameraFeedHandle, CameraFeedProps>(
   ) {
     const client = useKerbcamClient();
     const cameras = useKerbcamCameras();
+
+    /*
+     * Reduced-motion auto mode: when `showStatic` prop is undefined, read and
+     * track `prefers-reduced-motion: reduce`. Reduced motion defaults to off
+     * (no animated noise); normal motion defaults to on.
+     */
+    const [reducedMotion, setReducedMotion] = useState(() => {
+      if (typeof window === "undefined") return false;
+      return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    });
+    useEffect(() => {
+      if (showStatic !== undefined) return;
+      const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
+      const handler = (e: MediaQueryListEvent) => setReducedMotion(e.matches);
+      mq.addEventListener("change", handler);
+      return () => mq.removeEventListener("change", handler);
+    }, [showStatic]);
+    const effectiveShowStatic = showStatic === undefined ? !reducedMotion : showStatic;
 
     // -------------------------------------------------------------------------
     // Selection model (mirrors gonogo's CameraFeed)
@@ -395,14 +412,14 @@ const CameraFeedInner = forwardRef<CameraFeedHandle, CameraFeedProps>(
     }, [stream]);
 
     // -------------------------------------------------------------------------
-    // Stall presentation. The static itself is composited in-stream by the
-    // SDK's noise pipeline; this just forwards the prop to the camera handle
+    // Stall presentation. The static is composited in-stream by the SDK's
+    // noise pipeline; this forwards the resolved setting to the camera handle
     // and mirrors the handle's stall state for the no-static badge.
     // -------------------------------------------------------------------------
     useEffect(() => {
       if (flightId === null) return;
-      client.camera(flightId).setStallStatic(staticOnStale);
-    }, [client, flightId, staticOnStale]);
+      client.camera(flightId).setShowStatic(effectiveShowStatic);
+    }, [client, flightId, effectiveShowStatic]);
 
     const [isStale, setIsStale] = useState(false);
     useEffect(() => {
@@ -923,10 +940,10 @@ const CameraFeedInner = forwardRef<CameraFeedHandle, CameraFeedProps>(
               )}
             {isDestroyed && (
               <SignalLostOverlay role="status" aria-label="Signal lost">
-                <SignalLostText>SIGNAL LOST</SignalLostText>
+                <SignalLostText $animated={effectiveShowStatic}>SIGNAL LOST</SignalLostText>
               </SignalLostOverlay>
             )}
-            {!staticOnStale && isStale && !isDestroyed && (
+            {!effectiveShowStatic && isStale && !isDestroyed && (
               <>
                 <StaleScrim aria-hidden="true" />
                 <StaleBadge role="status" aria-label="Feed stale">
@@ -1625,7 +1642,7 @@ const SignalLostOverlay = styled.div`
   background: rgba(0, 0, 0, 0.25);
 `;
 
-const SignalLostText = styled.span`
+const SignalLostText = styled.span<{ $animated: boolean }>`
   color: #ff4444;
   font-size: 1.1rem;
   font-weight: 700;
@@ -1635,9 +1652,13 @@ const SignalLostText = styled.span`
     0 0 8px rgba(255, 68, 68, 0.7),
     0 1px 2px rgba(0, 0, 0, 0.9);
 
-  @media (prefers-reduced-motion: no-preference) {
-    animation: signal-lost-pulse 2s ease-in-out infinite;
-  }
+  ${(p) =>
+    p.$animated &&
+    `
+    @media (prefers-reduced-motion: no-preference) {
+      animation: signal-lost-pulse 2s ease-in-out infinite;
+    }
+  `}
 
   @keyframes signal-lost-pulse {
     0%,
@@ -1651,7 +1672,7 @@ const SignalLostText = styled.span`
 `;
 
 /*
- * No-static stall presentation (`staticOnStale={false}`): a subtle dim over
+ * No-static stall presentation (`showStatic={false}`): a subtle dim over
  * the frozen last frame plus a corner badge, so a frozen frame is never
  * mistakable for a live one. Always visible (not hover chrome).
  */
