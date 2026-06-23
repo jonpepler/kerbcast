@@ -30,16 +30,20 @@ use anyhow::{anyhow, Result};
 use tokio::sync::{Mutex, Notify};
 use tracing::{info, warn};
 
+use webrtc::api::interceptor_registry::register_default_interceptors;
 use webrtc::api::media_engine::{MediaEngine, MIME_TYPE_H264};
 use webrtc::api::setting_engine::SettingEngine;
 use webrtc::api::APIBuilder;
 use webrtc::data_channel::data_channel_message::DataChannelMessage;
 use webrtc::data_channel::RTCDataChannel;
+use webrtc::interceptor::registry::Registry as InterceptorRegistry;
 use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::peer_connection::RTCPeerConnection;
+use webrtc::rtcp;
 use webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability;
+use webrtc::rtp_transceiver::rtp_sender::RTCRtpSender;
 use webrtc::track::track_local::track_local_static_sample::TrackLocalStaticSample;
 use webrtc::track::track_local::TrackLocal;
 
@@ -107,6 +111,18 @@ impl KerbcamPeer {
         let peer_id = NEXT_PEER_ID.fetch_add(1, Ordering::Relaxed);
         let mut media_engine = MediaEngine::default();
         media_engine.register_default_codecs()?;
+        // Install the default interceptors — critically the NACK responder,
+        // which retransmits packets the browser reports lost (via the `nack`
+        // feedback `register_default_codecs` already advertises). Without it a
+        // single lost packet breaks the H.264 reference chain with no recovery
+        // until the next scheduled keyframe (~2s GOP) — feeds "cut to static
+        // for a moment then return". The responder recovers the loss in ~1 RTT.
+        // No REMB interceptor is in this set, and the encode side ignores
+        // bandwidth estimates anyway, so the old REMB-driven reinit death spiral
+        // (see main.rs) cannot recur.
+        let mut interceptor_registry = InterceptorRegistry::new();
+        interceptor_registry =
+            register_default_interceptors(interceptor_registry, &mut media_engine)?;
         // Disable mDNS candidate obfuscation: the default QueryAndGather mode
         // generates .local hostnames that desktop Chrome resolves but Android
         // Chrome cannot, preventing streams from loading on mobile.
@@ -115,6 +131,7 @@ impl KerbcamPeer {
         let api = APIBuilder::new()
             .with_media_engine(media_engine)
             .with_setting_engine(setting_engine)
+            .with_interceptor_registry(interceptor_registry)
             .build();
 
         // No external STUN server: this is a LAN-only tool and host candidates
@@ -128,8 +145,12 @@ impl KerbcamPeer {
         // Build the slot pool: one send-track per slot, added to the PC so
         // the answer carries `slot_count` video m-lines matching the offer's
         // recv-only transceivers. Each sender's RTCP must be drained or
-        // webrtc-rs's NACK/PLI pipelines stall (see `drain_rtcp_sink`).
+        // webrtc-rs's NACK/PLI pipelines stall (see `drain_rtcp_sink`); the
+        // senders are held here and the per-slot drain tasks are spawned once
+        // the slot pool is shared (below), so each drain can resolve the camera
+        // bound to its slot when it honors a PLI.
         let mut slots: Vec<Slot> = Vec::with_capacity(slot_count);
+        let mut senders: Vec<Arc<RTCRtpSender>> = Vec::with_capacity(slot_count);
         for i in 0..slot_count {
             let track = Arc::new(TrackLocalStaticSample::new(
                 RTCRtpCodecCapability {
@@ -142,9 +163,7 @@ impl KerbcamPeer {
             let rtp_sender = pc
                 .add_track(track.clone() as Arc<dyn TrackLocal + Send + Sync>)
                 .await?;
-            tokio::spawn(async move {
-                drain_rtcp_sink(rtp_sender).await;
-            });
+            senders.push(rtp_sender);
             slots.push(Slot {
                 track,
                 mid: None,
@@ -180,6 +199,18 @@ impl KerbcamPeer {
         }
 
         let slots = Arc::new(Mutex::new(slots));
+
+        // Spawn the per-slot RTCP drains now that the slot pool is shared. Each
+        // drain pumps its sender's RTCP (driving the NACK responder) and honors
+        // PLI/FIR by forcing a keyframe on the camera currently bound to its
+        // slot.
+        for (slot_idx, sender) in senders.into_iter().enumerate() {
+            let slots = slots.clone();
+            let registry = registry.clone();
+            tokio::spawn(async move {
+                drain_rtcp_sink(sender, slot_idx, slots, registry).await;
+            });
+        }
 
         let control_channel: Arc<Mutex<Option<Arc<RTCDataChannel>>>> = Arc::new(Mutex::new(None));
 
@@ -1223,21 +1254,101 @@ fn make_even(v: u32) -> u32 {
     }
 }
 
+/// True if a batch of received RTCP contains a keyframe request — a Picture
+/// Loss Indication (PLI) or Full Intra Request (FIR). The browser sends these
+/// when it hits a loss it can't recover from retransmission; honoring one forces
+/// an IDR so the decoder unwedges in ~1 RTT instead of waiting for the next
+/// scheduled keyframe (a full GOP of static — the "feeds cut to static" bug).
+fn rtcp_requests_keyframe(packets: &[Box<dyn rtcp::packet::Packet + Send + Sync>]) -> bool {
+    use rtcp::payload_feedbacks::full_intra_request::FullIntraRequest;
+    use rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication;
+    packets.iter().any(|p| {
+        let any = p.as_any();
+        any.is::<PictureLossIndication>() || any.is::<FullIntraRequest>()
+    })
+}
+
+/// Decide whether to honor a keyframe request for the camera currently bound to
+/// a slot, given the `(flight_id, time)` of the last keyframe this slot forced.
+/// Honor it when the bound camera has *changed* since then (a camera freshly
+/// swapped into the slot must always get its first IDR — otherwise it stays
+/// static for a GOP), or when the per-camera debounce gap has elapsed. The
+/// debounce only suppresses repeats for the *same* camera, so it bounds IDR
+/// bursts under sustained loss without ever starving a newly-bound feed.
+fn should_force_keyframe(
+    bound: u32,
+    last: Option<(u32, std::time::Instant)>,
+    now: std::time::Instant,
+    min_gap: std::time::Duration,
+) -> bool {
+    match last {
+        Some((fid, t)) if fid == bound => now.duration_since(t) >= min_gap,
+        _ => true,
+    }
+}
+
 /// Per-slot RTCP drain. webrtc-rs's NACK/PLI pipelines stall silently if a
 /// sender's RTCP isn't read, so every slot-track's sender must be drained for
 /// the connection's lifetime regardless of which camera (if any) currently
-/// feeds the slot. Exits when the sender closes (peer torn down).
+/// feeds the slot. Draining also pumps the NACK responder interceptor, which
+/// does the actual retransmission. Exits when the sender closes (peer torn
+/// down).
 ///
-/// REMB is deliberately NOT consumed here. In the slot model a slot's camera
+/// On top of draining, a PLI/FIR keyframe request is honored: the browser sends
+/// one when a loss broke the reference chain and retransmission didn't recover
+/// it, so we force an IDR on the camera bound to this slot. A per-slot debounce
+/// caps this to one forced keyframe per `MIN_KEYFRAME_GAP`: a forced IDR is a
+/// large packet burst, and without the cap a sustained loss (browser PLI every
+/// few hundred ms) would become an IDR storm -> bitrate spike -> more loss. The
+/// NACK responder recovers most losses with no PLI at all, so this rarely fires.
+///
+/// REMB is still deliberately NOT consumed. In the slot model a slot's camera
 /// changes on Subscribe/Unsubscribe, so a REMB keyed by the slot's (stable)
 /// SSRC can't be pinned to one camera. That's acceptable *only* because
 /// REMB-driven bitrate is currently disabled (it caused a reinit death spiral
 /// — see `main.rs`). The frame-skip congestion follow-up must re-introduce
-/// per-slot bandwidth attribution before it can act on REMB again.
-async fn drain_rtcp_sink(sender: Arc<webrtc::rtp_transceiver::rtp_sender::RTCRtpSender>) {
-    while sender.read_rtcp().await.is_ok() {
-        // Packets (including REMB) intentionally discarded — see fn doc.
+/// per-slot bandwidth attribution before it can act on REMB again. A PLI is
+/// instantaneous, so it pins to the slot's *current* binding cleanly (a stale
+/// rebind just costs one wasted IDR), unlike REMB's running bitrate estimate.
+async fn drain_rtcp_sink(
+    sender: Arc<webrtc::rtp_transceiver::rtp_sender::RTCRtpSender>,
+    slot_idx: usize,
+    slots: Arc<Mutex<Vec<Slot>>>,
+    registry: Arc<CameraRegistry>,
+) {
+    use std::time::Instant;
+    const MIN_KEYFRAME_GAP: std::time::Duration = std::time::Duration::from_millis(1000);
+
+    // (flight_id, when) of the last keyframe this slot forced. Tracking the
+    // flight_id (not just the time) means a camera freshly swapped into the slot
+    // always gets its first PLI honored instead of being suppressed by the
+    // previous camera's debounce.
+    let mut last_forced: Option<(u32, Instant)> = None;
+    while let Ok((packets, _)) = sender.read_rtcp().await {
+        // REMB and other RTCP intentionally discarded — see fn doc. Only a
+        // keyframe request is acted on.
+        if !rtcp_requests_keyframe(&packets) {
+            continue;
+        }
+        let bound = {
+            let guard = slots.lock().await;
+            guard.get(slot_idx).and_then(|s| s.bound)
+        };
+        let Some(flight_id) = bound else { continue };
+        let now = Instant::now();
+        if !should_force_keyframe(flight_id, last_forced, now, MIN_KEYFRAME_GAP) {
+            continue;
+        }
+        if let Some(cam) = registry.get(flight_id).await {
+            request_keyframe_for(&cam).await;
+            last_forced = Some((flight_id, now));
+            info!(flight_id, "keyframe forced by browser PLI/FIR");
+        }
     }
+    // read_rtcp errors when the sender closes (peer torn down) — the normal
+    // exit. If it ever happens mid-connection this slot loses its NACK pump and
+    // PLI handling for the rest of the session, so leave a breadcrumb.
+    info!(slot_idx, "RTCP drain exited (sender closed)");
 }
 
 #[cfg(test)]
@@ -1373,5 +1484,70 @@ mod tests {
             cam2.control.lock().await.subscribed,
             "plugin is told to resume rendering"
         );
+    }
+
+    /// A browser PLI is the signal that a feed is wedged on a broken reference
+    /// and needs an IDR. It must be recognised as a keyframe request so the
+    /// drain loop can force one (otherwise the feed stays static for a GOP).
+    #[test]
+    fn pli_is_recognised_as_a_keyframe_request() {
+        use rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication;
+        let pkts: Vec<Box<dyn rtcp::packet::Packet + Send + Sync>> =
+            vec![Box::new(PictureLossIndication::default())];
+        assert!(rtcp_requests_keyframe(&pkts));
+    }
+
+    /// A Full Intra Request is the other keyframe-request RTCP feedback; some
+    /// stacks send FIR instead of PLI, so both must force an IDR.
+    #[test]
+    fn fir_is_recognised_as_a_keyframe_request() {
+        use rtcp::payload_feedbacks::full_intra_request::FullIntraRequest;
+        let pkts: Vec<Box<dyn rtcp::packet::Packet + Send + Sync>> =
+            vec![Box::new(FullIntraRequest::default())];
+        assert!(rtcp_requests_keyframe(&pkts));
+    }
+
+    /// Routine RTCP (receiver reports, NACKs) must NOT be mistaken for a
+    /// keyframe request — those are handled by the NACK responder / reports and
+    /// forcing an IDR on every one of them would be a keyframe storm.
+    #[test]
+    fn routine_rtcp_is_not_a_keyframe_request() {
+        use rtcp::receiver_report::ReceiverReport;
+        let pkts: Vec<Box<dyn rtcp::packet::Packet + Send + Sync>> =
+            vec![Box::new(ReceiverReport::default())];
+        assert!(!rtcp_requests_keyframe(&pkts));
+    }
+
+    const GAP: Duration = Duration::from_millis(1000);
+
+    #[test]
+    fn first_keyframe_request_for_a_slot_is_honored() {
+        let now = std::time::Instant::now();
+        assert!(should_force_keyframe(7, None, now, GAP));
+    }
+
+    #[test]
+    fn repeat_request_for_same_camera_within_gap_is_debounced() {
+        let t0 = std::time::Instant::now();
+        let now = t0 + Duration::from_millis(400);
+        assert!(!should_force_keyframe(7, Some((7, t0)), now, GAP));
+    }
+
+    #[test]
+    fn repeat_request_for_same_camera_after_gap_is_honored() {
+        let t0 = std::time::Instant::now();
+        let now = t0 + Duration::from_millis(1200);
+        assert!(should_force_keyframe(7, Some((7, t0)), now, GAP));
+    }
+
+    /// The slot-rebind case: camera 9 was just subscribed into the slot camera 7
+    /// held. Its first PLI must be honored even though camera 7 forced a
+    /// keyframe under the debounce gap ago — otherwise the freshly-bound feed
+    /// stays static for a full GOP (a narrower recurrence of the very bug).
+    #[test]
+    fn request_for_newly_bound_camera_bypasses_the_previous_cameras_debounce() {
+        let t0 = std::time::Instant::now();
+        let now = t0 + Duration::from_millis(200);
+        assert!(should_force_keyframe(9, Some((7, t0)), now, GAP));
     }
 }
