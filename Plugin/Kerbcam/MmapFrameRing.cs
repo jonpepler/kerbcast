@@ -72,6 +72,13 @@ namespace Kerbcam
         private readonly MemoryMappedFile _mmf;
         private readonly MemoryMappedViewAccessor _view;
 
+        // Base address of the mapped view, acquired once for the ring's
+        // lifetime. The mapping never relocates, so re-fetching it per access
+        // (the old per-call AcquirePointer) just returned this same value.
+        // Acquired in the constructor, released once in Dispose so the
+        // SafeHandle ref-count stays balanced.
+        private unsafe byte* _basePtr;
+
         /// <summary>
         /// Create or truncate-and-replace the ring file at <paramref name="path"/>
         /// and stamp the header. Call this from the writer side (KSP plugin).
@@ -128,6 +135,10 @@ namespace Kerbcam
             _maxHeight = maxHeight;
             _slotBytes = slotBytes;
             _totalBytes = totalBytes;
+            unsafe
+            {
+                _view.SafeMemoryMappedViewHandle.AcquirePointer(ref _basePtr);
+            }
         }
 
         public int SlotCount => _slotCount;
@@ -173,9 +184,7 @@ namespace Kerbcam
         {
             ValidateFrame(width, height, length);
             var (slot, slotStart, newSeq) = BeginSlot(width, height, captureTsMs);
-            byte* basePtr = null;
-            _view.SafeMemoryMappedViewHandle.AcquirePointer(ref basePtr);
-            Buffer.MemoryCopy(src, basePtr + slotStart + SlotOffPixels, length, length);
+            Buffer.MemoryCopy(src, _basePtr + slotStart + SlotOffPixels, length, length);
             PublishSlot(slot, slotStart, newSeq);
             return (ulong)newSeq;
         }
@@ -227,33 +236,32 @@ namespace Kerbcam
         }
 
         // Bridge Interlocked.* (which take `ref Int32/Int64`) into the
-        // MemoryMappedViewAccessor. SafeMemoryMappedViewHandle gives us a
-        // raw pointer; we cast to the right primitive at the offset.
-        // Mono's IL2CPP on the Steam Deck Unity runtime supports
-        // `unsafe` blocks for IntPtr arithmetic; same as the OCISLY-fork
-        // KerbCamBaseline path.
+        // mapped view via the base pointer cached at construction. We cast to
+        // the right primitive at the offset. Mono's IL2CPP on the Steam Deck
+        // Unity runtime supports `unsafe` blocks for IntPtr arithmetic; same
+        // as the OCISLY-fork KerbCamBaseline path.
         private unsafe ref int AsRefInt32(int offset)
         {
-            byte* basePtr = null;
-            _view.SafeMemoryMappedViewHandle.AcquirePointer(ref basePtr);
-            // We deliberately don't ReleasePointer — the accessor lives
-            // for the life of MmapFrameRing, and AcquirePointer is
-            // idempotent enough for our single-writer use case.
-            // (For multi-writer we'd need a more careful guard.)
-            int* p = (int*)(basePtr + offset);
+            int* p = (int*)(_basePtr + offset);
             return ref *p;
         }
 
         private unsafe ref long AsRefInt64(int offset)
         {
-            byte* basePtr = null;
-            _view.SafeMemoryMappedViewHandle.AcquirePointer(ref basePtr);
-            long* p = (long*)(basePtr + offset);
+            long* p = (long*)(_basePtr + offset);
             return ref *p;
         }
 
-        public void Dispose()
+        public unsafe void Dispose()
         {
+            // Balance the constructor's AcquirePointer before tearing down the
+            // view, so the SafeHandle ref-count returns to zero and the handle
+            // can actually free.
+            if (_basePtr != null)
+            {
+                _view.SafeMemoryMappedViewHandle.ReleasePointer();
+                _basePtr = null;
+            }
             _view.Dispose();
             _mmf.Dispose();
         }
