@@ -754,6 +754,44 @@ describe("App - adaptive-shed banner", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Sidecar error notice
+// ---------------------------------------------------------------------------
+
+describe("App - sidecar error notice", () => {
+  it("surfaces a sidecar error reply as a transient notice", async () => {
+    const { client, sidecar, openSidecar } = buildFixture([]);
+    await renderApp(client);
+    await act(async () => { openSidecar(); });
+
+    await act(async () => {
+      sidecar.fireError({ message: "no free slot" });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText(/no free slot/i)).toBeTruthy();
+    });
+  });
+
+  it("notice is dismissible", async () => {
+    const { client, sidecar, openSidecar } = buildFixture([]);
+    await renderApp(client);
+    await act(async () => { openSidecar(); });
+
+    await act(async () => {
+      sidecar.fireError({ message: "rebind failed: camera gone" });
+    });
+
+    await waitFor(() => screen.getByText(/rebind failed/i));
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /dismiss error/i }));
+    });
+
+    expect(screen.queryByText(/rebind failed/i)).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Reconnect behaviour
 // ---------------------------------------------------------------------------
 

@@ -1,4 +1,4 @@
-import type { AdaptiveShedPayload, CameraState, ClientMessage, ServerMessage, SettingsStatePayload } from "../__generated__/types";
+import type { AdaptiveShedPayload, CameraState, ClientMessage, ErrorPayload, ServerMessage, SettingsStatePayload } from "../__generated__/types";
 import { CameraLifecycle, ErrorSource, Layer, QualityPreset } from "../__generated__/types";
 import type {
   InboundVideoStats,
@@ -252,6 +252,11 @@ export class MockSidecar {
   /** Push an `adaptive-shed` event to the client. */
   fireAdaptiveShed(payload: AdaptiveShedPayload): void {
     this._sendToClient({ type: "adaptive-shed", content: payload });
+  }
+
+  /** Push an `error` event to the client (simulates a sidecar error reply). */
+  fireError(payload: ErrorPayload): void {
+    this._sendToClient({ type: "error", content: payload });
   }
 
   /** Current mock-sidecar throttle state (reflects `set-throttle-main-screen` commands). */
