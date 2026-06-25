@@ -18,8 +18,13 @@
 //                     IP or 0.0.0.0 exposes the feeds to other devices,
 //                     with no authentication, so only on a trusted network.
 //   Port              sidecar HTTP signalling port (default 8088).
-//   Width / Height    capture dimensions per Hullcam (default 1024x576,
-//                     16:9). Larger = more pixels to encode.
+//   MaxQuality        quality tier ceiling: low (640x360), sd (1024x576,
+//                     default), hd (1280x720), fullhd (1920x1080). The
+//                     adaptive ladder degrades below this tier under load
+//                     and promotes back up to it, never above it.
+//   Width / Height    explicit capture dimensions per Hullcam (16:9, even
+//                     numbers). When present, override the tier for that
+//                     field; absent, the tier table sets them.
 //
 // Per-camera override nodes (zero or more `Camera { ... }` blocks):
 //   PartName          internal KSP part name (e.g. "navCam1"), case-sensitive.
