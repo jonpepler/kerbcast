@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "reac
 import styled from "styled-components";
 import { ConnectionManager } from "./connectionManager";
 import { DevPanel } from "./DevPanel";
+import { ErrorToast } from "./ErrorToast";
 import { Grid } from "./Grid";
 import { Header } from "./Header";
 import { Settings } from "./SettingsPanel";
@@ -97,6 +98,7 @@ export function App({ client }: AppProps): React.JSX.Element {
           />
         )}
         <ShedBanner client={client} />
+        <ErrorToast client={client} />
         <MainArea>
           {/* CameraSeeder uses useKerbcamCameras inside KerbcamProvider */}
           <CameraSeeder
