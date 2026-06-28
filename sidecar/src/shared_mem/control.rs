@@ -330,7 +330,10 @@ mod tests {
     static TMP_CTR: AtomicU64 = AtomicU64::new(0);
     fn unique_path(tag: &str) -> std::path::PathBuf {
         let n = TMP_CTR.fetch_add(1, Ordering::Relaxed);
-        std::env::temp_dir().join(format!("kerbcast-ctrl-{tag}-{}-{n}.bin", std::process::id()))
+        std::env::temp_dir().join(format!(
+            "kerbcast-ctrl-{tag}-{}-{n}.bin",
+            std::process::id()
+        ))
     }
 
     fn write_to_vec(state: &ControlState) -> Vec<u8> {
