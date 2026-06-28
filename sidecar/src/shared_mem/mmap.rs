@@ -47,7 +47,7 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use memmap2::{MmapMut, MmapOptions};
 use thiserror::Error;
 
-pub const MAGIC: u64 = 0x4B45_5242_4341_4D31; // "KERBCAST1" big-endian-ish
+pub const MAGIC: u64 = 0x4B45_5242_4341_4D31; // "KERBCAM1" legacy ring magic; value pinned for plugin wire-format compat, not renamed
 pub const LAYOUT_VERSION: u32 = 1;
 
 /// Header is one page so the first slot is page-aligned. Keeps the writer's
