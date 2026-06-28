@@ -1,4 +1,4 @@
-Shader "Kerbcam/NightVision"
+Shader "Kerbcast/NightVision"
 {
     Properties
     {

@@ -1,7 +1,7 @@
-// kerbcam atmospheric-FX embers shader, geometry-shader rewrite.
+// kerbcast atmospheric-FX embers shader, geometry-shader rewrite.
 //
 // Architecture: same windward-filter + airflow-extrusion pattern as
-// KerbcamPlasma. Where plasma emits a long trailing STRIP per windward
+// KerbcastPlasma. Where plasma emits a long trailing STRIP per windward
 // triangle, embers emit a small CAMERA-ALIGNED QUAD (billboard) per
 // triangle, positioned at a random point along the airflow extrusion.
 // Each quad is a single spark — hot-cored, soft-edged, alpha-faded.
@@ -10,11 +10,11 @@
 // as plasma so sparks shed FROM the heated surfaces (heat shield, nose
 // cone, windward sides of the body) and trail backward along airflow.
 // Replaces the previous ParticleSystem-based embers; same scene-graph
-// pattern as KerbcamPlasma — CommandBuffer.DrawRenderer on vessel parts.
+// pattern as KerbcastPlasma — CommandBuffer.DrawRenderer on vessel parts.
 //
 // Run-state mirrors plasma: Blend One One (additive), ZTest LEqual,
 // ZWrite Off, Cull Off. AfterForwardAlpha pass on the near camera.
-Shader "Kerbcam/Ember"
+Shader "Kerbcast/Ember"
 {
     Properties
     {

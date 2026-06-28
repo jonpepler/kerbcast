@@ -1,9 +1,9 @@
 fileFormatVersion: 2
-guid: 7a3c9e2f48b14d6f8c5a91e0b3d2c4f5
+guid: 9c5b7a3e1f4d6082c8e5a7b1f3d6e9c4
 ShaderImporter:
   externalObjects: {}
   defaultTextures: []
   nonModifiableTextures: []
   userData:
-  assetBundleName: kerbcam-shaders
+  assetBundleName: kerbcast-shaders
   assetBundleVariant:

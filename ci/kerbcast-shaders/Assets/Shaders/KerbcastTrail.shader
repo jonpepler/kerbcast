@@ -1,4 +1,4 @@
-// kerbcam atmospheric-FX trail shader. Drawn additively over a procedural
+// kerbcast atmospheric-FX trail shader. Drawn additively over a procedural
 // tapered tube (built in TrailEffect.cs) that streams behind the vessel along
 // -velocity. Composites against the near render's depth so it occludes
 // correctly against terrain/ships in front of it.
@@ -6,13 +6,13 @@
 // Look: a plasma wake. Bright at the vessel end, fading to nothing by the
 // tail. Scrolling streaks along the tube length read as "flowing backward".
 // Colour stays wind-white through moderate intensities; plasma-orange shift
-// only blends in at hard reentry, same convention as KerbcamPlasma.
+// only blends in at hard reentry, same convention as KerbcastPlasma.
 //
 // UVs (set by mesh): uv.y runs 0 at the vessel-end → 1 at the tail; uv.x runs
 // 0→1 around the tube circumference (seam-duplicated). Cull Off so both the
 // outer and inner sides of the tube render — looking from inside the wake
 // should still show.
-Shader "Kerbcam/Trail"
+Shader "Kerbcast/Trail"
 {
     Properties
     {

@@ -1,4 +1,4 @@
-// kerbcam atmospheric-FX core sheath shader, v7 — geometry-shader extrusion
+// kerbcast atmospheric-FX core sheath shader, v7 — geometry-shader extrusion
 // + two-preset (Condensation / ReentryHeat) blend.
 //
 // Run as an additive overlay on the vessel's own part renderers in the near
@@ -48,7 +48,7 @@
 // (e.g. stationary on the pad). Provides reasonable defaults for the
 // _FXFalloff / _FxLength / _FXWobble uniforms so the shader doesn't visibly
 // break when KSP isn't publishing yet.
-Shader "Kerbcam/Plasma"
+Shader "Kerbcast/Plasma"
 {
     Properties
     {

@@ -1,4 +1,4 @@
-// kerbcam atmospheric-FX bowshock shader. Drawn additively over the near
+// kerbcast atmospheric-FX bowshock shader. Drawn additively over the near
 // render (CommandBuffer at AfterForwardAlpha) so it composites against that
 // render's depth — correct occlusion against the vessel hull, no second camera.
 //
@@ -20,7 +20,7 @@
 // Plus a near-plane distance fade and a face-on extra-dampener so the cone
 // stays subtle when the camera is inside / very close to it — face-on
 // rendering used to dominate the entire frame at high _Intensity.
-Shader "Kerbcam/Bowshock"
+Shader "Kerbcast/Bowshock"
 {
     Properties
     {
@@ -34,7 +34,7 @@ Shader "Kerbcam/Bowshock"
         _RimPower    ("Rim Power", Range(0.5,12)) = 1.5
         _ScrollSpeed ("Scroll Speed", Float) = 1.5
         // Plasma colour only blends in above this intensity (reserved for
-        // heavy reentry); below it stays wind-blue. Matches KerbcamPlasma.
+        // heavy reentry); below it stays wind-blue. Matches KerbcastPlasma.
         _PlasmaOnset ("Plasma Onset", Range(0,1)) = 0.85
         // Near-camera distance over which the cone fades to zero. Stops the
         // cone from being a wall when the camera is inside or very close.

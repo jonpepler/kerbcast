@@ -1,12 +1,12 @@
-// Headless preview renderer for the kerbcam FX shaders.
+// Headless preview renderer for the kerbcast FX shaders.
 //
 // Invoked from CI by:
 //   "$UNITY_EDITOR_PATH" -batchmode -quit \
 //      -projectPath . \
-//      -executeMethod KerbcamCI.RenderFxPreviews.RenderAll \
+//      -executeMethod KerbcastCI.RenderFxPreviews.RenderAll \
 //      -buildTarget Linux64 -logFile -
 //
-// For each *.json under ci/kerbcam-shaders/Fixtures/, and for each of the
+// For each *.json under ci/kerbcast-shaders/Fixtures/, and for each of the
 // four FX shaders (Plasma/Core, Bowshock, Trail, Ember), and for each of
 // that shader's camera viewpoints (see ViewsFor), render the shader on a
 // proxy vessel and save a PNG keyed {fixture}_{shader}_{view}.png. Plus a
@@ -14,7 +14,7 @@
 //
 // Silhouette measurement, mesh placement, intensity ramps, and the
 // procedural meshes all come from the SHARED FX core (Assets/Editor/Shared
-// is a symlink to Plugin/Kerbcam/Fx/Core) — the same code the plugin runs
+// is a symlink to Plugin/Kerbcast/Fx/Core) — the same code the plugin runs
 // in-game, so these renders test it rather than a hand-mirrored copy.
 // Per-shader scene setup mirrors the runtime draw path:
 // CommandBuffer.DrawRenderer on proxy renderers for plasma/ember,
@@ -23,12 +23,12 @@
 
 using System.Collections.Generic;
 using System.IO;
-using Kerbcam;
+using Kerbcast;
 using UnityEditor;
 using UnityEngine;
 using UnityEngine.Rendering;
 
-namespace KerbcamCI
+namespace KerbcastCI
 {
     public static class RenderFxPreviews
     {
@@ -70,15 +70,15 @@ namespace KerbcamCI
 
             var fixtureFiles = Directory.GetFiles(_fixturesDir, "*.json");
             System.Array.Sort(fixtureFiles);
-            Debug.Log($"[Kerbcam-CI] RenderFxPreviews: {fixtureFiles.Length} fixture(s), {_shaderIds.Length} shader(s), 3 views each");
+            Debug.Log($"[Kerbcast-CI] RenderFxPreviews: {fixtureFiles.Length} fixture(s), {_shaderIds.Length} shader(s), 3 views each");
 
-            var plasmaShader = Shader.Find("Kerbcam/Plasma");
-            var bowshockShader = Shader.Find("Kerbcam/Bowshock");
-            var trailShader = Shader.Find("Kerbcam/Trail");
-            var emberShader = Shader.Find("Kerbcam/Ember");
+            var plasmaShader = Shader.Find("Kerbcast/Plasma");
+            var bowshockShader = Shader.Find("Kerbcast/Bowshock");
+            var trailShader = Shader.Find("Kerbcast/Trail");
+            var emberShader = Shader.Find("Kerbcast/Ember");
             if (plasmaShader == null || bowshockShader == null || trailShader == null || emberShader == null)
             {
-                Debug.LogError("[Kerbcam-CI] one or more Kerbcam shaders not found — did the bundle compile?");
+                Debug.LogError("[Kerbcast-CI] one or more Kerbcast shaders not found — did the bundle compile?");
                 EditorApplication.Exit(2);
                 return;
             }
@@ -89,7 +89,7 @@ namespace KerbcamCI
                 var fx = JsonUtility.FromJson<FxFixture>(json);
                 if (fx == null || string.IsNullOrEmpty(fx.name))
                 {
-                    Debug.LogWarning($"[Kerbcam-CI] skipping unparseable fixture: {path}");
+                    Debug.LogWarning($"[Kerbcast-CI] skipping unparseable fixture: {path}");
                     continue;
                 }
                 var fixtureDir = Path.GetDirectoryName(path);
@@ -112,18 +112,18 @@ namespace KerbcamCI
                             WindDirFromInputs(fx.inputs), Vector3.up)) < 0.99f;
                         if (shaderId == "plasma" && nonAxialWind && viewId.EndsWith("_hullcam"))
                         {
-                            Debug.Log($"[Kerbcam-CI]   SKIP  {fx.name}/{shaderId}/{viewId} (LLVMpipe hang: strips cross hullcam plane in non-axial wind)");
+                            Debug.Log($"[Kerbcast-CI]   SKIP  {fx.name}/{shaderId}/{viewId} (LLVMpipe hang: strips cross hullcam plane in non-axial wind)");
                             continue;
                         }
-                        Debug.Log($"[Kerbcam-CI]   begin {fx.name}/{shaderId}/{viewId}");
+                        Debug.Log($"[Kerbcast-CI]   begin {fx.name}/{shaderId}/{viewId}");
                         try
                         {
                             RenderOne(fx, shaderId, sh, viewId, fixtureDir);
-                            Debug.Log($"[Kerbcam-CI]   end   {fx.name}/{shaderId}/{viewId} OK");
+                            Debug.Log($"[Kerbcast-CI]   end   {fx.name}/{shaderId}/{viewId} OK");
                         }
                         catch (System.Exception e)
                         {
-                            Debug.LogError($"[Kerbcam-CI]   end   {fx.name}/{shaderId}/{viewId} FAILED: {e.GetType().Name}: {e.Message}");
+                            Debug.LogError($"[Kerbcast-CI]   end   {fx.name}/{shaderId}/{viewId} FAILED: {e.GetType().Name}: {e.Message}");
                         }
                     }
                 }
@@ -147,19 +147,19 @@ namespace KerbcamCI
                         windDirWorld = new[] { 0f, 1f, 0f, 0f },
                     },
                 };
-                Debug.Log($"[Kerbcam-CI]   begin {rampFx.name} (intensity={intensity:F2})");
+                Debug.Log($"[Kerbcast-CI]   begin {rampFx.name} (intensity={intensity:F2})");
                 try
                 {
                     RenderOne(rampFx, "bowshock", bowshockShader, "dome_side", _fixturesDir);
-                    Debug.Log($"[Kerbcam-CI]   end   {rampFx.name} OK");
+                    Debug.Log($"[Kerbcast-CI]   end   {rampFx.name} OK");
                 }
                 catch (System.Exception e)
                 {
-                    Debug.LogError($"[Kerbcam-CI]   end   {rampFx.name} FAILED: {e.GetType().Name}: {e.Message}");
+                    Debug.LogError($"[Kerbcast-CI]   end   {rampFx.name} FAILED: {e.GetType().Name}: {e.Message}");
                 }
             }
 
-            Debug.Log("[Kerbcam-CI] RenderFxPreviews: done");
+            Debug.Log("[Kerbcast-CI] RenderFxPreviews: done");
         }
 
         // Single (fixture, shader, view) render. New scene root per render so
@@ -278,7 +278,7 @@ namespace KerbcamCI
         // vessel's renderers, attached at AfterForwardAlpha — the runtime path.
         private static void SetupPlasma(Transform root, Camera cam, Material mat)
         {
-            var cb = new CommandBuffer { name = "Kerbcam Preview FX Plasma" };
+            var cb = new CommandBuffer { name = "Kerbcast Preview FX Plasma" };
             foreach (var rend in root.GetComponentsInChildren<Renderer>())
             {
                 if (rend == null || rend is ParticleSystemRenderer) continue;
@@ -366,7 +366,7 @@ namespace KerbcamCI
         // pre-baking and ParticleSystem approaches.
         private static void SetupEmber(Transform root, Camera cam, Material mat, FxFixture.Inputs inputs)
         {
-            var cb = new CommandBuffer { name = "Kerbcam Preview FX Ember" };
+            var cb = new CommandBuffer { name = "Kerbcast Preview FX Ember" };
             foreach (var rend in root.GetComponentsInChildren<Renderer>())
             {
                 if (rend == null || rend is ParticleSystemRenderer) continue;
@@ -546,9 +546,9 @@ namespace KerbcamCI
                     var bytes = File.ReadAllBytes(abs);
                     var t = new Texture2D(2, 2, TextureFormat.RGBA32, false);
                     if (t.LoadImage(bytes)) return t;
-                    Debug.LogWarning($"[Kerbcam-CI] failed to load image: {abs}");
+                    Debug.LogWarning($"[Kerbcast-CI] failed to load image: {abs}");
                 }
-                else Debug.LogWarning($"[Kerbcam-CI] missing texture file: {abs}");
+                else Debug.LogWarning($"[Kerbcast-CI] missing texture file: {abs}");
             }
             return fallback();
         }
@@ -659,7 +659,7 @@ namespace KerbcamCI
 
         // Silhouette of the proxy vessel: collect renderer-AABB corners
         // relative to the root and hand them to the SHARED FxSilhouette
-        // (Assets/Editor/Shared → Plugin/Kerbcam/Fx/Core, symlinked) — the
+        // (Assets/Editor/Shared → Plugin/Kerbcast/Fx/Core, symlinked) — the
         // exact code the plugin runs in-game, so these renders test it.
         private static FxSilhouette ComputeSilhouette(Transform root, Vector3 windDir)
         {
@@ -692,10 +692,10 @@ namespace KerbcamCI
         // linear01 encoding exact across the frame.
         private static RenderTexture RenderWindwardDepth(Transform root, Vector3 windDir, FxSilhouette profile)
         {
-            var depthShader = Shader.Find("Kerbcam/CIDepth");
+            var depthShader = Shader.Find("Kerbcast/CIDepth");
             if (depthShader == null)
             {
-                Debug.LogWarning("[Kerbcam-CI] Kerbcam/CIDepth shader missing — wind wrap layer will be absent");
+                Debug.LogWarning("[Kerbcast-CI] Kerbcast/CIDepth shader missing — wind wrap layer will be absent");
                 return null;
             }
 

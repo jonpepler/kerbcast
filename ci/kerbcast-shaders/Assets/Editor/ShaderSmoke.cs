@@ -1,12 +1,12 @@
-// Per-shader render smoke test for a just-built kerbcam-shaders bundle.
+// Per-shader render smoke test for a just-built kerbcast-shaders bundle.
 //
 // Invoked from CI by (Linux bundle, glcore under xvfb):
 //   xvfb-run -a "$UNITY_EDITOR_PATH" -batchmode -quit \
 //      -projectPath . \
-//      -executeMethod KerbcamCI.ShaderSmoke.RenderAll \
+//      -executeMethod KerbcastCI.ShaderSmoke.RenderAll \
 //      -buildTarget Linux64 -logFile -
 // and by the Windows job (Windows bundle, d3d11) with the env var
-// KERBCAM_SMOKE_BUNDLE_DIR=Bundles-windows selecting which bundle to load.
+// KERBCAST_SMOKE_BUNDLE_DIR=Bundles-windows selecting which bundle to load.
 //
 // VALIDATION BLIND SPOT, stated honestly: a graphics device can only create
 // and execute shader variants for its own API. The glcore run on the Linux
@@ -15,15 +15,15 @@
 // blob sails through the Linux run green. That is exactly how v0.19.0
 // shipped a Windows bundle whose five d3d11 vertex shaders were all rejected
 // by the D3D11 runtime at draw time (E_INVALIDARG, 0x80070057): every
-// kerbcam-bundle camera streamed black and KSP.log gained 470k lines of
+// kerbcast-bundle camera streamed black and KSP.log gained 470k lines of
 // "ShaderProgram is unsupported" spam. The Windows-runner run of this same
 // test is the fix: D3D11 validates bytecode inside Create*Shader even on the
 // hosted runner's WARP rasterizer, so a bad blob fails the render there.
-// The plugin's KerbcamFxAssets render probe is the last-resort runtime net
+// The plugin's KerbcastFxAssets render probe is the last-resort runtime net
 // for any bundle that still slips through.
 //
 // Catches "bundle built but a shader is broken" inside the blocking
-// build-kerbcam-shaders workflow, in seconds, instead of leaving it to the
+// build-kerbcast-shaders workflow, in seconds, instead of leaving it to the
 // slow FX preview render (now the non-blocking fx-previews.yml workflow).
 // For EVERY Shader asset in the freshly built bundle it asserts:
 //   (a) shader.isSupported on this graphics device;
@@ -43,7 +43,7 @@
 // filters included (vert_img reads the sphere's position + UV just fine).
 //
 // Per-shader pass/fail summary via Debug.Log; throws on any failure so the
-// editor exits non-zero (the BuildKerbcamShaders pattern). Needs a real
+// editor exits non-zero (the BuildKerbcastShaders pattern). Needs a real
 // graphics device: run under xvfb, never with -nographics.
 
 using System;
@@ -51,7 +51,7 @@ using System.Collections.Generic;
 using System.IO;
 using UnityEngine;
 
-namespace KerbcamCI
+namespace KerbcastCI
 {
     public static class ShaderSmoke
     {
@@ -70,11 +70,11 @@ namespace KerbcamCI
            the bundle (e.g. a lost assetBundleName meta tag). */
         private static readonly string[] _expectedShaders =
         {
-            "Kerbcam/Plasma",
-            "Kerbcam/Bowshock",
-            "Kerbcam/Trail",
-            "Kerbcam/Ember",
-            "Kerbcam/NightVision",
+            "Kerbcast/Plasma",
+            "Kerbcast/Bowshock",
+            "Kerbcast/Trail",
+            "Kerbcast/Ember",
+            "Kerbcast/NightVision",
         };
 
         public static void RenderAll()
@@ -82,7 +82,7 @@ namespace KerbcamCI
             var failures = new List<string>();
 
             List<Shader> shaders = LoadBundleShaders();
-            Debug.Log($"[Kerbcam-CI] ShaderSmoke: {shaders.Count} shader(s) in {BundleDir()} "
+            Debug.Log($"[Kerbcast-CI] ShaderSmoke: {shaders.Count} shader(s) in {BundleDir()} "
                 + $"(device: {SystemInfo.graphicsDeviceType})");
 
             var found = new HashSet<string>();
@@ -91,7 +91,7 @@ namespace KerbcamCI
             {
                 if (!found.Contains(expected))
                 {
-                    Debug.LogError($"[Kerbcam-CI]   FAIL {expected}: missing from the bundle");
+                    Debug.LogError($"[Kerbcast-CI]   FAIL {expected}: missing from the bundle");
                     failures.Add($"{expected}: missing from the bundle (lost assetBundleName meta tag?)");
                 }
             }
@@ -102,35 +102,35 @@ namespace KerbcamCI
             foreach (var shader in shaders)
                 SmokeOne(shader, frame, failures);
 
-            Debug.Log($"[Kerbcam-CI] ShaderSmoke: {failures.Count} failure(s)");
+            Debug.Log($"[Kerbcast-CI] ShaderSmoke: {failures.Count} failure(s)");
             if (failures.Count > 0)
                 throw new Exception(
                     $"ShaderSmoke: {failures.Count} shader check(s) failed; see FAIL lines above");
-            Debug.Log("[Kerbcam-CI] ShaderSmoke: ALL SHADERS PASSED");
+            Debug.Log("[Kerbcast-CI] ShaderSmoke: ALL SHADERS PASSED");
         }
 
         /* Which Bundles-<platform> dir to smoke. The Linux job tests
            Bundles-linux (glcore); the Windows job sets
-           KERBCAM_SMOKE_BUNDLE_DIR=Bundles-windows to test the d3d11
+           KERBCAST_SMOKE_BUNDLE_DIR=Bundles-windows to test the d3d11
            variants on a real D3D11 device. The loaded bundle's variants must
            match the editor's own graphics API or every shader reports
            unsupported, so each platform job tests its own bundle only. */
         private static string BundleDir()
         {
-            string dir = Environment.GetEnvironmentVariable("KERBCAM_SMOKE_BUNDLE_DIR");
+            string dir = Environment.GetEnvironmentVariable("KERBCAST_SMOKE_BUNDLE_DIR");
             return string.IsNullOrEmpty(dir) ? "Bundles-linux" : dir;
         }
 
-        /* The bundle BuildKerbcamShaders just produced, not the project's
+        /* The bundle BuildKerbcastShaders just produced, not the project's
            Assets/Shaders sources: a shader can compile as a loose asset and
            still be broken or missing in the bundle KSP loads. */
         private static List<Shader> LoadBundleShaders()
         {
             string path = Path.GetFullPath(Path.Combine(
-                Application.dataPath, "..", BundleDir(), "kerbcam-shaders"));
+                Application.dataPath, "..", BundleDir(), "kerbcast-shaders"));
             if (!File.Exists(path))
                 throw new FileNotFoundException(
-                    $"kerbcam-shaders bundle not found at {path}; run BuildKerbcamShaders.BuildAll first");
+                    $"kerbcast-shaders bundle not found at {path}; run BuildKerbcastShaders.BuildAll first");
             var bundle = AssetBundle.LoadFromFile(path);
             if (bundle == null)
                 throw new Exception($"AssetBundle.LoadFromFile failed for {path}");
@@ -149,7 +149,7 @@ namespace KerbcamCI
         {
             if (!shader.isSupported)
             {
-                Debug.LogError($"[Kerbcam-CI]   FAIL {shader.name}: not supported on this graphics device");
+                Debug.LogError($"[Kerbcast-CI]   FAIL {shader.name}: not supported on this graphics device");
                 failures.Add($"{shader.name}: isSupported == false");
                 return; // rendering it would only show the error shader
             }
@@ -217,17 +217,17 @@ namespace KerbcamCI
                 string stats = $"{lit}/{px.Length} lit px, {magenta} magenta px";
                 if (magenta > px.Length / 100)
                 {
-                    Debug.LogError($"[Kerbcam-CI]   FAIL {shader.name}: magenta error pattern ({stats})");
+                    Debug.LogError($"[Kerbcast-CI]   FAIL {shader.name}: magenta error pattern ({stats})");
                     failures.Add($"{shader.name}: rendered the magenta error pattern ({stats})");
                 }
                 else if (lit < _minLitPixels)
                 {
-                    Debug.LogError($"[Kerbcam-CI]   FAIL {shader.name}: output (nearly) all-zero ({stats})");
+                    Debug.LogError($"[Kerbcast-CI]   FAIL {shader.name}: output (nearly) all-zero ({stats})");
                     failures.Add($"{shader.name}: output (nearly) all-zero, shader did not visibly execute ({stats})");
                 }
                 else
                 {
-                    Debug.Log($"[Kerbcam-CI]   ok   {shader.name}: supported, {stats}");
+                    Debug.Log($"[Kerbcast-CI]   ok   {shader.name}: supported, {stats}");
                 }
             }
             finally

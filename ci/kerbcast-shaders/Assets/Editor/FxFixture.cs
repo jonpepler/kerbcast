@@ -1,7 +1,7 @@
 // FX fixture: one captured (or hand-crafted) snapshot of the state needed
-// to render the kerbcam plasma shader off-line in the CI Unity job.
+// to render the kerbcast plasma shader off-line in the CI Unity job.
 //
-// Loaded from JSON files in ci/kerbcam-shaders/Fixtures/*.json by
+// Loaded from JSON files in ci/kerbcast-shaders/Fixtures/*.json by
 // RenderFxPreviews.cs. Same format will be emitted by the in-game FxCapture
 // hotkey once that lands, so the loop is: capture in flight → drop JSON +
 // texture PNGs into the Fixtures dir → CI render → inspect artifact.
@@ -12,7 +12,7 @@
 
 using System;
 
-namespace KerbcamCI
+namespace KerbcastCI
 {
     [Serializable]
     public class FxFixture

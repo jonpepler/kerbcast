@@ -3,21 +3,21 @@
 // Invoked from CI by:
 //   xvfb-run -a "$UNITY_EDITOR_PATH" -batchmode -quit \
 //      -projectPath . \
-//      -executeMethod KerbcamCI.HullcamBlitDeterminism.RunAll \
+//      -executeMethod KerbcastCI.HullcamBlitDeterminism.RunAll \
 //      -buildTarget Linux64 -logFile -
 //
-// The bug class under test: kerbcam cameras used to blit through HullcamVDS's
+// The bug class under test: kerbcast cameras used to blit through HullcamVDS's
 // shared static Material (CameraFilter.mtShader), so any filter class that
 // does not rewrite a uniform itself (the reticle _Title/_TitleTex on
 // ColorHiResTV and friends, the NightVision overlay slots) inherited whatever
-// another writer (Hullcam's per-frame MovieTimeFilter, other kerbcam cameras)
+// another writer (Hullcam's per-frame MovieTimeFilter, other kerbcast cameras)
 // last left there, producing flickering overlays. The fix redirects the
 // static to a per-camera private Material for the duration of each filter
 // pass; that mechanism is HullcamFilterBlit, compiled here from the SAME
 // source file as the plugin via the Assets/Editor/SharedHullcamBlit symlink.
 //
 // What runs: the real MovieTime shader is loaded from the committed
-// GameData/Kerbcam/HullcamShaders/shaders.linux bundle (the bundle kerbcam
+// GameData/Kerbcast/HullcamShaders/shaders.linux bundle (the bundle kerbcast
 // actually swaps in at runtime). A fake static-holder type stands in for
 // HullcamVDS.CameraFilter (same field shape; the real DLL is pinned to that
 // shape by Plugin/HullcamContract.Tests). For each of the nine filter modes,
@@ -46,7 +46,7 @@
 //       SystemInfo.graphicsUVStartsAtTop-gated probe compensates at
 //       runtime.
 // Pass/fail report via Debug.Log; throws on failure so the editor exits
-// non-zero (the BuildKerbcamShaders pattern).
+// non-zero (the BuildKerbcastShaders pattern).
 //
 // Byte-identity caveat: the MovieTime shader samples _Time for its *Speed
 // uniforms. Every policy here holds all speeds at 0, and the whole run
@@ -59,7 +59,7 @@ using System.IO;
 using System.Security.Cryptography;
 using UnityEngine;
 
-namespace KerbcamCI
+namespace KerbcastCI
 {
     /* Stand-in for HullcamVDS.CameraFilter's static surface: the field
        names and kinds HullcamFilterBlit reflects over. Must stay in step
@@ -111,7 +111,7 @@ namespace KerbcamCI
         {
             public Texture2D FilmVignette, Scratches, Dust, Noise, CrtMesh, NvMesh, VHold;
             public Texture2D NoneTX;    // fully transparent: the upstream suppressor
-            public Texture2D Reticle;   // kerbcam's dockingdisplay stand-in
+            public Texture2D Reticle;   // kerbcast's dockingdisplay stand-in
             public Texture2D[] Garbage; // hostile-writer payloads
         }
 
@@ -120,8 +120,8 @@ namespace KerbcamCI
             var failures = new List<string>();
             void Check(bool cond, string msg)
             {
-                if (cond) Debug.Log("[Kerbcam-CI]   ok   " + msg);
-                else { Debug.LogError("[Kerbcam-CI]   FAIL " + msg); failures.Add(msg); }
+                if (cond) Debug.Log("[Kerbcast-CI]   ok   " + msg);
+                else { Debug.LogError("[Kerbcast-CI]   FAIL " + msg); failures.Add(msg); }
             }
 
             Shader movieTime = LoadMovieTimeShader();
@@ -144,7 +144,7 @@ namespace KerbcamCI
 
             foreach (var mode in Modes())
             {
-                Debug.Log($"[Kerbcam-CI] mode {mode.Name}:");
+                Debug.Log($"[Kerbcast-CI] mode {mode.Name}:");
 
                 var titled = RunSeries(mode, true, _titledRuns, sharedMat, src, dst, tex);
                 Check(AllIdentical(titled),
@@ -214,11 +214,11 @@ namespace KerbcamCI
                     $"{name}: MeasurePassInverted reports upright on a bottom-left-origin API");
             }
 
-            Debug.Log($"[Kerbcam-CI] HullcamBlitDeterminism: {failures.Count} failure(s)");
+            Debug.Log($"[Kerbcast-CI] HullcamBlitDeterminism: {failures.Count} failure(s)");
             if (failures.Count > 0)
                 throw new Exception(
                     $"HullcamBlitDeterminism: {failures.Count} assertion(s) failed; see FAIL lines above");
-            Debug.Log("[Kerbcam-CI] HullcamBlitDeterminism: ALL CHECKS PASSED");
+            Debug.Log("[Kerbcast-CI] HullcamBlitDeterminism: ALL CHECKS PASSED");
         }
 
         // ------------------------------------------------------------------
@@ -226,7 +226,7 @@ namespace KerbcamCI
         // ------------------------------------------------------------------
 
         /* One fixed-path series: a fresh HullcamFilterBlit rig (fresh private
-           material, exactly like a freshly attached kerbcam camera), N
+           material, exactly like a freshly attached kerbcast camera), N
            passes through Run with the hostile writer clobbering the shared
            material before AND after every pass. Inside Run the static reads
            back the redirected private material, mirroring how the real
@@ -235,7 +235,7 @@ namespace KerbcamCI
             Mode mode, bool title, int n,
             Material sharedMat, RenderTexture src, RenderTexture dst, Tex tex)
         {
-            var rig = new Kerbcam.HullcamFilterBlit(typeof(FakeCameraFilterStatics));
+            var rig = new Kerbcast.HullcamFilterBlit(typeof(FakeCameraFilterStatics));
             var outputs = new List<byte[]>();
             for (int i = 0; i < n; i++)
             {
@@ -302,7 +302,7 @@ namespace KerbcamCI
                 name = "HullcamBlitDeterminism_orient_dst",
                 antiAliasing = 1,
             };
-            var rig = new Kerbcam.HullcamFilterBlit(typeof(FakeCameraFilterStatics));
+            var rig = new Kerbcast.HullcamFilterBlit(typeof(FakeCameraFilterStatics));
             Action<RenderTexture, RenderTexture> pass = (s, d) =>
             {
                 var mt = FakeCameraFilterStatics.SharedMaterial;
@@ -342,7 +342,7 @@ namespace KerbcamCI
                     : lumScore > eps;
                 detail = $" (channelScore={channelScore:F1}, lumScore={lumScore:F1})";
 
-                return Kerbcam.HullcamFilterBlit.MeasurePassInverted(pass);
+                return Kerbcast.HullcamFilterBlit.MeasurePassInverted(pass);
             }
             finally
             {
@@ -378,7 +378,7 @@ namespace KerbcamCI
             return rt;
         }
 
-        // Mirrors CameraFilter.RenderTitlePage: kerbcam calls it with
+        // Mirrors CameraFilter.RenderTitlePage: kerbcast calls it with
         // title=true and its dockingdisplay copy before every filter blit.
         private static void TitlePage(Material mt, bool title, Texture2D titleTex)
         {
@@ -389,7 +389,7 @@ namespace KerbcamCI
         }
 
         /* The hostile writer: everything Hullcam's own MovieTimeFilter or
-           another (legacy) kerbcam camera could leave on the shared
+           another (legacy) kerbcast camera could leave on the shared
            material, varied per call so any leak into our output breaks
            byte-identity: a dockingdisplay-like crosshair, a none-like
            transparent texture, random colors and junk floats. */
@@ -604,7 +604,7 @@ namespace KerbcamCI
         {
             string path = Path.GetFullPath(Path.Combine(
                 Application.dataPath, "..", "..", "..",
-                "GameData", "Kerbcam", "HullcamShaders", "shaders.linux"));
+                "GameData", "Kerbcast", "HullcamShaders", "shaders.linux"));
             if (!File.Exists(path))
                 throw new FileNotFoundException(
                     $"shaders.linux bundle not found at {path}; is the repo checkout intact?");

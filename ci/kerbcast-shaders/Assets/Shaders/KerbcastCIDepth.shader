@@ -6,9 +6,9 @@
 // flat placeholder silently deleted that whole layer from every preview.
 //
 // Deliberately has NO committed .meta: Unity regenerates one per CI run
-// with no assetBundle tag, so this never ships in the kerbcam-shaders
+// with no assetBundle tag, so this never ships in the kerbcast-shaders
 // bundle.
-Shader "Kerbcam/CIDepth"
+Shader "Kerbcast/CIDepth"
 {
     SubShader
     {
