@@ -46,9 +46,10 @@ namespace Kerbcast
     {
         None = 0,
         Near = 1,
+        Far = 8,
         Scaled = 2,
         Galaxy = 4,
-        All = Near | Scaled | Galaxy,
+        All = Near | Far | Scaled | Galaxy,
     }
 
     internal sealed class KerbcastCamera
@@ -1610,12 +1611,10 @@ namespace Kerbcast
                     _phaseTimings.Record(RenderPhase.Scaled,
                         (System.Diagnostics.Stopwatch.GetTimestamp() - scaledStart) * _msPerTick);
 
-                /* Spike: far-local layer renders between scaled (planet surface
-                   at scale) and near (close-up parts). Always on for this test
-                   regardless of the layer mask — the hypothesis validation only
-                   needs it rendered unconditionally. */
-                if (_farCam != null)
+                if (_farCam != null && (_layers & CameraLayers.Far) != 0)
+                {
                     _farCam.Render();
+                }
 
                 if (_nearCam != null && (_layers & CameraLayers.Near) != 0)
                 {
