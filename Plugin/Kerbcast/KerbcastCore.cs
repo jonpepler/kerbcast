@@ -989,6 +989,7 @@ namespace Kerbcast
             sb.Append("    \"phasesMs\": {\n");
             AppendPhase(sb, "galaxy", RenderPhase.Galaxy, ci, first: true);
             AppendPhase(sb, "scaled", RenderPhase.Scaled, ci, first: false);
+            AppendPhase(sb, "far", RenderPhase.Far, ci, first: false);
             AppendPhase(sb, "near", RenderPhase.Near, ci, first: false);
             AppendPhase(sb, "blit", RenderPhase.Blit, ci, first: false);
             AppendPhase(sb, "readback", RenderPhase.Readback, ci, first: false);
@@ -1037,6 +1038,7 @@ namespace Kerbcast
         {
             var parts = new List<string>(3);
             if ((layers & CameraLayers.Near) != 0) parts.Add("\"NEAR\"");
+            if ((layers & CameraLayers.Far) != 0) parts.Add("\"FAR\"");
             if ((layers & CameraLayers.Scaled) != 0) parts.Add("\"SCALED\"");
             if ((layers & CameraLayers.Galaxy) != 0) parts.Add("\"GALAXY\"");
             return "[" + string.Join(", ", parts.ToArray()) + "]";

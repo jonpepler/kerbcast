@@ -85,5 +85,26 @@ namespace Kerbcast
             warn($"[Kerbcast] settings.cfg: {key}='{raw}' is not an integer; ignoring");
             return null;
         }
+
+        /* Parses a comma-separated Layers value from settings.cfg into a
+           CameraLayers mask. Tokens are case-insensitive; unknown tokens warn
+           and are skipped. An empty or all-invalid list returns All rather
+           than None, almost certainly not what the operator intended. */
+        public static CameraLayers ParseCameraLayers(string raw, Action<string> warn)
+        {
+            var mask = CameraLayers.None;
+            foreach (var tok in raw.Split(','))
+            {
+                var t = tok.Trim();
+                if (t.Equals("NEAR", StringComparison.OrdinalIgnoreCase))   mask |= CameraLayers.Near;
+                else if (t.Equals("FAR", StringComparison.OrdinalIgnoreCase))    mask |= CameraLayers.Far;
+                else if (t.Equals("SCALED", StringComparison.OrdinalIgnoreCase)) mask |= CameraLayers.Scaled;
+                else if (t.Equals("GALAXY", StringComparison.OrdinalIgnoreCase)) mask |= CameraLayers.Galaxy;
+                else if (t.Equals("ALL", StringComparison.OrdinalIgnoreCase))    mask |= CameraLayers.All;
+                else if (!string.IsNullOrEmpty(t))
+                    warn($"[Kerbcast] settings.cfg: unknown layer '{t}', skipping");
+            }
+            return mask == CameraLayers.None ? CameraLayers.All : mask;
+        }
     }
 }

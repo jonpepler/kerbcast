@@ -16,6 +16,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Include="../Kerbcast/CameraLayers.cs" />
     <Compile Include="../Kerbcast/SettingsLayer.cs" />
   </ItemGroup>
 
