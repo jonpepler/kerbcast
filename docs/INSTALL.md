@@ -1,35 +1,39 @@
 # Installing kerbcast
 
-> Each GitHub Release also carries these steps in its notes - if anything here
-> disagrees with the notes on the release you downloaded, the release notes win.
+Kerbcast is on CKAN. If installing there, skip to Running.
 
 ## Requirements
 
 - Kerbal Space Program 1.12.x
 - [Hullcam VDS Continued](https://github.com/linuxgurugamer/HullcamVDSContinued)
   (required - kerbcast streams Hullcam camera parts)
-- A WebRTC-capable browser on the viewing device (any current Firefox, Chrome,
-  Safari, or Edge)
-- OS tiers: Linux / Steam Deck is tier-1 (hardware H.264 via VA-API). macOS and
-  Windows are experimental tier-2 and encode in software.
+- [Harmony 2](https://github.com/KSPModdingLibs/HarmonyKSP)
+  (required - the runtime patching library kerbcast builds on)
+- A WebRTC-capable browser on the viewing device
 
-## Steps
+## Manual install (GitHub or SpaceDock)
 
 1. Download `kerbcast-vX.Y.Z.zip` from the
-   [releases page](https://github.com/jonpepler/kerbcast/releases).
+   [releases page](https://github.com/jonpepler/kerbcast/releases) or the
+   [SpaceDock listing](https://spacedock.info/mod/4366/Kerbcast).
 2. Extract it into your KSP install so that `GameData/Kerbcast/` exists
    (the zip already contains the `GameData/` folder - extract at the KSP root).
-3. Install Hullcam VDS Continued if you haven't already.
-4. Start KSP and launch a flight with one or more Hullcam camera parts on the
+3. Install Hullcam VDS Continued and Harmony 2 if you haven't already.
+
+## Running
+
+1. Start KSP and launch a flight with one or more Hullcam camera parts on the
    vessel.
-5. On the same machine, open `http://127.0.0.1:8088` in a browser. The bundled
+2. On the same machine, open `http://127.0.0.1:8088` in a browser. The bundled
    web page lists the vessel's cameras and starts streams when you click them.
 
-> **Windows:** the first time the sidecar launches, Windows may warn about
-> running it. It's safe to approve; you'll only see this on first run.
+> **Windows/MacOS:** the first time the Kerbcast 'sidecar' launches, the OS may warn about
+> running it. It's safe to approve; you should only see this on first run.
+
+### Configure Access From Another Device
 
 To watch from **another device**, set
-`BindAddress` in `GameData/Kerbcast/settings.cfg`:
+`BindAddress` in `GameData/Kerbcast/PluginData/settings.cfg`:
 
 ```
 Settings
@@ -69,14 +73,7 @@ browsers stay connected), and stops it when KSP exits. Nothing else to run.
 
 ## Configuration
 
-Edit `GameData/Kerbcast/settings.cfg` like any other KSP mod config. Every
-field is commented inline: bind address/port, capture resolution, stream
-bitrate, adaptive-performance ceilings, Hullcam filter and atmospheric-FX
-toggles, and per-camera overrides.
-
-Updates re-extract `GameData/Kerbcast/`, so direct edits to that file are lost
-on the next version. To keep changes across updates, put only the keys you're
-changing in `GameData/Kerbcast/PluginData/settings.cfg` instead.
+See `GameData/Kerbcast/settings.cfg` for a breakdown of each available setting. Apply them to `GameData/Kerbcast/PluginData/settings.cfg` to ensure custom settings persist between updates.
 
 ### When settings changes apply
 

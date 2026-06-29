@@ -32,7 +32,7 @@ Issues and PRs are welcome, particularly if you'd like to 'adopt' macOS or Windo
 
 ## Install
 
-Grab the latest `kerbcast-*.zip` from the [releases page](https://github.com/jonpepler/kerbcast/releases) and follow the install steps in that release's notes. The steps live with each release rather than here because they can change between versions; the release notes are always correct for the build you download. You'll also need [Hullcam VDS Continued](https://github.com/linuxgurugamer/HullcamVDSContinued).
+Easiest is **CKAN**. Otherwise grab the latest `kerbcast-*.zip` from the [releases page](https://github.com/jonpepler/kerbcast/releases) (or the [SpaceDock listing](https://spacedock.info/mod/4366/Kerbcast)) and follow the install steps in that release's notes. For a manual install, ensure you also install [Hullcam VDS Continued](https://github.com/linuxgurugamer/HullcamVDSContinued) and [Harmony 2](https://github.com/KSPModdingLibs/HarmonyKSP).
 
 For the longer version with multi-device setup, configuration, info on what's in the bundle, see [docs/INSTALL.md](docs/INSTALL.md). If something doesn't work, [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) walks the common failures.
 
