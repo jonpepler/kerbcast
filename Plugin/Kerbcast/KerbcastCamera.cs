@@ -1,17 +1,19 @@
-// Per-Hullcam VDS tracking. Owns three Unity Cameras (near / scaled /
-// galaxy) parented to the part's transform, an AsyncGPUReadback request in
-// flight at most, and writes RGBA frames into a per-camera mmap ring on
-// each completed readback.
-//
-// Layered camera shape matches KSP's own flight camera (and OCISLY's
-// TrackingCamera): galaxy renders skybox + distant celestials, scaled
-// renders planet terrain/atmosphere at scale, near renders close parts +
-// atmosphere effects. All three target the same RenderTexture so one
-// readback captures the composite.
-//
-// Render path: all three cameras are permanently disabled (enabled=false)
-// so Unity's auto-render never fires them. Instead, Refresh() calls
-// camera.Render() explicitly each frame in galaxy → scaled → near order.
+/* Per-Hullcam VDS tracking. Owns Unity Cameras (near / scaled / galaxy,
+   plus a spike far-local layer) parented to the part's transform, an
+   AsyncGPUReadback request in flight at most, and writes RGBA frames
+   into a per-camera mmap ring on each completed readback.
+
+   Layered camera shape matches KSP's flight camera: galaxy renders skybox
+   + distant celestials, scaled renders planet terrain/atmosphere at scale,
+   far (spike) renders the mid-range terrain band between the near clip and
+   the scaled-space handoff, near renders close parts + atmosphere effects.
+   All layers target the same RenderTexture so one readback captures the
+   composite.
+
+   Render path: all cameras are permanently disabled (enabled=false) so
+   Unity's auto-render never fires them. Instead, Refresh() calls
+   camera.Render() explicitly each frame in galaxy -> scaled -> far -> near
+   order. */
 // This prevents KSP's deferred "Composite Shadows" CommandBuffer from
 // running against the wrong framebuffer when our cameras render — that
 // buffer would otherwise null out sun diffuse on planet surfaces, leaving
@@ -102,6 +104,10 @@ namespace Kerbcast
         private Camera _nearCam;
         private Camera _scaledCam;
         private Camera _galaxyCam;
+        /* Spike: far-local camera cloned from KSP's "Camera 01". Renders the
+           mid-range terrain band between Camera 01's near clip and the
+           scaled-space handoff. Null when "Camera 01" is not present. */
+        private Camera _farCam;
         // Whether this camera should replicate KSP's atmospheric FX. Set from
         // settings.cfg at construction; flipped at runtime by the control file.
         private bool _enableFx;
@@ -514,6 +520,7 @@ namespace Kerbcast
             if (_nearCam != null) _nearCam.targetTexture = _captureRt;
             if (_scaledCam != null) _scaledCam.targetTexture = _captureRt;
             if (_galaxyCam != null) _galaxyCam.targetTexture = _captureRt;
+            if (_farCam != null) _farCam.targetTexture = _captureRt;
 
             Debug.Log($"[Kerbcast] cam={FlightId} render size → {width}×{height}");
         }
@@ -553,12 +560,12 @@ namespace Kerbcast
                 WalkTransforms(t.GetChild(i), depth + 1, sb);
         }
 
-        // Layered camera triple. Each layer copies the corresponding KSP
-        // main flight camera so depth-ordering, clearFlags, cullingMask,
-        // and per-layer rendering tricks all inherit correctly. All three
-        // target `_captureRt`; Unity composites by camera.depth (galaxy
-        // back, scaled middle, near front), so a single readback against
-        // the RT captures the composite frame.
+        /* Layered camera stack. Each layer copies the corresponding KSP
+           flight camera so depth-ordering, clearFlags, cullingMask, and
+           per-layer rendering tricks all inherit correctly. All layers
+           target `_captureRt`; Unity composites by camera.depth (galaxy
+           back, scaled next, far-spike next, near front), so a single
+           readback against the RT captures the composite frame. */
         private void SetCameras()
         {
             var partTransform = string.IsNullOrEmpty(Hullcam.cameraTransformName)
@@ -738,6 +745,46 @@ namespace Kerbcast
             galaxyRot.UseScaledSpace = false;
             galaxyGo.AddComponent<CanvasHack>();
 
+            /* Spike: far-local layer, cloned from KSP's "Camera 01". Renders
+               the terrain band between the near camera's far clip and the
+               scaled-space transition. Parented to the part transform like
+               the near camera so it tracks vessel movement. Depth is set
+               between the scaled and near values so Unity's compositing
+               order is galaxy -> scaled -> far -> near. */
+            var sourceFar = FindKspCamera("Camera 01");
+            if (sourceFar != null)
+            {
+                var farGo = new GameObject($"Kerbcast_{FlightId}_Far");
+                _farCam = farGo.AddComponent<Camera>();
+                _farCam.CopyFrom(sourceFar);
+                _farCam.name = $"Kerbcast_{FlightId}_Far";
+                farGo.transform.parent = nearParent;
+                farGo.transform.localPosition = nearLocalPos;
+                farGo.transform.localRotation = _baseRotation;
+                _farCam.fieldOfView = Hullcam.cameraFoV;
+                _farCam.targetTexture = _captureRt;
+                _farCam.allowHDR = true;
+                _farCam.allowMSAA = true;
+                _farCam.useOcclusionCulling = false;
+                /* Depth: Camera 01 inherits its depth from CopyFrom. Force it
+                   between the scaled and near values so the composite is
+                   galaxy -> scaled -> far -> near. KSP's typical depths are
+                   GalaxyCamera=-1, ScaledSpace=0, Camera 01=1, Camera 00=2.
+                   Using sourceFar.depth - 0.5 puts us at ~0.5, between scaled
+                   (0) and near (2), which is correct for all typical KSP
+                   depth assignments. */
+                _farCam.depth = sourceFar.depth - 0.5f;
+                _farCam.enabled = false;
+                farGo.AddComponent<CanvasHack>();
+                Debug.Log($"[Kerbcast] cam={FlightId} far-local camera created: " +
+                    $"near={sourceFar.nearClipPlane} far={sourceFar.farClipPlane} " +
+                    $"clearFlags={sourceFar.clearFlags} depth={_farCam.depth}");
+            }
+            else
+            {
+                Debug.LogWarning($"[Kerbcast] cam={FlightId} 'Camera 01' not found — far layer skipped");
+            }
+
             // TUFX (TexturesUnlimitedFX) post-processing. Reflection-only
             // — silently no-ops when TUFX isn't installed. Applied to every
             // layered camera (not just near) so the post stack matches what
@@ -780,11 +827,13 @@ namespace Kerbcast
                     Debug.LogWarning($"[Kerbcast] cam={FlightId} yaw-base transform '{_panCap.YawBaseTransformName}' not found on {Hullcam.part.name}");
             }
 
-            // All three cameras are permanently disabled — Unity must not
-            // auto-render them. Refresh() drives explicit camera.Render()
-            // calls each tick; disabled cameras still participate in
-            // LayerCamRotator.OnPreRender (which fires on camera.Render())
-            // so transform tracking continues to work correctly.
+            /* All cameras are permanently disabled — Unity must not
+               auto-render them. Refresh() drives explicit camera.Render()
+               calls each tick; disabled cameras still participate in
+               LayerCamRotator.OnPreRender (which fires on camera.Render())
+               so transform tracking continues to work correctly. The far
+               camera's enabled flag is set inside its own construction
+               block above. */
             _nearCam.enabled = false;
             _scaledCam.enabled = false;
             _galaxyCam.enabled = false;
@@ -1107,6 +1156,7 @@ namespace Kerbcast
                             if (_nearCam != null) _nearCam.fieldOfView = Fov;
                             if (_scaledCam != null) _scaledCam.fieldOfView = Fov;
                             if (_galaxyCam != null) _galaxyCam.fieldOfView = Fov;
+                            if (_farCam != null) _farCam.fieldOfView = Fov;
                         }
                     }
                     Debug.Log($"[Kerbcast] cam={FlightId} subscribed → {_subscribed}");
@@ -1400,6 +1450,7 @@ namespace Kerbcast
                     if (_nearCam != null) _nearCam.fieldOfView = Fov;
                     if (_scaledCam != null) _scaledCam.fieldOfView = Fov;
                     if (_galaxyCam != null) _galaxyCam.fieldOfView = Fov;
+                    if (_farCam != null) _farCam.fieldOfView = Fov;
                 }
             }
 
@@ -1558,6 +1609,13 @@ namespace Kerbcast
                 if (_telemetry && _scaledCam != null && (_layers & CameraLayers.Scaled) != 0)
                     _phaseTimings.Record(RenderPhase.Scaled,
                         (System.Diagnostics.Stopwatch.GetTimestamp() - scaledStart) * _msPerTick);
+
+                /* Spike: far-local layer renders between scaled (planet surface
+                   at scale) and near (close-up parts). Always on for this test
+                   regardless of the layer mask — the hypothesis validation only
+                   needs it rendered unconditionally. */
+                if (_farCam != null)
+                    _farCam.Render();
 
                 if (_nearCam != null && (_layers & CameraLayers.Near) != 0)
                 {
@@ -1798,6 +1856,7 @@ namespace Kerbcast
             if (_nearCam != null) UnityEngine.Object.Destroy(_nearCam.gameObject);
             if (_scaledCam != null) UnityEngine.Object.Destroy(_scaledCam.gameObject);
             if (_galaxyCam != null) UnityEngine.Object.Destroy(_galaxyCam.gameObject);
+            if (_farCam != null) UnityEngine.Object.Destroy(_farCam.gameObject);
             // Destroy every pooled render-target set (the current _captureRt /
             // _readbackRt are members of one of these, so this covers them).
             // Safe here because the camera is being torn down — no further
