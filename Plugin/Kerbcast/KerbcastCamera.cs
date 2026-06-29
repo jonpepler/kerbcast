@@ -41,17 +41,6 @@ using Yangrc.OpenGLAsyncReadback;
 
 namespace Kerbcast
 {
-    [Flags]
-    internal enum CameraLayers
-    {
-        None = 0,
-        Near = 1,
-        Far = 8,
-        Scaled = 2,
-        Galaxy = 4,
-        All = Near | Far | Scaled | Galaxy,
-    }
-
     internal sealed class KerbcastCamera
     {
         public uint FlightId { get; }
@@ -1006,7 +995,11 @@ namespace Kerbcast
             (0.50f, CameraLayers.None),                                 // 2: half res
             (0.50f, CameraLayers.Galaxy),                               // 3: + drop galaxy
             (0.25f, CameraLayers.Galaxy),                               // 4: quarter res
-            (0.25f, CameraLayers.Galaxy | CameraLayers.Scaled),         // 5: emergency
+            /* Far is the heaviest layer (full mid-range terrain band) but
+               dropping it reintroduces the black band between the scaled and
+               near handoff; it stays until the absolute last resort. Tier
+               placement is provisional pending Deck perf baseline (§8.0). */
+            (0.25f, CameraLayers.Galaxy | CameraLayers.Scaled | CameraLayers.Far),  // 5: emergency (last resort; reintroduces far black band)
         };
 
         public static int MaxShedLevel => ShedTable.Length - 1;
@@ -1613,7 +1606,11 @@ namespace Kerbcast
 
                 if (_farCam != null && (_layers & CameraLayers.Far) != 0)
                 {
+                    long farStart = _telemetry ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
                     _farCam.Render();
+                    if (_telemetry)
+                        _phaseTimings.Record(RenderPhase.Far,
+                            (System.Diagnostics.Stopwatch.GetTimestamp() - farStart) * _msPerTick);
                 }
 
                 if (_nearCam != null && (_layers & CameraLayers.Near) != 0)

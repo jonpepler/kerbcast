@@ -127,5 +127,38 @@ void Warn(string msg) => warnings.Add(msg);
     Check(warnings.Count == 1, "garbage value warns");
 }
 
+// --- ParseCameraLayers: FAR token round-trip and ALL includes Far. ---
+{
+    warnings.Clear();
+    var farOnly = SettingsLayer.ParseCameraLayers("FAR", Warn);
+    Check(farOnly == CameraLayers.Far, "ParseCameraLayers(\"FAR\") yields CameraLayers.Far");
+    var all = SettingsLayer.ParseCameraLayers("ALL", Warn);
+    Check((all & CameraLayers.Far) != 0, "ParseCameraLayers(\"ALL\") includes Far");
+    Check(warnings.Count == 0, "no warnings for valid tokens");
+}
+
+// --- ParseCameraLayers: case-insensitive FAR token. ---
+{
+    warnings.Clear();
+    var lower = SettingsLayer.ParseCameraLayers("far", Warn);
+    Check(lower == CameraLayers.Far, "ParseCameraLayers(\"far\") (lowercase) yields Far");
+    Check(warnings.Count == 0, "no warnings for lowercase token");
+}
+
+// --- ParseCameraLayers: unknown token warns, valid tokens still apply. ---
+{
+    warnings.Clear();
+    var mask = SettingsLayer.ParseCameraLayers("NEAR, BLORP, FAR", Warn);
+    Check((mask & CameraLayers.Near) != 0 && (mask & CameraLayers.Far) != 0, "known tokens applied despite unknown neighbour");
+    Check(warnings.Count == 1, $"one warning for the unknown token (got {warnings.Count})");
+}
+
+// --- ParseCameraLayers: empty / all-invalid falls back to All. ---
+{
+    warnings.Clear();
+    var fallback = SettingsLayer.ParseCameraLayers("NOPE", Warn);
+    Check(fallback == CameraLayers.All, "all-invalid list falls back to All");
+}
+
 Console.WriteLine(failures == 0 ? "SettingsLayer.Tests: all passed" : $"SettingsLayer.Tests: {failures} FAILED");
 return failures == 0 ? 0 : 1;

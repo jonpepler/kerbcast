@@ -28,7 +28,7 @@
 //
 // Per-camera override nodes (zero or more `Camera { ... }` blocks):
 //   PartName          internal KSP part name (e.g. "navCam1"), case-sensitive.
-//   Layers            comma-separated subset of NEAR, SCALED, GALAXY (or ALL).
+//   Layers            comma-separated subset of NEAR, FAR, SCALED, GALAXY (or ALL).
 //                     Sets the initial layer mask for the camera on attach;
 //                     operator can still override at runtime via POST
 //                     /cameras/{id}/layers.
@@ -494,23 +494,7 @@ namespace Kerbcast
 
         private static CameraLayers ParseLayers(string raw)
         {
-            var mask = CameraLayers.None;
-            foreach (var tok in raw.Split(','))
-            {
-                var t = tok.Trim();
-                if (t.Equals("NEAR", System.StringComparison.OrdinalIgnoreCase)) mask |= CameraLayers.Near;
-                else if (t.Equals("SCALED", System.StringComparison.OrdinalIgnoreCase)) mask |= CameraLayers.Scaled;
-                else if (t.Equals("GALAXY", System.StringComparison.OrdinalIgnoreCase)) mask |= CameraLayers.Galaxy;
-                else if (t.Equals("ALL", System.StringComparison.OrdinalIgnoreCase)) mask |= CameraLayers.All;
-                else if (!string.IsNullOrEmpty(t))
-                {
-                    Debug.LogWarning($"[Kerbcast] settings.cfg: unknown layer '{t}', skipping");
-                }
-            }
-            // An empty / all-invalid Layers list would be CameraLayers.None
-            // and mean "render nothing for this camera" — almost certainly
-            // not what the operator meant. Fall back to All.
-            return mask == CameraLayers.None ? CameraLayers.All : mask;
+            return SettingsLayer.ParseCameraLayers(raw, Debug.LogWarning);
         }
 
         // Thin ConfigNode adapters over the Unity-free SettingsLayer helpers
