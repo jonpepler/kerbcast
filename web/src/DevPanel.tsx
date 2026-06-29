@@ -2,7 +2,7 @@
  * Developer panel - shown only when debug mode is enabled.
  *
  * Exposes:
- * - Per-camera: layer checkboxes (NEAR/SCALED/GALAXY), auto-shed marker,
+ * - Per-camera: layer checkboxes (NEAR/FAR/SCALED/GALAXY), auto-shed marker,
  *   degrade slider, bitrate readout (encoder vs target kbps)
  * - Stagger/profile line polling GET /profile once per second
  * - Per-tile RTC inbound stats (pkts/bytes/framesDecoded/jitter)
@@ -14,7 +14,7 @@ import { useKerbcastCameras } from "@jonpepler/kerbcast-react";
 import { useEffect, useRef, useState } from "react";
 import styled from "styled-components";
 
-const ALL_LAYERS = [Layer.Near, Layer.Scaled, Layer.Galaxy] as const;
+const ALL_LAYERS = [Layer.Near, Layer.Far, Layer.Scaled, Layer.Galaxy] as const;
 
 interface ProfileData {
   staggerBudget?: number;
