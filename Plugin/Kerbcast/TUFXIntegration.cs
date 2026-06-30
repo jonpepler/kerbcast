@@ -20,46 +20,67 @@ using UnityEngine;
 
 namespace Kerbcast
 {
-    internal static class TUFXIntegration
+    internal sealed class TUFXIntegration : ICameraModIntegration
     {
         private const string LogTag = "[Kerbcast-TUFX]";
 
         // Resolved once on first use; null until then. _ready gates every
         // public entry point so a failed probe disables the feature cleanly.
-        private static bool _probed;
-        private static bool _ready;
+        private bool _probed;
+        private bool _ready;
 
-        private static Type _layerType;     // PostProcessLayer
-        private static Type _volumeType;    // PostProcessVolume
-        private static MethodInfo _layerInit;        // PostProcessLayer.Init(resources)
-        private static FieldInfo _layerVolumeMask;   // PostProcessLayer.volumeLayer
-        private static PropertyInfo _loaderResources; // TexturesUnlimitedFXLoader.Resources (static)
-        private static FieldInfo _volumeIsGlobal;    // PostProcessVolume.isGlobal
-        private static FieldInfo _volumePriority;    // PostProcessVolume.priority
-        private static FieldInfo _volumeProfile;     // PostProcessVolume.sharedProfile
+        private Type _layerType;     // PostProcessLayer
+        private Type _volumeType;    // PostProcessVolume
+        private MethodInfo _layerInit;        // PostProcessLayer.Init(resources)
+        private FieldInfo _layerVolumeMask;   // PostProcessLayer.volumeLayer
+        private PropertyInfo _loaderResources; // TexturesUnlimitedFXLoader.Resources (static)
+        private FieldInfo _volumeIsGlobal;    // PostProcessVolume.isGlobal
+        private FieldInfo _volumePriority;    // PostProcessVolume.priority
+        private FieldInfo _volumeProfile;     // PostProcessVolume.sharedProfile
 
         // Optional profile lookup. When all of these resolve we can pin a named
         // profile per camera; otherwise volumes inherit whatever the player has
         // selected globally in TUFX, which is a perfectly good fallback.
-        private static FieldInfo _loaderInstance;    // TexturesUnlimitedFXLoader.INSTANCE (nonpublic static)
-        private static PropertyInfo _loaderProfiles; // TexturesUnlimitedFXLoader.Profiles (nonpublic instance)
-        private static MethodInfo _profileMaterialise; // TUFXProfile.CreatePostProcessProfile()
-        private static bool _profilesResolvable;
-        private static string _warnedMissingProfile;
+        private FieldInfo _loaderInstance;    // TexturesUnlimitedFXLoader.INSTANCE (nonpublic static)
+        private PropertyInfo _loaderProfiles; // TexturesUnlimitedFXLoader.Profiles (nonpublic instance)
+        private MethodInfo _profileMaterialise; // TUFXProfile.CreatePostProcessProfile()
+        private bool _profilesResolvable;
+        private string _warnedMissingProfile;
 
-        public static bool IsAvailable
+        public string Name => "TUFX";
+
+        public bool IsAvailable
         {
-            get
-            {
-                Probe();
-                return _ready;
-            }
+            get { Probe(); return _ready; }
         }
 
-        private static void Probe()
+        public bool ForcesNoMsaa => false;
+
+        public bool NeedsPerFrame => false;
+
+        // Every cloned layer, so the post stack matches the in-game composite
+        // across near, far-local terrain, scaled space, and the galaxy skybox.
+        public CameraLayers AppliesToLayers => CameraLayers.All;
+
+        // TUFX applies the same post-process stack to every layer, so the layer
+        // argument is not used; kept to satisfy the contract.
+        public void ApplyToLayer(Camera cam, CameraLayers layer) => ApplyToCameraInternal(cam);
+
+        public void RemoveFromLayer(Camera cam, CameraLayers layer)
+        {
+            if (cam == null || !_probed) return;
+            Strip(cam);
+        }
+
+        public void PerFrame(Camera cam, CameraLayers layer, in IntegrationFrameState state) { }
+
+        private void Probe()
         {
             if (_probed) return;
             _probed = true;
+
+            // operator opt-out: treat a disabled TUFX as "not available"
+            if (!KerbcastSettings.EnableTUFX) { return; }
 
             try
             {
@@ -122,7 +143,7 @@ namespace Kerbcast
 
         // Attach a TUFX post-process layer + global volume to one capture camera.
         // Safe to call repeatedly: the volume/layer are reused if already present.
-        public static void ApplyToCamera(Camera camera)
+        private void ApplyToCameraInternal(Camera camera)
         {
             if (camera == null) return;
             Probe();
@@ -156,13 +177,7 @@ namespace Kerbcast
             }
         }
 
-        public static void RemoveFromCamera(Camera camera)
-        {
-            if (camera == null || !_probed) return;
-            Strip(camera);
-        }
-
-        private static void PinProfile(Component volume)
+        private void PinProfile(Component volume)
         {
             if (!_profilesResolvable) return;
             var name = KerbcastSettings.TUFXProfile;
@@ -195,7 +210,7 @@ namespace Kerbcast
             }
         }
 
-        private static void Strip(Camera camera)
+        private void Strip(Camera camera)
         {
             try
             {
@@ -216,7 +231,7 @@ namespace Kerbcast
             }
         }
 
-        private static Component GetOrAdd(GameObject go, Type type)
+        private Component GetOrAdd(GameObject go, Type type)
         {
             return go.GetComponent(type) ?? go.AddComponent(type);
         }

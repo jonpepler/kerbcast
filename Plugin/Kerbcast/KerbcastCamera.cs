@@ -769,22 +769,7 @@ namespace Kerbcast
                 Debug.LogWarning($"[Kerbcast] cam={FlightId} 'Camera 01' not found: far layer skipped");
             }
 
-            // TUFX (TexturesUnlimitedFX) post-processing. Reflection-only
-            // — silently no-ops when TUFX isn't installed. Applied to every
-            // layered camera (not just near) so the post stack matches what
-            // the player sees in-game across the whole composite. The
-            // near cam carries the heaviest tonemap+bloom load since it
-            // sees the highest-luminance content (engines, near-vessel
-            // atmosphere); the scaled cam handles the wide-DR atmospheric
-            // gradient that was the original "dark Kerbin / black hole
-            // horizon" complaint that triggered this work; the galaxy cam
-            // applies it to the skybox composite for consistency.
-            if (KerbcastSettings.EnableTUFX)
-            {
-                TUFXIntegration.ApplyToCamera(_nearCam);
-                TUFXIntegration.ApplyToCamera(_scaledCam);
-                TUFXIntegration.ApplyToCamera(_galaxyCam);
-            }
+            // rewired in Task 5
 
             // Pitch transform — resolved here rather than above because it
             // doesn't affect camera parenting in the current design.
