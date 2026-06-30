@@ -54,15 +54,3 @@ This mod was built initally for getting best performance out of Steam Deck, and 
 
 [gonogo](https://github.com/jonpepler/gonogo) - a WIP mission-control browser SPA that consumes kerbcast feeds (and a few other things).
 
-## TODO
-
-- [x] Publish NetKAN metadata to CKAN's indexer
-- [x] Create SpaceDock listing
-- [ ] KSP Forums post
-- [x] User-facing install and quickstart docs
-
-## Future work
-
-- [ ] Better tier-2 OS support
-- [x] Support Hullcam VDS cameras that take zoom commands
-- [x] Extend Hullcam with a pivotable camera
