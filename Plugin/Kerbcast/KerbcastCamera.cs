@@ -101,6 +101,9 @@ namespace Kerbcast
         // Whether this camera should replicate KSP's atmospheric FX. Set from
         // settings.cfg at construction; flipped at runtime by the control file.
         private bool _enableFx;
+        // Visual-mod integration host (TUFX, and Scatterer/EVE/... as they land).
+        // Null until SetCameras constructs it. The only mod-aware surface in this class.
+        private IntegrationHost _integrationHost;
         // Pluggable atmospheric-FX host for this camera. Owns the enabled FX
         // effects (core sheath, bowshock, …); each effect renders into the near
         // pass. Null until SetCameras builds it.
@@ -567,6 +570,14 @@ namespace Kerbcast
                 return;
             }
 
+            // Visual-mod integrations (TUFX, and Scatterer/EVE/... as they land). The
+            // host is the only mod-aware surface; the render code below treats all
+            // integrations uniformly. Constructed here so the MSAA format lever is known
+            // before the cloned cameras are configured.
+            _integrationHost = new IntegrationHost();
+            bool integrationsForceNoMsaa = _integrationHost.ForceNoMsaa;
+            bool allowMsaa = !integrationsForceNoMsaa;
+
             // Resolve the yaw mesh transform before camera setup so we can
             // parent the near camera to it. Must happen here, at rest pose,
             // so InverseTransformPoint reads the unrotated frame correctly.
@@ -656,7 +667,7 @@ namespace Kerbcast
             // horizon" in the first multi-camera streaming test). OCISLY's
             // TrackingCamera enables these explicitly for the same reason.
             _nearCam.allowHDR = true;
-            _nearCam.allowMSAA = true;
+            _nearCam.allowMSAA = allowMsaa;
             // Offscreen RT cameras shouldn't run Unity's occlusion logic —
             // it's computed against the main viewport's frustum and either
             // wastes cycles or incorrectly culls objects in our cameras'
@@ -687,7 +698,7 @@ namespace Kerbcast
             _scaledCam.fieldOfView = Hullcam.cameraFoV;
             _scaledCam.targetTexture = _captureRt;
             _scaledCam.allowHDR = true;
-            _scaledCam.allowMSAA = true;
+            _scaledCam.allowMSAA = allowMsaa;
             _scaledCam.useOcclusionCulling = false;
             // Deferred lighting fails silently for offscreen RTs on Mesa/OpenGL
             // (surface goes pure black while the atmosphere limb, which uses its
@@ -722,7 +733,7 @@ namespace Kerbcast
             _galaxyCam.fieldOfView = Hullcam.cameraFoV;
             _galaxyCam.targetTexture = _captureRt;
             _galaxyCam.allowHDR = true;
-            _galaxyCam.allowMSAA = true;
+            _galaxyCam.allowMSAA = allowMsaa;
             _galaxyCam.useOcclusionCulling = false;
             var galaxyRot = galaxyGo.AddComponent<LayerCamRotator>();
             galaxyRot.NearCamera = _nearCam;
@@ -748,7 +759,7 @@ namespace Kerbcast
                 _farCam.fieldOfView = Hullcam.cameraFoV;
                 _farCam.targetTexture = _captureRt;
                 _farCam.allowHDR = true;
-                _farCam.allowMSAA = true;
+                _farCam.allowMSAA = allowMsaa;
                 _farCam.useOcclusionCulling = false;
                 /* Depth: Camera 01 inherits its depth from CopyFrom. Force it
                    between the scaled and near values so the composite is
@@ -769,7 +780,15 @@ namespace Kerbcast
                 Debug.LogWarning($"[Kerbcast] cam={FlightId} 'Camera 01' not found: far layer skipped");
             }
 
-            // rewired in Task 5
+            // Attach every available integration to each cloned layer. The host skips
+            // integrations that do not opt into a layer and no-ops the unavailable ones.
+            // TUFX's own EnableTUFX setting is honoured inside its IsAvailable probe path;
+            // see note below.
+            _integrationHost.ApplyToLayer(_nearCam, CameraLayers.Near);
+            _integrationHost.ApplyToLayer(_scaledCam, CameraLayers.Scaled);
+            _integrationHost.ApplyToLayer(_galaxyCam, CameraLayers.Galaxy);
+            if (_farCam != null)
+                _integrationHost.ApplyToLayer(_farCam, CameraLayers.Far);
 
             // Pitch transform — resolved here rather than above because it
             // doesn't affect camera parenting in the current design.
@@ -871,6 +890,17 @@ namespace Kerbcast
                 vel = KerbcastSettings.DebugWindDirection;
 
             return new FxFrameState(v, _nearCam, vel, mach, q, Time.deltaTime, Time.time);
+        }
+
+        // Per-frame inputs for visual-mod integrations that need live flight state.
+        // Mirrors BuildFxFrameState's quantities so FX and integrations agree.
+        private IntegrationFrameState BuildIntegrationFrameState(CameraLayers layer)
+        {
+            var v = Hullcam != null ? Hullcam.vessel : null;
+            float mach = v != null ? (float)v.mach : 0f;
+            float q = v != null ? (float)v.dynamicPressurekPa : 0f;
+            double alt = v != null ? v.altitude : 0d;
+            return new IntegrationFrameState(v, layer, Time.deltaTime, mach, q, alt);
         }
 
         // Cached shader ID for FXCamera's published wind direction global.
@@ -1481,6 +1511,7 @@ namespace Kerbcast
                 if (_galaxyCam != null && (_layers & CameraLayers.Galaxy) != 0)
                 {
                     long t0 = _telemetry ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
+                    _integrationHost?.PerFrame(_galaxyCam, CameraLayers.Galaxy, BuildIntegrationFrameState(CameraLayers.Galaxy));
                     _galaxyCam.Render();
                     if (_telemetry)
                         _phaseTimings.Record(RenderPhase.Galaxy,
@@ -1541,6 +1572,7 @@ namespace Kerbcast
                                 $"ambient={RenderSettings.ambientLight} ambientMode={RenderSettings.ambientMode} " +
                                 $"scaledSunLight={(ssl == null ? "null" : $"enabled={ssl.enabled} intensity={ssl.intensity} color={ssl.color} cullingMask={ssl.cullingMask}")}");
                         }
+                        _integrationHost?.PerFrame(_scaledCam, CameraLayers.Scaled, BuildIntegrationFrameState(CameraLayers.Scaled));
                         _scaledCam.Render();
                         if (_firstRender)
                         {
@@ -1586,6 +1618,7 @@ namespace Kerbcast
                 if (_farCam != null && (_layers & CameraLayers.Far) != 0)
                 {
                     long farStart = _telemetry ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
+                    _integrationHost?.PerFrame(_farCam, CameraLayers.Far, BuildIntegrationFrameState(CameraLayers.Far));
                     _farCam.Render();
                     if (_telemetry)
                         _phaseTimings.Record(RenderPhase.Far,
@@ -1600,6 +1633,7 @@ namespace Kerbcast
                     // Time the FX build + render + near render together (the
                     // task's "near Render() (+ FX)" phase).
                     long t0 = _telemetry ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
+                    _integrationHost?.PerFrame(_nearCam, CameraLayers.Near, BuildIntegrationFrameState(CameraLayers.Near));
                     _fxHost?.Render(BuildFxFrameState());
                     _nearCam.Render();
                     if (_telemetry)
