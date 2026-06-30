@@ -8,8 +8,8 @@
 // to Forward if that fails so a clone is never left half-deferred and black.
 //
 // The scaled clone is deliberately untouched: kerbcast forces it to Forward to
-// dodge the Mesa/OpenGL deferred-RT bug on the tier-1 Linux platform. Reflection
-// -only; absent or disabled Deferred no-ops.
+// dodge the Mesa/OpenGL deferred-RT bug on the tier-1 Linux platform.
+// Reflection-only; absent or disabled Deferred no-ops.
 
 using System;
 using System.Collections.Generic;
