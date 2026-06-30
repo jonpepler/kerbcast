@@ -69,7 +69,8 @@ namespace Kerbcast
                 _managerInstance = manager.GetProperty("Instance", PubStat);
                 _activeRenderersField = manager.GetField("activeScatterRenderers", PubInst);
                 _preRender = renderer.GetMethod("PreRender", PubInst, null, Type.EmptyTypes, null);
-                _renderInCameras = renderer.GetMethod("RenderInCameras", PubInst);
+                _renderInCameras = renderer.GetMethod("RenderInCameras", PubInst,
+                    null, new[] { typeof(Camera).MakeArrayType() }, null);
                 _quadDataField = component.GetField("scatterQuadData", PubStat);
                 _evaluateQuad = quadData.GetMethod("EvaluateQuad", PubInst, null, Type.EmptyTypes, null);
 

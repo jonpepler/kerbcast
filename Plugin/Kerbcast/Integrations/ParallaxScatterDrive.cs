@@ -50,12 +50,14 @@ namespace Kerbcast
                 var quads = QuadDataField.GetValue(null) as IDictionary;
                 if (renderers == null || quads == null || quads.Count == 0) return;
 
-                // Save + overwrite the globals with this clone's view.
+                // Save + overwrite the globals with this clone's view. Mark swapped
+                // BEFORE overwriting so Restore() runs even if the second SetValue
+                // throws between the two writes (never leave the globals dirty).
                 _savedPos = PosField.GetValue(null);
                 _savedPlanes = PlanesField.GetValue(null);
+                _swapped = true;
                 PosField.SetValue(null, _cam.transform.position);
                 PlanesField.SetValue(null, PackFrustum(_cam));
-                _swapped = true;
 
                 // Reset the append buffers, evaluate every loaded quad for this
                 // clone's frustum, then submit the scatter draws to this clone.
