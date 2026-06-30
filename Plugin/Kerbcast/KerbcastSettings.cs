@@ -105,11 +105,11 @@ namespace Kerbcast
         // Stagger budget CEILING: the most main-thread time (ms/frame) kerbcast
         // will spend on its own render + readback. When it would exceed this,
         // kerbcast captures FEWER cameras per frame (each updates less often, but
-        // at full resolution + all layers — a LOSSLESS temporal degrade). Targets
+        // at full resolution + all layers, a LOSSLESS temporal degrade). Targets
         // kerbcast's OWN cost, so it's independent of how slow the game is for
         // other reasons (a heavy vessel won't make it starve the feeds). Default
         // 24 ms (≈6–7 cameras at the Deck's ~3.5 ms/camera, landing ~25 fps with
-        // 8 streaming — comfortably above the MinKspFps floor while using the
+        // 8 streaming, comfortably above the MinKspFps floor while using the
         // headroom a lower budget would leave idle). Set 0 to remove the ms cap
         // entirely, making MinKspFps the control target ("capture everything down
         // to that fps floor"). kerbcast never drops quality to hit this unless
@@ -118,7 +118,7 @@ namespace Kerbcast
 
         // Physics-floor safety (one-way). If game fps drops below this, kerbcast
         // staggers HARDER than the budget above to keep KSP above its time-
-        // dilation threshold — below which game-time slows (physics can't keep
+        // dilation threshold, below which game-time slows (physics can't keep
         // real-time) AND the stream itself goes slow-motion + low-cadence. Only
         // ever tightens / gates restore, so it can't set up a headroom-chasing
         // oscillation. Default 18 fps (just above typical time dilation). Set 0
@@ -126,14 +126,14 @@ namespace Kerbcast
         public float MinKspFps { get; private set; } = 18f;
 
         // Master toggle for kerbcast's own atmospheric FX (a pluggable overlay
-        // — see atmospheric_fx_parked.md for why the stock-FX replication was
+        // see atmospheric_fx_parked.md for why the stock-FX replication was
         // abandoned). Default ON since v0.7.0; set false (or per-camera) to
         // disable.
         public bool EnableAtmosphericFx { get; private set; } = true;
 
-        // Which FX layers are active when the master is on — individually
+        // Which FX layers are active when the master is on, individually
         // toggleable. settings.cfg token list: CORE, BOWSHOCK, TRAIL, EMBERS
-        // (or ALL). Defaults to all four — bowshock now uses an oblate dome
+        // (or ALL). Defaults to all four; bowshock now uses an oblate dome
         // (replaces the polygonal cone), embers are a geom-shader extrusion
         // off windward surfaces (replaces ParticleSystem), trail and
         // bowshock both adapt position+size from a per-frame windward
@@ -141,7 +141,7 @@ namespace Kerbcast
         public AtmoFxLayers AtmosphericFxLayers { get; private set; } = AtmoFxLayers.All;
 
         // Apply Hullcam VDS's per-part shader filters (NightVision green
-        // grain, MovieTime film effect, CRT/TV scanlines, etc — 9 modes
+        // grain, MovieTime film effect, CRT/TV scanlines, etc; 9 modes
         // total). Each cam reads its hullcam.cameraMode field at attach
         // and instantiates the matching HullcamVDS.CameraFilter; the
         // existing capture-RT → readback-RT blit becomes a
@@ -174,7 +174,7 @@ namespace Kerbcast
         // Debug: when true, log additional per-camera diagnostics
         // useful for investigating render-mask / cullingMask issues
         // (atmospheric FX missing from streams, layer mismatches
-        // after vessel changes, etc). Off by default — log spam in
+        // after vessel changes, etc). Off by default; log spam in
         // KSP.log otherwise. Static so KerbcastCamera can read it
         // without needing a back-ref to the settings instance.
         public static bool DebugCameraLogging { get; private set; } = false;
@@ -185,7 +185,7 @@ namespace Kerbcast
         // Stopwatch.GetTimestamp (allocation-free) and KerbcastCore samples the
         // GC collection counters every frame; both are surfaced into a
         // "telemetry" section of global.status.json each ~1Hz write. Lets us
-        // measure on the Deck — with no profiler attach — whether the residual
+        // measure on the Deck (with no profiler attach) whether the residual
         // ~100ms frametime spikes are Mono GC (a deltaTime spike that coincides
         // with a gen-0/1/2 collection is the proof) and read the per-layer
         // render-cost ratio. Default false so the feature is genuinely zero-cost
@@ -196,11 +196,11 @@ namespace Kerbcast
         // Debug: force atmospheric-FX intensity to full regardless of mach /
         // dynamic pressure, so the effect renders even on the pad. Used to
         // verify the FX *renders* independent of the flight-state gating. Off
-        // by default — leave off for normal play.
+        // by default; leave off for normal play.
         public static bool ForceAtmosphericFx { get; private set; } = false;
 
         // Debug: override the vessel's surface velocity (world space) used to
-        // drive FX direction — wind-aligned streaks, bowshock placement, trail
+        // drive FX direction: wind-aligned streaks, bowshock placement, trail
         // orientation, ember drift. Zero (default) → real srf_velocity. Pair
         // with ForceAtmosphericFx to test motion-dependent shader behaviour on
         // the pad without flying. Magnitude should be > 1 so velocity-gates in
@@ -245,7 +245,7 @@ namespace Kerbcast
         /// <summary>
         /// Initial layer mask for a part. Falls back to All if no override
         /// applies. Operator can still change layers at runtime via the
-        /// sidecar's /layers endpoint — this only sets the value on attach.
+        /// sidecar's /layers endpoint; this only sets the value on attach.
         /// </summary>
         public CameraLayers GetInitialLayers(string partName)
         {
@@ -472,7 +472,7 @@ namespace Kerbcast
         }
 
         // Parse the AtmosphericFxLayers token list (CORE, BOWSHOCK, TRAIL,
-        // EMBERS, ALL). An empty/all-invalid list means "no FX layers" — which
+        // EMBERS, ALL). An empty/all-invalid list means "no FX layers", which
         // is a legitimate operator choice (master on but every layer off), so
         // unlike ParseLayers we return None rather than falling back to All.
         private static AtmoFxLayers ParseAtmoFxLayers(string raw)
