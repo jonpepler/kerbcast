@@ -28,6 +28,7 @@ namespace Kerbcast
                 new TUFXIntegration(),
                 new EVEIntegration(),
                 new ScattererIntegration(),
+                new ParallaxIntegration(),
             };
         }
 

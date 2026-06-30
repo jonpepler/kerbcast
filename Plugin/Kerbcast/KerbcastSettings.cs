@@ -169,6 +169,11 @@ namespace Kerbcast
         // capture cameras when active.
         public static bool EnableScatterer { get; private set; } = true;
 
+        // Re-run ParallaxContinued's scatter evaluate and draw for the kerbcast
+        // near terrain camera so surface scatters (rocks, grass) appear on the
+        // stream. Default true; no effect if ParallaxContinued is not installed.
+        public static bool EnableParallax { get; private set; } = true;
+
         // Name of the installed TUFX profile to attach to kerbcast's per-camera
         // volumes. Default empty: volumes inherit TUFX's own scene selection
         // (whatever the operator picked in TUFX's UI for Flight). No effect
@@ -417,6 +422,7 @@ namespace Kerbcast
             ApplyBool(node, "EnableTUFX", v => EnableTUFX = v);
             ApplyBool(node, "EnableEVE", v => EnableEVE = v);
             ApplyBool(node, "EnableScatterer", v => EnableScatterer = v);
+            ApplyBool(node, "EnableParallax", v => EnableParallax = v);
             ApplyString(node, "TUFXProfile", v => TUFXProfile = v);
             ApplyBool(node, "EnableHullcamLinuxShaderSwap", v => EnableHullcamLinuxShaderSwap = v);
             ApplyBool(node, "DebugCameraLogging", v => DebugCameraLogging = v);
