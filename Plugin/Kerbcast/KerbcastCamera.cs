@@ -852,8 +852,17 @@ namespace Kerbcast
             _fxHost.OnVesselChanged(Hullcam?.vessel);
         }
 
-        // Master gate folded into the layer set: FX off ⇒ no layers ⇒ no effects.
-        private AtmoFxLayers EffectiveFxLayers() => _enableFx ? _fxLayers : AtmoFxLayers.None;
+        /* Master gate folded into the layer set: FX off => no layers => no effects.
+           Provider selection: when Firefly is installed and enabled, capture its
+           reentry plasma INSTEAD of kerbcast's own (running both double-plasmas), by
+           clearing the kerbcast-plasma bits and setting the Firefly bit. */
+        private AtmoFxLayers EffectiveFxLayers()
+        {
+            if (!_enableFx) return AtmoFxLayers.None;
+            if (KerbcastSettings.EnableFirefly && FireflyCaptureEffect.IsFireflyAvailable())
+                return (_fxLayers & ~AtmoFxLayers.All) | AtmoFxLayers.Firefly;
+            return _fxLayers;
+        }
 
         // Build this frame's FX inputs from the vessel's flight state. Effects
         // derive their own intensities from these.
@@ -921,7 +930,14 @@ namespace Kerbcast
         /// KerbcastCore on part destruction / vessel modification so stale part
         /// renderers don't linger in an effect's CommandBuffer.
         /// </summary>
-        public void MarkFxDirty() => _fxHost?.OnVesselChanged(Hullcam != null ? Hullcam.vessel : null);
+        public void MarkFxDirty()
+        {
+            /* Re-reconcile the layer set first: Firefly may have loaded since the
+               last setup, flipping the provider selection. SetEnabledLayers no-ops
+               when the set is unchanged. */
+            _fxHost?.SetEnabledLayers(EffectiveFxLayers());
+            _fxHost?.OnVesselChanged(Hullcam != null ? Hullcam.vessel : null);
+        }
 
         // Periodic cullingMask diff between our cams and their KSP
         // source cameras. Catches the case where KSP mutates the

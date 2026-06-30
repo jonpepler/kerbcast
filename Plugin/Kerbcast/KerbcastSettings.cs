@@ -179,6 +179,12 @@ namespace Kerbcast
         // Default true; no effect if the Deferred mod is not installed.
         public static bool EnableDeferred { get; private set; } = true;
 
+        // When the Firefly reentry mod is installed, capture its plasma onto the
+        // kerbcast near camera INSTEAD of kerbcast's own reentry FX (never both).
+        // Default true; set false to keep kerbcast's own reentry effects even when
+        // Firefly is installed. No effect if Firefly isn't installed.
+        public static bool EnableFirefly { get; private set; } = true;
+
         // Name of the installed TUFX profile to attach to kerbcast's per-camera
         // volumes. Default empty: volumes inherit TUFX's own scene selection
         // (whatever the operator picked in TUFX's UI for Flight). No effect
@@ -429,6 +435,7 @@ namespace Kerbcast
             ApplyBool(node, "EnableScatterer", v => EnableScatterer = v);
             ApplyBool(node, "EnableParallax", v => EnableParallax = v);
             ApplyBool(node, "EnableDeferred", v => EnableDeferred = v);
+            ApplyBool(node, "EnableFirefly", v => EnableFirefly = v);
             ApplyString(node, "TUFXProfile", v => TUFXProfile = v);
             ApplyBool(node, "EnableHullcamLinuxShaderSwap", v => EnableHullcamLinuxShaderSwap = v);
             ApplyBool(node, "DebugCameraLogging", v => DebugCameraLogging = v);
