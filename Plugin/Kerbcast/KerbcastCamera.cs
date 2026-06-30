@@ -782,8 +782,7 @@ namespace Kerbcast
 
             // Attach every available integration to each cloned layer. The host skips
             // integrations that do not opt into a layer and no-ops the unavailable ones.
-            // TUFX's own EnableTUFX setting is honoured inside its IsAvailable probe path;
-            // see note below.
+            // TUFX's own EnableTUFX setting is honoured inside its IsAvailable probe path.
             _integrationHost.ApplyToLayer(_nearCam, CameraLayers.Near);
             _integrationHost.ApplyToLayer(_scaledCam, CameraLayers.Scaled);
             _integrationHost.ApplyToLayer(_galaxyCam, CameraLayers.Galaxy);
