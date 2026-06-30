@@ -83,6 +83,16 @@ namespace Kerbcast
             if (!_ready) return;
             // Only act on a clone that actually inherited the deferred path.
             if (cam.renderingPath != RenderingPath.DeferredShading) return;
+            // On OpenGL/Mesa, deferred offscreen RenderTextures render black (the
+            // same bug that makes kerbcast force the scaled cam to Forward). The
+            // compat component does not fix offscreen deferred there, so force this
+            // clone to Forward instead: the player's deferred look is not captured,
+            // but the layer renders correctly rather than as a black hole.
+            if (IsOpenGL())
+            {
+                cam.renderingPath = RenderingPath.Forward;
+                return;
+            }
             try
             {
                 var comp = cam.gameObject.AddComponent(_compatType);
@@ -97,6 +107,12 @@ namespace Kerbcast
                 RemoveFromLayer(cam, layer);
             }
         }
+
+        // True on OpenGL/Mesa (the Steam Deck / Linux tier-1 path), where deferred
+        // offscreen rendering is broken.
+        private static bool IsOpenGL()
+            => SystemInfo.graphicsDeviceVersion != null
+               && SystemInfo.graphicsDeviceVersion.StartsWith("OpenGL");
 
         private void Track(Camera cam, Component c)
         {

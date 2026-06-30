@@ -112,19 +112,22 @@ namespace Kerbcast
                 if (pair.Value != null) current[pair.Value] = pair.Key;
             }
 
-            // Remove ours that Firefly no longer has.
+            // Remove ours that Firefly no longer has. Guard each call: Firefly
+            // disposes its buffer objects when it rebuilds them, so a stale entry
+            // can reference a released buffer that RemoveCommandBuffer rejects with
+            // ArgumentNullException. Swallow per-buffer so one bad buffer cannot
+            // throw out of Render and get the whole effect disabled by FxHost.
             var stale = _attached.Where(kv => !current.ContainsKey(kv.Key)).ToList();
             foreach (var kv in stale)
             {
-                _nearCam.RemoveCommandBuffer(kv.Value, kv.Key);
+                try { _nearCam.RemoveCommandBuffer(kv.Value, kv.Key); } catch { }
                 _attached.Remove(kv.Key);
             }
             // Add Firefly's that we have not attached yet.
             foreach (var kv in current)
             {
-                if (_attached.ContainsKey(kv.Key)) continue;
-                _nearCam.AddCommandBuffer(kv.Value, kv.Key);
-                _attached[kv.Key] = kv.Value;
+                if (kv.Key == null || _attached.ContainsKey(kv.Key)) continue;
+                try { _nearCam.AddCommandBuffer(kv.Value, kv.Key); _attached[kv.Key] = kv.Value; } catch { }
             }
         }
 
@@ -133,8 +136,8 @@ namespace Kerbcast
             if (_attached.Count == 0 || _nearCam == null) { _attached.Clear(); return; }
             foreach (var kv in _attached)
             {
-                try { _nearCam.RemoveCommandBuffer(kv.Value, kv.Key); }
-                catch (Exception ex) { Debug.LogError($"{LogTag} detach failed: {ex.Message}"); }
+                // Firefly may have already released the buffer; ignore per-buffer.
+                try { _nearCam.RemoveCommandBuffer(kv.Value, kv.Key); } catch { }
             }
             _attached.Clear();
         }

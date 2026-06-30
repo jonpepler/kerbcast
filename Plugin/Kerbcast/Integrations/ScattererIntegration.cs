@@ -54,9 +54,10 @@ namespace Kerbcast
                     Debug.Log($"{LogTag} disabled by settings; Scatterer capture off");
                     return;
                 }
-                // Assembly name is lowercase "scatterer".
+                // Assembly name casing varies by build ("scatterer" in the source
+                // csproj, "Scatterer" as the installed DLL registers); match either.
                 var asm = AssemblyLoader.loadedAssemblies
-                    .FirstOrDefault(a => a.name == "scatterer")?.assembly;
+                    .FirstOrDefault(a => string.Equals(a.name, "scatterer", StringComparison.OrdinalIgnoreCase))?.assembly;
                 var t = asm?.GetType("Scatterer.Scatterer");
                 if (t == null)
                 {
