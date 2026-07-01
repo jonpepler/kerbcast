@@ -730,9 +730,17 @@ impl CameraRegistry {
         // no ring file, so they won't appear in `found`).
         let mut attached: Vec<u32> = Vec::new();
         for (id, path) in &found {
-            if cameras.contains_key(id) {
-                continue;
-            }
+            // A ring that reappears for a flight_id we already hold as a
+            // destroyed tombstone means KSP reused that part.flightID for a
+            // freshly spawned camera (it recycles ids across revert/recover),
+            // so fall through and resurrect it: the insert below replaces the
+            // tombstone with a fresh active entry and the attach is announced
+            // to peers so their tiles rebind. A live entry is left untouched.
+            let resurrecting = match cameras.get(id) {
+                Some(existing) if existing.destroyed.load(Ordering::Acquire) => true,
+                Some(_) => continue,
+                None => false,
+            };
             match MmapFrameRing::open(path, self.ring_cfg) {
                 Ok(ring) => {
                     let manifest = read_manifest(&self.shm_dir, *id).await;
@@ -743,6 +751,7 @@ impl CameraRegistry {
                         max_dims = format!("{}x{}", self.ring_cfg.max_width, self.ring_cfg.max_height),
                         part_title = %manifest.part_title,
                         vessel = %manifest.vessel_name,
+                        resurrected = resurrecting,
                         "camera ring attached",
                     );
                     cameras.insert(
@@ -1462,6 +1471,79 @@ mod tests {
             cam.remove_track(&a).await,
             0,
             "removing an unbound track is a no-op"
+        );
+    }
+
+    // KSP reuses part.flightID across revert/recover, so a camera can be torn
+    // down (tombstoned as destroyed for the SIGNAL LOST UI) and then spawned
+    // again under the SAME flight_id. The rescan must resurrect the tombstone
+    // to active when a fresh ring reappears for it, or the camera is stuck
+    // destroyed and unsubscribable forever (peer.rs rejects destroyed cameras).
+    #[tokio::test]
+    async fn destroyed_camera_resurrects_when_ring_reappears_for_reused_flight_id() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cfg = MmapRingConfig {
+            slot_count: 4,
+            max_width: 64,
+            max_height: 64,
+        };
+        let shm = dir.path();
+        let id: u32 = 42;
+        let write_manifest = |lifecycle: &str| {
+            let content = format!(
+                r#"{{"lifecycle":"{lifecycle}","flight_id":{id},"part_name":"hc.launchcam","part_title":"KSC Launchpad Camera","camera_name":"LaunchCam","vessel_name":"vmod test","supports_zoom":false,"fov":60.0,"fov_min":10.0,"fov_max":90.0,"supports_pan":false,"pan_yaw_min":0.0,"pan_yaw_max":0.0,"pan_pitch_min":0.0,"pan_pitch_max":0.0}}"#,
+            );
+            std::fs::write(shm.join(format!("{id}.info.json")), content).unwrap();
+        };
+        let ring_path = shm.join(format!("{id}.ring"));
+        let registry = CameraRegistry::new(shm.to_path_buf(), cfg);
+
+        // 1. Fresh camera attaches active.
+        MmapFrameRing::create(&ring_path, cfg).expect("create ring");
+        write_manifest("active");
+        registry.rescan().await;
+        assert!(
+            !registry
+                .get(id)
+                .await
+                .expect("camera attached")
+                .destroyed
+                .load(Ordering::Acquire),
+            "fresh camera is active"
+        );
+
+        // 2. Part destroyed: plugin writes lifecycle=destroyed then deletes ring.
+        write_manifest("destroyed");
+        std::fs::remove_file(&ring_path).unwrap();
+        registry.rescan().await;
+        assert!(
+            registry
+                .get(id)
+                .await
+                .expect("destroyed camera retained as tombstone")
+                .destroyed
+                .load(Ordering::Acquire),
+            "tombstoned after part destroyed"
+        );
+        // The destruction notification has gone out to peers by now.
+        registry.acknowledge_destruction(id).await;
+
+        // 3. Revert reuses the same flight_id: fresh ring + active manifest.
+        MmapFrameRing::create(&ring_path, cfg).expect("recreate ring");
+        write_manifest("active");
+        let outcome = registry.rescan().await;
+        assert!(
+            !registry
+                .get(id)
+                .await
+                .expect("camera present after resurrect")
+                .destroyed
+                .load(Ordering::Acquire),
+            "camera must resurrect to active when its ring reappears (flight_id reuse after revert)"
+        );
+        assert!(
+            outcome.attached.contains(&id),
+            "resurrection must be announced as an attach so peers rebind"
         );
     }
 
