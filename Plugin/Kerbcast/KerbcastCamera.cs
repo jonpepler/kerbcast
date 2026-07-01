@@ -636,12 +636,6 @@ namespace Kerbcast
                 nearParent = partTransform;
             }
 
-            if (_panCap.CameraRollDeg != 0f)
-            {
-                _baseRotation *= Quaternion.AngleAxis(_panCap.CameraRollDeg, Vector3.forward);
-                Debug.Log($"[Kerbcast] cam={FlightId} applied camera roll {_panCap.CameraRollDeg}°, baseRot eulers={_baseRotation.eulerAngles}");
-            }
-
             // Near layer — close-up of parts + atmospheric effects.
             var nearGo = new GameObject($"Kerbcast_{FlightId}_Near");
             _nearCam = nearGo.AddComponent<Camera>();
@@ -1635,7 +1629,7 @@ namespace Kerbcast
                 // existing AsyncGPUReadback path then reads the
                 // already-filtered pixels — no extra round-trip needed.
                 // Blit phase: the filter/nv/plain capture→readback blit AND the
-                // horizontal-flip correction below — all the main-thread Blit
+                // vertical-flip correction below, all the main-thread Blit
                 // dispatch this tick.
                 long blitStart = _telemetry ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
                 if (_nvMaterial != null)
@@ -1675,17 +1669,21 @@ namespace Kerbcast
                     Graphics.Blit(_captureRt, _readbackRt);
                 }
 
-                // Horizontal-flip correction. The Camera→RT→readback chain on
-                // Linux/GL produces a horizontally-mirrored frame relative to
-                // KSP's stock cameras-to-screen pipeline (root cause not yet
-                // pinned down — suspected GL texture-coord convention or an
-                // implicit X-axis flip in Unity's RT path). Compensate with
-                // one final blit that mirrors U. Done in-place via a temp RT
-                // so all three filter paths above benefit from the same fix.
-                var flipTmp = RenderTexture.GetTemporary(_readbackRt.descriptor);
-                Graphics.Blit(_readbackRt, flipTmp, new Vector2(-1f, 1f), new Vector2(1f, 0f));
-                Graphics.Blit(flipTmp, _readbackRt);
-                RenderTexture.ReleaseTemporary(flipTmp);
+                // Vertical-flip correction. On bottom-left-origin graphics APIs
+                // (OpenGL, the Deck) AsyncGPUReadback returns the frame
+                // vertically inverted relative to KSP's top-down screen
+                // pipeline, so every camera reads back upside down. Compensate
+                // with one final blit that mirrors V. Top-left-origin APIs
+                // (D3D11, Metal) read upright and need no correction here; the
+                // HullcamFilterBlit handles its own top-left flip case. Done in
+                // place via a temp RT so all three capture paths above benefit.
+                if (!SystemInfo.graphicsUVStartsAtTop)
+                {
+                    var flipTmp = RenderTexture.GetTemporary(_readbackRt.descriptor);
+                    Graphics.Blit(_readbackRt, flipTmp, new Vector2(1f, -1f), new Vector2(0f, 1f));
+                    Graphics.Blit(flipTmp, _readbackRt);
+                    RenderTexture.ReleaseTemporary(flipTmp);
+                }
                 if (_telemetry)
                     _phaseTimings.Record(RenderPhase.Blit,
                         (System.Diagnostics.Stopwatch.GetTimestamp() - blitStart) * _msPerTick);

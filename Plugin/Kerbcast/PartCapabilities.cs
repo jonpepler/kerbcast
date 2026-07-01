@@ -34,10 +34,6 @@ namespace Kerbcast
         /// around this point (via a localPosition compensation) rather than the
         /// transform origin. Tune from the DumpModelTransforms log.</summary>
         public float PitchPivotLocalY;
-        /// <summary>Roll offset (degrees) applied to the near-camera base
-        /// rotation around the view axis. Use 180 to correct an upside-down
-        /// feed when cameraForward points opposite to the default camera Z.</summary>
-        public float CameraRollDeg;
         /// <summary>Optional override for the near camera's mount position,
         /// expressed in the YAW JOINT's local frame (not the part frame). Use
         /// for a yaw-only joint whose authored <c>cameraPosition</c> sits well
@@ -168,33 +164,16 @@ namespace Kerbcast
                 // (grep "[Kerbcast] model transforms for hc.launchcam") and update
                 // to the localY of hc_launchcam's first visible geometry.
                 PitchPivotLocalY = 0.3f,
-                // cameraForward = 0,0,+1 is opposite to TurretCam's 0,0,-1;
-                // the model's local frame ends up with Y inverted, flipping the
-                // feed upside-down. 180° roll corrects it.
-                CameraRollDeg = 180f,
             },
-            // NavCam and NightVision: cameraForward = 0,1,0 / cameraUp = 0,0,-1.
-            // Same model-frame Y-inversion as launchcam; 180° roll corrects it.
-            // No pan capability.
-            ["hc.navcam"] = new PanCapability { CameraRollDeg = 180f },
-            ["hc.nightvision"] = new PanCapability { CameraRollDeg = 180f },
-
-            // Stock docking ports patched by HullcamVDS DockingPortCameraPatch.cfg.
-            // Those with cameraForward = 0,1,0 / cameraUp = 0,0,-1 need the same
-            // 180° roll correction. The lateral and mk2 ports use cameraForward =
-            // 0,0,-1 (same as TurretCam) so they are left uncorrected.
-            ["dockingPort1"]    = new PanCapability { CameraRollDeg = 180f },
-            ["dockingPort2"]    = new PanCapability { CameraRollDeg = 180f },
-            ["dockingPort3"]    = new PanCapability { CameraRollDeg = 180f },
-            ["dockingPortLarge"] = new PanCapability { CameraRollDeg = 180f },
-
-            // Hullcam Deluxe — the base MuMechModuleHullCamera variant. Cfg
-            // `name = mumech_hullcam`; KSP normalises underscore→dot in
-            // partInfo.name, so the table key matches as "mumech.hullcam"
-            // (same convention as the hc.* entries above). cameraForward
-            // matches TurretCam's (0,0,-1) but the model's local frame is
-            // Y-inverted — empirical 180° roll correction.
-            ["mumech.hullcam"] = new PanCapability { CameraRollDeg = 180f },
+            // No per-part CameraRollDeg entries: the upside-down feed on the
+            // Deck was a global AsyncGPUReadback vertical inversion on
+            // bottom-left-origin (OpenGL) graphics APIs, not a per-part model
+            // quirk. It is corrected once for every camera in the capture
+            // pipeline (see the graphicsUVStartsAtTop V-flip in
+            // KerbcastCamera). The old per-part 180 roll entries (navcam,
+            // nightvision, docking ports, mumech.hullcam, launchcam) only
+            // masked that flip for the specific parts they were tuned against,
+            // and left every other camera inverted.
         };
 
         public static PanCapability ForPart(string partName)
@@ -202,7 +181,7 @@ namespace Kerbcast
             if (string.IsNullOrEmpty(partName)) return None;
             var hit = Table.TryGetValue(partName, out var cap);
             if (KerbcastSettings.DebugCameraLogging)
-                UnityEngine.Debug.Log($"[Kerbcast] PartCapabilities.ForPart('{partName}') → {(hit ? "matched" : "no match")} (roll={(hit ? cap.CameraRollDeg : 0):F0}°)");
+                UnityEngine.Debug.Log($"[Kerbcast] PartCapabilities.ForPart('{partName}') {(hit ? "matched" : "no match")}");
             return hit ? cap : None;
         }
     }
