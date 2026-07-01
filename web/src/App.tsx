@@ -12,9 +12,11 @@ import { ShedBanner } from "./ShedBanner";
 import {
   applyTheme,
   loadDebug,
+  loadShowPerfWarnings,
   loadShowStatic,
   loadTheme,
   saveDebug,
+  saveShowPerfWarnings,
   saveShowStatic,
   saveTheme,
 } from "./settings";
@@ -66,6 +68,7 @@ export function App({ client }: AppProps): React.JSX.Element {
     showStaticExplicit !== null
       ? showStaticExplicit
       : !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const [showPerfWarnings, setShowPerfWarnings] = useState<boolean>(() => loadShowPerfWarnings());
   const [settingsOpen, setSettingsOpen] = useState(false);
 
   // Tile state
@@ -96,13 +99,15 @@ export function App({ client }: AppProps): React.JSX.Element {
             theme={theme}
             debug={debug}
             showStatic={showStatic}
+            showPerfWarnings={showPerfWarnings}
             onThemeChange={(t: ThemePreference) => { saveTheme(t); applyTheme(t); setTheme(t); }}
             onDebugChange={(d: boolean) => { saveDebug(d); setDebug(d); }}
             onShowStaticChange={(s: boolean) => { saveShowStatic(s); setShowStaticExplicit(s); }}
+            onShowPerfWarningsChange={(v: boolean) => { saveShowPerfWarnings(v); setShowPerfWarnings(v); }}
             onClose={() => setSettingsOpen(false)}
           />
         )}
-        <ShedBanner client={client} />
+        {showPerfWarnings && <ShedBanner client={client} />}
         <ErrorToast client={client} />
         <MainArea>
           {/* CameraSeeder and CameraReconciler use useKerbcastCameras inside KerbcastProvider */}

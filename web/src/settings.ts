@@ -9,6 +9,7 @@ export type ThemePreference = "auto" | "light" | "dark";
 const KEY_THEME = "kerbcast:theme";
 const KEY_DEBUG = "kerbcast:debug";
 const KEY_SHOW_STATIC = "kerbcast:showStatic";
+const KEY_SHOW_PERF_WARNINGS = "kerbcast:showPerfWarnings";
 
 export function loadTheme(): ThemePreference {
   const raw = localStorage.getItem(KEY_THEME);
@@ -50,4 +51,17 @@ export function loadShowStatic(): boolean | null {
 
 export function saveShowStatic(enabled: boolean): void {
   localStorage.setItem(KEY_SHOW_STATIC, String(enabled));
+}
+
+/**
+ * Show-performance-warnings preference. Returns `true` when the key is absent
+ * (default on: new users see throttle warnings). Returns `false` only when
+ * explicitly stored as "false".
+ */
+export function loadShowPerfWarnings(): boolean {
+  return localStorage.getItem(KEY_SHOW_PERF_WARNINGS) !== "false";
+}
+
+export function saveShowPerfWarnings(enabled: boolean): void {
+  localStorage.setItem(KEY_SHOW_PERF_WARNINGS, String(enabled));
 }

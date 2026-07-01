@@ -715,7 +715,7 @@ describe("App - adaptive-shed banner", () => {
     });
   });
 
-  it("banner is dismissed on the x button", async () => {
+  it("banner has no dismiss button (state-driven only)", async () => {
     const { client, sidecar, openSidecar } = buildFixture([]);
     await renderApp(client);
     await act(async () => { openSidecar(); });
@@ -726,11 +726,9 @@ describe("App - adaptive-shed banner", () => {
 
     await waitFor(() => screen.getByRole("alert"));
 
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: /dismiss quality warning/i }));
-    });
-
-    expect(screen.queryByRole("alert")).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: /dismiss quality warning/i }),
+    ).toBeNull();
   });
 
   it("banner auto-clears when level 0 event arrives", async () => {
@@ -750,6 +748,60 @@ describe("App - adaptive-shed banner", () => {
     await waitFor(() => {
       expect(screen.queryByRole("alert")).toBeNull();
     });
+  });
+
+  it("does not render the overlay when showPerfWarnings is off", async () => {
+    localStorage.setItem("kerbcast:showPerfWarnings", "false");
+
+    const { client, sidecar, openSidecar } = buildFixture([]);
+    await renderApp(client);
+    await act(async () => { openSidecar(); });
+
+    await act(async () => {
+      sidecar.fireAdaptiveShed({ level: 1, kspFps: 28, reason: "ksp-fps-low" });
+    });
+
+    /* Give React a tick to settle, then confirm nothing rendered. */
+    await new Promise((r) => setTimeout(r, 20));
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByText(/quality reduced/i)).toBeNull();
+  });
+
+  it("showPerfWarnings toggle persists and hides the overlay mid-session", async () => {
+    const { client, sidecar, openSidecar } = buildFixture([]);
+    await renderApp(client);
+    await act(async () => { openSidecar(); });
+
+    await act(async () => {
+      sidecar.fireAdaptiveShed({ level: 1, kspFps: 28, reason: "ksp-fps-low" });
+    });
+    await waitFor(() => screen.getByRole("alert"));
+
+    /* Open settings and turn off perf warnings. */
+    fireEvent.click(screen.getByRole("button", { name: /settings/i }));
+    await waitFor(() => screen.getByRole("dialog"));
+
+    const cb = screen.getByRole("checkbox", { name: /show performance warnings/i });
+    await act(async () => {
+      fireEvent.click(cb);
+    });
+
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(localStorage.getItem("kerbcast:showPerfWarnings")).toBe("false");
+  });
+
+  it("showPerfWarnings defaults to true when key is absent", async () => {
+    const { client, openSidecar } = buildFixture([]);
+    await renderApp(client);
+    await act(async () => { openSidecar(); });
+
+    fireEvent.click(screen.getByRole("button", { name: /settings/i }));
+    await waitFor(() => screen.getByRole("dialog"));
+
+    const cb = screen.getByRole("checkbox", {
+      name: /show performance warnings/i,
+    }) as HTMLInputElement;
+    expect(cb.checked).toBe(true);
   });
 });
 

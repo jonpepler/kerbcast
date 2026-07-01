@@ -8,9 +8,11 @@ interface SettingsProps {
   debug: boolean;
   /** Effective (resolved) value of the show-static setting. */
   showStatic: boolean;
+  showPerfWarnings: boolean;
   onThemeChange: (t: ThemePreference) => void;
   onDebugChange: (enabled: boolean) => void;
   onShowStaticChange: (enabled: boolean) => void;
+  onShowPerfWarningsChange: (enabled: boolean) => void;
   onClose: () => void;
 }
 
@@ -18,9 +20,11 @@ export function Settings({
   theme,
   debug,
   showStatic,
+  showPerfWarnings,
   onThemeChange,
   onDebugChange,
   onShowStaticChange,
+  onShowPerfWarningsChange,
   onClose,
 }: SettingsProps): React.JSX.Element {
   const panelRef = useRef<HTMLDivElement>(null);
@@ -78,6 +82,20 @@ export function Settings({
             type="checkbox"
             checked={showStatic}
             onChange={(e) => onShowStaticChange(e.target.checked)}
+            style={{ accentColor: "var(--kc-accent)", width: "1rem", height: "1rem" }}
+          />
+        </FieldRow>
+
+        <FieldRow>
+          <div>
+            <FieldLabel htmlFor="kc-perf-warnings-toggle">Show performance warnings</FieldLabel>
+            <FieldHint>Corner overlay when KSP throttles stream quality</FieldHint>
+          </div>
+          <input
+            id="kc-perf-warnings-toggle"
+            type="checkbox"
+            checked={showPerfWarnings}
+            onChange={(e) => onShowPerfWarningsChange(e.target.checked)}
             style={{ accentColor: "var(--kc-accent)", width: "1rem", height: "1rem" }}
           />
         </FieldRow>
