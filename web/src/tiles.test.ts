@@ -158,6 +158,31 @@ describe("reconcileTiles", () => {
     expect(result[2].flightId).toBe(3);
     expect(result[2].spotlit).toBe(true);
   });
+
+  it("rebinds off a destroyed id even while that id lingers in the snapshot", () => {
+    // After a revert the sidecar keeps the old camera as a `destroyed`
+    // tombstone (for the SIGNAL LOST UI) AND republishes the same physical
+    // camera under a new active flightId. A tile still on the old id must
+    // rebind to the active one, not be treated as live just because the
+    // destroyed entry is still present.
+    const tiles = [tile(1875100382, false, "vmod test|DC.TurretCam|TurretCam")];
+    const liveCameras = [
+      { ...cam(1875100382, "vmod test", "DC.TurretCam", "TurretCam"), lifecycle: "destroyed" as const },
+      { ...cam(1218154353, "vmod test", "DC.TurretCam", "TurretCam"), lifecycle: "active" as const },
+    ];
+    const result = reconcileTiles(tiles, liveCameras);
+    expect(result[0].flightId).toBe(1218154353);
+  });
+
+  it("does not rebind a tile to a destroyed camera", () => {
+    // A dead id with no active replacement stays reconnecting; we never bind
+    // a tile to a destroyed camera.
+    const tiles = [tile(1, false, "Kerbal X|hull.cam|Camera")];
+    const liveCameras = [
+      { ...cam(1, "Kerbal X", "hull.cam", "Camera"), lifecycle: "destroyed" as const },
+    ];
+    expect(reconcileTiles(tiles, liveCameras)).toBe(tiles);
+  });
 });
 
 // ---------------------------------------------------------------------------

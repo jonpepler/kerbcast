@@ -16,6 +16,7 @@
  * all tiles). Seeding from cameras only happens on the first visit (key absent).
  */
 
+import { CameraLifecycle } from "@jonpepler/kerbcast";
 import type { CameraState } from "@jonpepler/kerbcast";
 
 export interface Tile {
@@ -110,13 +111,18 @@ export function seedTiles(cameras: Pick<CameraState, "flightId" | "vesselName" |
  */
 export function reconcileTiles(
   tiles: Tile[],
-  liveCameras: Pick<CameraState, "flightId" | "vesselName" | "partName" | "cameraName">[],
+  liveCameras: Pick<CameraState, "flightId" | "vesselName" | "partName" | "cameraName" | "lifecycle">[],
 ): Tile[] {
-  const liveIds = new Set(liveCameras.map((c) => c.flightId));
+  // Destroyed cameras linger in the snapshot as tombstones (so the UI can show
+  // SIGNAL LOST), but they are not valid bind targets and must not count as
+  // live. Otherwise a tile pinned to a dead id would never rebind to the same
+  // physical camera republished under a new active flightId after a revert.
+  const active = liveCameras.filter((c) => c.lifecycle !== CameraLifecycle.Destroyed);
+  const liveIds = new Set(active.map((c) => c.flightId));
 
   // Build a key -> live camera map (first match wins for duplicate keys).
-  const keyToLive = new Map<string, Pick<CameraState, "flightId" | "vesselName" | "partName" | "cameraName">>();
-  for (const cam of liveCameras) {
+  const keyToLive = new Map<string, Pick<CameraState, "flightId" | "vesselName" | "partName" | "cameraName" | "lifecycle">>();
+  for (const cam of active) {
     const k = cameraKey(cam);
     if (!keyToLive.has(k)) keyToLive.set(k, cam);
   }
