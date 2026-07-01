@@ -504,8 +504,12 @@ class CameraHandle
     this._noisePipeline?.setShowStatic(enabled);
   }
 
-  /** Internal — called by the client when CameraState pushes arrive. */
-  _setState(state: CameraState): void {
+  /**
+   * Internal — called by the client when CameraState pushes arrive. Returns
+   * `true` when this update resurrected the camera (Destroyed -> Active), so
+   * the client can re-source the handle from its retained track.
+   */
+  _setState(state: CameraState): boolean {
     const prevDestroyed = this._state?.lifecycle === CameraLifecycle.Destroyed;
     this._state = state;
     this.emit("change", state);
@@ -514,7 +518,7 @@ class CameraHandle
     // nothing else drives the handle into the sourceless state — do it here.
     if (state.lifecycle === CameraLifecycle.Destroyed) {
       if (!this._sourceless || !prevDestroyed) this._applySource(null);
-      return;
+      return false;
     }
 
     // Live feed: degrade drives intensity. Don't touch a sourceless pipeline,
@@ -522,6 +526,13 @@ class CameraHandle
     if (!this._sourceless) {
       this._noisePipeline?.setIntensity(this._liveIntensity());
     }
+
+    // Resurrection: KSP reused this part.flightID after a revert, so the
+    // sidecar tombstoned then re-attached the SAME camera and rebound the SAME
+    // track with no new slot-map. The handle went sourceless on destroy and
+    // only re-sources on a slot-map, so signal the client to re-source it from
+    // the track it still holds.
+    return prevDestroyed;
   }
 
   /**
@@ -1005,7 +1016,9 @@ export class KerbcastClient extends TypedEmitter<KerbcastClientEvents> {
       case "camera-snapshot":
         this._cameras = msg.content.cameras;
         for (const cam of this._cameras) {
-          this.getOrCreateHandle(cam.flightId)._setState(cam);
+          if (this.getOrCreateHandle(cam.flightId)._setState(cam)) {
+            this._resourceHandle(cam.flightId);
+          }
         }
         this.emit("cameras-change", this._cameras);
         break;
@@ -1016,9 +1029,13 @@ export class KerbcastClient extends TypedEmitter<KerbcastClientEvents> {
         next.push(msg.content.state);
         next.sort((a, b) => a.flightId - b.flightId);
         this._cameras = next;
-        this.getOrCreateHandle(msg.content.state.flightId)._setState(
-          msg.content.state,
-        );
+        if (
+          this.getOrCreateHandle(msg.content.state.flightId)._setState(
+            msg.content.state,
+          )
+        ) {
+          this._resourceHandle(msg.content.state.flightId);
+        }
         this.emit("cameras-change", this._cameras);
         break;
       }
@@ -1069,6 +1086,26 @@ export class KerbcastClient extends TypedEmitter<KerbcastClientEvents> {
         this._throttleMainScreen = msg.content.throttleMainScreen;
         this.emit("settings-change", msg.content);
         break;
+    }
+  }
+
+  /**
+   * Re-source a resurrected camera's handle from the track the client still
+   * holds for its slot. Called when {@link KerbcastCameraHandle._setState}
+   * reports a Destroyed -> Active transition: the sidecar rebinds the same
+   * track without a new slot-map, so nothing else drives the handle back out
+   * of the sourceless (static) state it entered on destroy.
+   */
+  private _resourceHandle(flightId: number): void {
+    for (const [mid, boundFlightId] of this.flightByMid) {
+      if (boundFlightId !== flightId) continue;
+      const track = this.trackByMid.get(mid);
+      if (track) {
+        this.getOrCreateHandle(flightId)._setMediaStream(
+          new MediaStream([track]),
+        );
+      }
+      return;
     }
   }
 

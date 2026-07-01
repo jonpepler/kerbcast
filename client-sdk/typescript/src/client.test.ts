@@ -1,5 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { ErrorSource, Layer, QualityPreset } from "./__generated__/types";
+import {
+  CameraLifecycle,
+  ErrorSource,
+  Layer,
+  QualityPreset,
+} from "./__generated__/types";
 import {
   BrowserKerbcastTransport,
   type KerbcastConnectionState,
@@ -767,6 +772,60 @@ describe("KerbcastClient", () => {
         expect(client.camera(42).mediaStream).toBe(live);
       } finally {
         mock.restore();
+      }
+    });
+
+    it("re-sources a resurrected camera from its retained track (no refresh)", async () => {
+      // KSP reuses part.flightID across revert, so the sidecar tombstones a
+      // camera (handle goes sourceless / static) then resurrects the SAME id
+      // and rebinds the SAME track WITHOUT a new slot-map. The handle only
+      // re-sources on a slot-map, so it must re-source itself when the
+      // lifecycle flips back to Active, or the feed is stuck on static until a
+      // page refresh.
+      const setIntensity = vi.fn();
+      const setSource = vi.fn();
+      const processedStream = new MediaStream();
+      const createSpy = vi
+        .spyOn(noise, "tryCreateNoisePipeline")
+        .mockReturnValue({
+          processedStream,
+          setIntensity,
+          setSource,
+          setShowStatic: vi.fn(),
+          destroy: vi.fn(),
+        });
+      try {
+        const sidecar = new MockSidecar().withSlots(["a"]);
+        sidecar.addCamera({ flightId: 42 });
+        const client = new KerbcastClient(
+          { host: "h", port: 1 },
+          sidecar.createTransport(),
+        );
+        vi.spyOn(globalThis, "fetch").mockImplementation(() =>
+          Promise.resolve(MockSidecar.makeOfferResponse([])),
+        );
+
+        await client.connect([], { slots: 1 });
+        sidecar.open();
+        await client.subscribe(42);
+        sidecar.deliverTrack("a", {} as MediaStreamTrack);
+
+        // Live: sourced from the delivered track.
+        expect(setSource.mock.calls.at(-1)?.[0]).not.toBeNull();
+
+        // Part destroyed: source detaches, feed shows full static. The slot is
+        // NOT freed (no slot-map), so the client keeps the track for the mid.
+        sidecar.destroyCamera(42);
+        expect(setSource).toHaveBeenLastCalledWith(null);
+
+        // Resurrection: lifecycle flips back to Active with no new slot-map.
+        // The handle must re-source from the track it still holds.
+        setSource.mockClear();
+        sidecar.updateCamera(42, { lifecycle: CameraLifecycle.Active });
+        expect(setSource).toHaveBeenCalledTimes(1);
+        expect(setSource.mock.calls[0][0]).not.toBeNull();
+      } finally {
+        createSpy.mockRestore();
       }
     });
 
