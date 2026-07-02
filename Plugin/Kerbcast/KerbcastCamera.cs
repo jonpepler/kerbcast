@@ -255,21 +255,6 @@ namespace Kerbcast
         private List<Renderer> _scaledBodyRenderers;
         private static readonly int _fadeAltitudeId = Shader.PropertyToID("_FadeAltitude");
 
-        // Galaxy cube override. GalaxyCubeControl.Update dims the shared galaxy
-        // cube globally each frame via an MPB _Color = Lerp(max, black, totalFade),
-        // where totalFade is driven by the MAIN camera's sun-glare + the vessel's
-        // atmosphere. Our galaxy clone renders that global dim even when it points
-        // at clear space, so the star-field vanishes whenever the main view faces
-        // the sun. We force the cube to its bright maxGalaxyColor for our galaxy
-        // render, then restore, mirroring the ScaledSpaceFader override above.
-        // Resolved once per flight; renderers can go null defensively.
-        private static readonly int _galaxyColorId = Shader.PropertyToID("_Color");
-        private Renderer[] _galaxyCubeRenderers;
-        private Color _galaxyMaxColor = Color.white;
-        private bool _galaxyCubeResolved;
-        private readonly MaterialPropertyBlock _galaxyMpb = new MaterialPropertyBlock();
-        private readonly List<Color> _galaxyColorSave = new List<Color>();
-
         private UniversalAsyncGPUReadbackRequest _pendingRequest;
         private bool _readbackInFlight;
         private double _pendingCaptureTsMs;
@@ -1145,18 +1130,6 @@ namespace Kerbcast
             return _scaledBodyRenderers;
         }
 
-        // The galaxy cube's child renderers, resolved once from GalaxyCubeControl.
-        // Retries until it exists (early scene load), then caches for the flight.
-        private void ResolveGalaxyCube()
-        {
-            if (_galaxyCubeResolved) return;
-            var ctrl = UnityEngine.Object.FindObjectOfType<GalaxyCubeControl>();
-            if (ctrl == null) return; // not up yet; retry next galaxy render
-            _galaxyCubeResolved = true;
-            _galaxyCubeRenderers = ctrl.GetComponentsInChildren<Renderer>();
-            _galaxyMaxColor = ctrl.maxGalaxyColor;
-        }
-
         // Diagnostic: dump the CommandBuffers attached to a clone camera at every
         // CameraEvent. Traces which screen-space pass draws the fixed-position
         // dark bands (suspected a Scatterer buffer sampling a main-camera-sized
@@ -1589,43 +1562,7 @@ namespace Kerbcast
                 {
                     long t0 = _telemetry ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
                     _integrationHost?.PerFrame(_galaxyCam, CameraLayers.Galaxy, BuildIntegrationFrameState(CameraLayers.Galaxy));
-                    // Force the galaxy cube bright for our render so the clone
-                    // shows the star-field from its own view, not the main
-                    // camera's glare/atmosphere dim. Save the main camera's color
-                    // and restore it in the finally so the player's view keeps its
-                    // own fade (the main camera renders after this LateUpdate).
-                    ResolveGalaxyCube();
-                    _galaxyColorSave.Clear();
-                    if (_galaxyCubeRenderers != null)
-                    {
-                        for (int i = 0; i < _galaxyCubeRenderers.Length; i++)
-                        {
-                            var r = _galaxyCubeRenderers[i];
-                            if (r == null) { _galaxyColorSave.Add(Color.clear); continue; }
-                            r.GetPropertyBlock(_galaxyMpb);
-                            _galaxyColorSave.Add(_galaxyMpb.GetColor(_galaxyColorId));
-                            _galaxyMpb.SetColor(_galaxyColorId, _galaxyMaxColor);
-                            r.SetPropertyBlock(_galaxyMpb);
-                        }
-                    }
-                    try
-                    {
-                        _galaxyCam.Render();
-                    }
-                    finally
-                    {
-                        if (_galaxyCubeRenderers != null)
-                        {
-                            for (int i = 0; i < _galaxyCubeRenderers.Length && i < _galaxyColorSave.Count; i++)
-                            {
-                                var r = _galaxyCubeRenderers[i];
-                                if (r == null) continue;
-                                r.GetPropertyBlock(_galaxyMpb);
-                                _galaxyMpb.SetColor(_galaxyColorId, _galaxyColorSave[i]);
-                                r.SetPropertyBlock(_galaxyMpb);
-                            }
-                        }
-                    }
+                    _galaxyCam.Render();
                     if (_telemetry)
                         _phaseTimings.Record(RenderPhase.Galaxy,
                             (System.Diagnostics.Stopwatch.GetTimestamp() - t0) * _msPerTick);
