@@ -348,7 +348,6 @@ namespace Kerbcast
             // without taking a hard reference to the subclass type for
             // parts where it's not present.
             var zoomable = hullcam as MuMechModuleHullCameraZoom;
-            SupportsZoom = zoomable != null;
             if (zoomable != null)
             {
                 FovMin = zoomable.cameraFoVMin;
@@ -359,10 +358,18 @@ namespace Kerbcast
                 FovMin = hullcam.cameraFoV;
                 FovMax = hullcam.cameraFoV;
             }
+            // Zoom needs a real FoV range, not just the subclass type. Several
+            // MuMechModuleHullCameraZoom parts pin cameraFoVMin == cameraFoVMax
+            // (DC.munCam 25/25, DC.aerocam2 45/45, RoverCam, base mumech.hullcam
+            // 30/30). With a zero-width range SetFov's Clamp pegs every request
+            // to the single value, so zoom "works once" off the default FoV then
+            // never again. Treat that as non-zoomable so the browser hides the
+            // control and set-fov / set-zoom-rate are honest no-ops.
+            SupportsZoom = zoomable != null && FovMax > FovMin + 0.01f;
             // Snap both the displayed FoV and the slew target so a fresh camera
             // starts settled (SetFov now only moves _fovTarget; the constructor
             // is the one place that snaps Fov directly).
-            Fov = _fovTarget = hullcam.cameraFoV;
+            Fov = _fovTarget = Mathf.Clamp(hullcam.cameraFoV, FovMin, FovMax);
 
             // Cache identity fields now while the Part is guaranteed live.
             // WriteDestroyedManifest (called from Dispose, which may be
