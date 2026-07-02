@@ -232,6 +232,7 @@ namespace Kerbcast
         private bool _firstRender = true;
         private bool _firstPixelCheck = true;
         private int _bufferDumpFrame; // dumps once at frame 120, after lazy buffers attach
+        private float _lastFlareLog;  // throttle for the per-camera sunflare-decision log
         private struct FaderState
         {
             public Renderer Renderer;
@@ -1183,6 +1184,25 @@ namespace Kerbcast
             }
         }
 
+        // Diagnostic: the per-camera inputs to Scatterer's sunflare decision, to
+        // test whether the flare tracks THIS clone's facing. Logs the near clone's
+        // angle to the sun and where the sun projects in the clone's own viewport
+        // (z sign = in front / behind, onScreen = within the frame). Cross-ref with
+        // the video: if the flare shows while the sun is behind (z-) or off-screen,
+        // the flare is ignoring this clone's facing.
+        private void LogFlareDecision()
+        {
+            if (_nearCam == null || Planetarium.fetch == null || Planetarium.fetch.Sun == null) return;
+            Vector3 sunPos = (Vector3)Planetarium.fetch.Sun.position;
+            Vector3 fwd = _nearCam.transform.forward;
+            Vector3 sunDir = (sunPos - _nearCam.transform.position).normalized;
+            float angle = Vector3.Angle(fwd, sunDir);
+            Vector3 vp = _nearCam.WorldToViewportPoint(sunPos);
+            bool onScreen = vp.z > 0f && vp.x >= 0f && vp.x <= 1f && vp.y >= 0f && vp.y <= 1f;
+            Debug.Log($"[Kerbcast] flarelog cam={FlightId} name='{Hullcam?.cameraName}' " +
+                $"sunAngle={angle:F1} sunVP=({vp.x:F2},{vp.y:F2},z{(vp.z >= 0f ? "+" : "-")}) onScreen={onScreen}");
+        }
+
         private void ApplyLayers()
         {
             // Cameras are permanently disabled (enabled=false) — Unity's
@@ -1594,6 +1614,14 @@ namespace Kerbcast
                 // occluded dark bands at planet depth. No-op when Scatterer (or
                 // another buffer-attaching mod) is absent.
                 ScaledSunLightHelper.StripCompositeShadowsBuffer();
+
+                // Per-camera sunflare-decision log, throttled to ~2 Hz. Transforms
+                // are current here (pan/orientation already applied this tick).
+                if (KerbcastSettings.DebugCameraLogging && Time.unscaledTime - _lastFlareLog >= 0.5f)
+                {
+                    _lastFlareLog = Time.unscaledTime;
+                    LogFlareDecision();
+                }
 
                 if (_galaxyCam != null && (_layers & CameraLayers.Galaxy) != 0)
                 {
