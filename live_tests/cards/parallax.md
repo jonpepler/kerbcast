@@ -1,8 +1,15 @@
 # Parallax (ParallaxContinued) integration test card
 
 Pre:
-- [ ] Test stack installed; ParallaxContinued present (`modswap.sh status` shows
-      `parallax`), on a body with a scatter config (Kerbin).
+- [ ] Parallax restored from the parked dir (ParallaxContinued + Kopernicus +
+      textures). OOM RISK on the 14GB Deck: load incrementally, do NOT stack it on
+      the full visual set.
+- [ ] Reduced mod set for memory: keep **Parallax + Deferred + Kopernicus**
+      (Parallax recommends Deferred for scatter perf); disable the rest -
+      `modswap.sh disable eve`, `modswap.sh disable scatterer`,
+      `modswap.sh disable tufx`, `modswap.sh disable firefly`. Confirm with
+      `modswap.sh status` (parallax + deferred present, others disabled).
+- [ ] On a body with a scatter config (Kerbin).
 - [ ] kerbcast deployed (current branch DLL + sidecar on the Deck).
 - [ ] Settings: `EnableParallax = true`.
 
@@ -13,7 +20,10 @@ Tier 1 (mod on, full stack, choppy is fine):
       wrongly), confirming the per-clone frustum swap works.
 - [ ] **HARD GATE: player MAIN view unchanged.** A missed global-state restore would
       mis-position the player's own scatters. Watch the in-game view: scatters must
-      not flicker, jump, or disappear while kerbcast streams.
+      not flicker, jump, or disappear while kerbcast streams. NOTE: the drive restores
+      Parallax's camera globals but not its GPU append-buffer contents; Parallax
+      re-fills those per frame for the main camera, so this should be safe, but if the
+      main view's scatters flicker/jump that is the buffer-state vector to fix.
 - [ ] No new Kerbcast exceptions: `grep -i "\[Kerbcast-Parallax\]\|exception" KSP.log`
       shows `[Kerbcast-Parallax] integration enabled` and no drive/restore errors.
 - [ ] In orbit / off a scatter body: the integration is a cheap no-op (the gate
