@@ -120,8 +120,37 @@ namespace Kerbcast
                 var flare = HookFlareField?.GetValue(hook);
                 bool rendering = flare != null && FlareRenderingProp != null
                     && (bool)FlareRenderingProp.GetValue(flare, null);
+
+                // Rendering-side: does the flare mesh exist, what layer is it on, is
+                // it active, and does THIS camera's mask render that layer? A null or
+                // inactive mesh, or a mask that excludes its layer, means no pixels
+                // even when FlareRendering=True.
+                float rsf = -1f, roc = -1f;
+                string goInfo = "flareGO=?";
+                bool maskHasLayer = false; int goLayer = -1;
+                if (flare != null)
+                {
+                    var mat = MaterialField?.GetValue(flare) as Material;
+                    if (mat != null)
+                    {
+                        if (mat.HasProperty("renderSunFlare")) rsf = mat.GetFloat("renderSunFlare");
+                        if (mat.HasProperty("renderOnCurrentCamera")) roc = mat.GetFloat("renderOnCurrentCamera");
+                    }
+                    var go = FlareGoField?.GetValue(flare) as GameObject;
+                    if (go != null)
+                    {
+                        goLayer = go.layer;
+                        goInfo = $"flareGO.layer={goLayer} active={go.activeInHierarchy}";
+                    }
+                    else goInfo = "flareGO=NULL";
+                }
+                var myCam = GetComponent<Camera>();
+                if (myCam != null && goLayer >= 0)
+                    maskHasLayer = (myCam.cullingMask & (1 << goLayer)) != 0;
+
                 Debug.Log($"[Kerbcast-flareprobe] cam={name} hookEnabled={hookEnabled} " +
-                    $"FlareRendering={rendering}");
+                    $"FlareRendering={rendering} renderSunFlare={rsf:F0} renderOnCurrentCamera={roc:F0} " +
+                    $"{goInfo} maskRendersFlareLayer={maskHasLayer}");
             }
             catch (Exception ex)
             {
