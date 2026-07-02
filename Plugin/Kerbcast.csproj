@@ -55,6 +55,10 @@
       <HintPath>$(KspManaged)/UnityEngine.CoreModule.dll</HintPath>
       <Private>False</Private>
     </Reference>
+    <Reference Include="UnityEngine.PhysicsModule">
+      <HintPath>$(KspManaged)/UnityEngine.PhysicsModule.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
     <Reference Include="UnityEngine.ImageConversionModule">
       <HintPath>$(KspManaged)/UnityEngine.ImageConversionModule.dll</HintPath>
       <Private>False</Private>

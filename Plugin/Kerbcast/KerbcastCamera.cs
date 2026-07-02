@@ -1199,8 +1199,18 @@ namespace Kerbcast
             float angle = Vector3.Angle(fwd, sunDir);
             Vector3 vp = _nearCam.WorldToViewportPoint(sunPos);
             bool onScreen = vp.z > 0f && vp.x >= 0f && vp.x <= 1f && vp.y >= 0f && vp.y <= 1f;
+            // Replicate Scatterer's occlusion test: raycast from the lens toward
+            // the sun on the part/scenery layers. A near hit = a vessel part
+            // blocks the flare for this camera; name it so the operator can see
+            // what to move. A hit only at planetary distance is effectively clear.
+            Vector3 camPos = _nearCam.transform.position;
+            string los = "clear";
+            if (UnityEngine.Physics.Raycast(camPos, sunDir, out var hit, Mathf.Infinity, (1 << 0) | (1 << 15))
+                && hit.distance < 10000f)
+                los = $"BLOCKED:{hit.collider?.name}@{hit.distance:F0}m";
             Debug.Log($"[Kerbcast] flarelog cam={FlightId} name='{Hullcam?.cameraName}' " +
-                $"sunAngle={angle:F1} sunVP=({vp.x:F2},{vp.y:F2},z{(vp.z >= 0f ? "+" : "-")}) onScreen={onScreen}");
+                $"sunAngle={angle:F1} sunVP=({vp.x:F2},{vp.y:F2},z{(vp.z >= 0f ? "+" : "-")}) " +
+                $"onScreen={onScreen} los={los}");
         }
 
         private void ApplyLayers()
