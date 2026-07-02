@@ -58,13 +58,15 @@ namespace Kerbcast
 
         public bool NeedsPerFrame => false;
 
-        // Near, scaled, and far-local terrain. Galaxy is deliberately excluded:
-        // TUFX's post stack on the galaxy clone renders the skybox black (the
-        // galaxy layer is otherwise just the star cube, which needs no post), and
-        // with TUFX off that layer renders correctly. The other three layers keep
-        // TUFX so the composite still carries the player's look.
-        public CameraLayers AppliesToLayers =>
-            CameraLayers.Near | CameraLayers.Scaled | CameraLayers.Far;
+        // Near layer ONLY. All four layers render into one shared capture texture
+        // (galaxy -> scaled -> far -> near) and near is last, so a PostProcessLayer
+        // on the near clone runs its post pass once over the finished composite -
+        // giving the whole frame the player's look in a single pass. Applying TUFX
+        // to every layer instead made each layer's post reprocess the shared
+        // texture: later layers blacked the already-drawn galaxy, and the ambient-
+        // occlusion pass ran per layer, which is what drew the dark horizontal
+        // lines. One post pass on the last layer avoids both.
+        public CameraLayers AppliesToLayers => CameraLayers.Near;
 
         // TUFX applies the same post-process stack to every layer, so the layer
         // argument is not used; kept to satisfy the contract.
