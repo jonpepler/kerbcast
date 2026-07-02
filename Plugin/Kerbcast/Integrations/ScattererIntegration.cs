@@ -178,23 +178,14 @@ namespace Kerbcast
                 // Camera ScaledSpace. Far reuses the near swap and needs no hooks.
                 if (layer == CameraLayers.Near)
                 {
-                    // Scatterer's sunflare reads Instance.scaledSpaceCamera in
-                    // updateProperties for its render gate, scale and screen
-                    // position, computing the sun's viewport from a SCALED-SPACE
-                    // camera. The flare mesh renders on the near clone (layer 15),
-                    // so during the near clone's render point scaledSpaceCamera at
-                    // the matching SCALED clone (not the near clone: a local-space
-                    // camera projects the scaled-space sun position to a bogus
-                    // viewport, val.z<=0, and the gate never passes). This makes the
-                    // flare track the clone's view instead of the player's.
-                    if (_scaledField != null && _scaledField != field)
-                    {
-                        var scaledSibling = FindScaledSibling(cam);
-                        AddSwap(cam, _scaledField, scaledSibling);
-                        if (KerbcastSettings.DebugCameraLogging)
-                            Debug.Log($"{LogTag} near clone {cam.name} scaled-sibling=" +
-                                $"{(scaledSibling != null ? scaledSibling.name : "NOT FOUND")}");
-                    }
+                    // Only nearCamera is swapped to the clone (above). We deliberately
+                    // do NOT repoint scaledSpaceCamera here: Scatterer's sunflare gate
+                    // (updateProperties) must run against the real scaled camera so its
+                    // sun-occlusion self-reset works. Each near clone then draws the
+                    // shared flare mesh at its OWN GPU-projected sun position, so the
+                    // flare is per-camera for free. The gate itself follows the main
+                    // view (shared renderSunFlare); that is a known limitation in
+                    // unified-camera mode, not worth breaking the working flare over.
                     CopyRenderingHooks("Camera 00", cam);
                     if (KerbcastSettings.DebugCameraLogging) AttachFlareProbe(cam);
                 }
@@ -218,19 +209,6 @@ namespace Kerbcast
             swap.CameraField = field;
             swap.SwapInOverride = swapIn;
             Track(cam, swap);
-        }
-
-        // Find the scaled clone that pairs with a near clone. They are named
-        // "Kerbcast_<id>_Near" / "Kerbcast_<id>_Scaled". Uses FindObjectsOfTypeAll so
-        // a disabled clone (ours are enabled=false) is still found.
-        private static Camera FindScaledSibling(Camera nearClone)
-        {
-            if (nearClone == null || nearClone.name == null || !nearClone.name.EndsWith("_Near"))
-                return null;
-            var scaledName = nearClone.name.Substring(0, nearClone.name.Length - "_Near".Length) + "_Scaled";
-            foreach (var c in Resources.FindObjectsOfTypeAll<Camera>())
-                if (c != null && c.name == scaledName) return c;
-            return null;
         }
 
         // Diagnostic-only: attach a probe that logs Scatterer's live flare state on
@@ -291,16 +269,6 @@ namespace Kerbcast
                 var dst = target.gameObject.AddComponent(hookType);
                 if (dst == null) continue;
                 CopyPublicMembers(src, dst);
-                // The near hook copies useDbufferOnCamera=1, which depth-occludes
-                // the flare core against the main camera's depth buffer (not the
-                // clone's) and kills the core on the stream. Force it off so the
-                // core draws; Scatterer's own raycast still gates the flare.
-                if (hookType.Name.Contains("SunflareCameraHook"))
-                {
-                    var dbuffer = hookType.GetField("useDbufferOnCamera",
-                        BindingFlags.Public | BindingFlags.Instance);
-                    dbuffer?.SetValue(dst, 0f);
-                }
                 // In unified-camera mode Scatterer drives the flare through the
                 // unified camera and leaves the stock near/scaled flare hooks
                 // DISABLED; CopyPublicMembers carries that enabled=false across, so
