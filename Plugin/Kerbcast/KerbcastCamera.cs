@@ -1018,23 +1018,26 @@ namespace Kerbcast
 
         /// <summary>
         /// Cascade table: (resolution multiplier, layers to drop). Lower
-        /// levels are gentler on perception. Resolution reduction wins
-        /// over layer dropping because it preserves scene completeness
-        /// — a blurrier full image is more useful than a sharp scene
-        /// with missing planet terrain. Scaled goes last because it's
-        /// the operator's situational-awareness layer.
+        /// levels are gentler on perception. Resolution reduction wins over
+        /// layer dropping because it preserves scene completeness: a blurrier
+        /// full image is more useful than a sharp scene with a missing layer.
+        /// All layers are kept until the emergency level; only resolution drops
+        /// before then. Galaxy in particular is cheap (one skybox cube, no PQS
+        /// or atmosphere) and is the operator's star-field / orientation
+        /// reference, so shedding it early (as an earlier table did at level 3)
+        /// blacked out the background under load for almost no headroom.
         /// </summary>
         private static readonly (float ResScale, CameraLayers Drop)[] ShedTable =
         {
             (1.00f, CameraLayers.None),                                 // 0: full
             (0.75f, CameraLayers.None),                                 // 1: gentle res drop
             (0.50f, CameraLayers.None),                                 // 2: half res
-            (0.50f, CameraLayers.Galaxy),                               // 3: + drop galaxy
-            (0.25f, CameraLayers.Galaxy),                               // 4: quarter res
-            /* Far is the heaviest layer (full mid-range terrain band) but
-               dropping it reintroduces the black band between the scaled and
-               near handoff; it stays until the absolute last resort. Tier
-               placement is provisional pending Deck perf baseline (§8.0). */
+            (0.35f, CameraLayers.None),                                 // 3: deeper res drop, keep all layers
+            (0.25f, CameraLayers.None),                                 // 4: quarter res, keep all layers
+            /* Emergency last resort only: dropping Far reintroduces the black
+               band between the scaled and near handoff, and dropping Galaxy
+               blacks out the star-field. Tier placement provisional pending the
+               Deck perf baseline (section 8.0). */
             (0.25f, CameraLayers.Galaxy | CameraLayers.Scaled | CameraLayers.Far),  // 5: emergency (last resort; reintroduces far black band)
         };
 
