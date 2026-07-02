@@ -231,6 +231,7 @@ namespace Kerbcast
         private bool _disposed;
         private bool _firstRender = true;
         private bool _firstPixelCheck = true;
+        private bool _firstBufferDump = true;
         private struct FaderState
         {
             public Renderer Renderer;
@@ -1156,6 +1157,22 @@ namespace Kerbcast
             _galaxyMaxColor = ctrl.maxGalaxyColor;
         }
 
+        // Diagnostic: dump the CommandBuffers attached to a clone camera at every
+        // CameraEvent. Traces which screen-space pass draws the fixed-position
+        // dark bands (suspected a Scatterer buffer sampling a main-camera-sized
+        // texture on our differently-sized clone RT). Gated on DebugCameraLogging;
+        // runs once per camera.
+        private void DumpCameraBuffers(Camera cam, string label)
+        {
+            if (cam == null) return;
+            foreach (UnityEngine.Rendering.CameraEvent ev in
+                     System.Enum.GetValues(typeof(UnityEngine.Rendering.CameraEvent)))
+            {
+                foreach (var b in cam.GetCommandBuffers(ev))
+                    Debug.Log($"[Kerbcast] cam={FlightId} {label} cmdbuffer event={ev} name='{b.name}'");
+            }
+        }
+
         private void ApplyLayers()
         {
             // Cameras are permanently disabled (enabled=false) — Unity's
@@ -1740,6 +1757,19 @@ namespace Kerbcast
                 // outer catch also restores, so a throw mid-composite cannot leave
                 // them stripped.
                 ScaledSunLightHelper.RestoreCompositeShadowsBuffer();
+
+                // One-shot diagnostic (DebugCameraLogging): after the first full
+                // composite, dump the command buffers now attached to each clone
+                // camera. Lazy Scatterer buffers land during the geometry render,
+                // so they are present by here. Traces the fixed-position dark bands.
+                if (KerbcastSettings.DebugCameraLogging && _firstBufferDump)
+                {
+                    _firstBufferDump = false;
+                    DumpCameraBuffers(_nearCam, "near");
+                    DumpCameraBuffers(_scaledCam, "scaled");
+                    DumpCameraBuffers(_farCam, "far");
+                    DumpCameraBuffers(_galaxyCam, "galaxy");
+                }
 
                 // Blit the depth-bundled capture RT into the clean readback RT.
                 // When a HullcamVDS filter is active (NightVision etc), it
