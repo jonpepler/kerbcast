@@ -51,6 +51,7 @@ namespace Kerbcast
         private PropertyInfo _flareRenderingProp; // SunFlare.FlareRendering
         private FieldInfo _flareMaterialField;  // SunFlare.sunglareMaterial
         private FieldInfo _flareGoField;        // SunFlare.sunflareGameObject (nonpublic)
+        private FieldInfo _flareSourceScaledField; // SunFlare.sourceScaledTransform
 
         private readonly Dictionary<Camera, List<Component>> _added = new Dictionary<Camera, List<Component>>();
 
@@ -118,6 +119,7 @@ namespace Kerbcast
                     _flareMaterialField = flareType.GetField("sunglareMaterial", PubInst);
                     _flareGoField = flareType.GetField("sunflareGameObject",
                         BindingFlags.NonPublic | BindingFlags.Instance);
+                    _flareSourceScaledField = flareType.GetField("sourceScaledTransform", PubInst);
                 }
 
                 _ready = true;
@@ -236,6 +238,10 @@ namespace Kerbcast
             probe.MaterialField = _flareMaterialField;
             probe.FlareGoField = _flareGoField;
             probe.HookDbufferField = _hookDbufferField;
+            probe.InstanceProp = _instanceProp;
+            probe.NearField = _nearField;
+            probe.ScaledField = _scaledField;
+            probe.SourceScaledTransformField = _flareSourceScaledField;
             Track(cam, probe);
         }
 

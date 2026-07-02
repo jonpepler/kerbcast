@@ -3,11 +3,10 @@
 // reads Scatterer's OWN flare state during the clone's manual render and logs it,
 // so we work from Scatterer's numbers instead of a reconstruction.
 //
-// It also counts which camera messages fire during a manual Camera.Render()
-// (OnPreCull / OnPreRender / OnPostRender) and reads the copied hook's enabled
-// flag and useDbufferOnCamera field, to tell apart "hook is disabled" from
-// "OnPreRender does not fire on a manual render" - the two reasons the copied
-// SunflareCameraHook would never run on the clone.
+// OnPreRender (fires after the camera swaps run in OnPreCull) replicates the gate
+// math Scatterer's updateProperties uses - the sun's viewport via the current
+// Instance.scaledSpaceCamera - so we can see the real val.z and which camera is
+// actually backing the swap. OnPostRender logs the resulting flare state.
 //
 // Reflection-only and inert unless configured. Never shipped-on: gated by the
 // caller on the debug flag.
@@ -27,56 +26,70 @@ namespace Kerbcast
         public FieldInfo MaterialField;       // SunFlare.sunglareMaterial (Material)
         public FieldInfo FlareGoField;        // SunFlare.sunflareGameObject (GameObject)
         public FieldInfo HookDbufferField;    // SunflareCameraHook.useDbufferOnCamera (float)
+        public PropertyInfo InstanceProp;     // Scatterer.Scatterer.Instance
+        public FieldInfo NearField;           // Instance.nearCamera
+        public FieldInfo ScaledField;         // Instance.scaledSpaceCamera
+        public FieldInfo SourceScaledTransformField; // SunFlare.sourceScaledTransform
 
-        private int _frame;
         private int _preCull;
         private int _preRender;
         private int _postRender;
 
         private void OnPreCull() => _preCull++;
-        private void OnPreRender() => _preRender++;
+
+        private void OnPreRender()
+        {
+            _preRender++;
+            if (_preRender % 120 != 0) return;
+            try
+            {
+                var inst = InstanceProp?.GetValue(null, null);
+                var nearCam = inst != null ? NearField?.GetValue(inst) as Camera : null;
+                var scaledCam = inst != null ? ScaledField?.GetValue(inst) as Camera : null;
+
+                var hook = HookType != null ? GetComponent(HookType) : null;
+                var flare = hook != null ? HookFlareField?.GetValue(hook) : null;
+                var sst = flare != null ? SourceScaledTransformField?.GetValue(flare) as Transform : null;
+
+                string valStr = "n/a"; string angStr = "n/a";
+                if (scaledCam != null && sst != null)
+                {
+                    Vector3 val = scaledCam.WorldToViewportPoint(sst.position);
+                    valStr = $"({val.x:F2},{val.y:F2},z{(val.z >= 0 ? "+" : "-")}{val.z:F0})";
+                    angStr = Vector3.Angle(scaledCam.transform.forward,
+                        sst.position - scaledCam.transform.position).ToString("F1");
+                }
+
+                Debug.Log(
+                    $"[Kerbcast-flareprobe-in] cam={name} " +
+                    $"Instance.near='{(nearCam != null ? nearCam.name : "null")}' " +
+                    $"Instance.scaled='{(scaledCam != null ? scaledCam.name : "null")}' " +
+                    $"scaledCamSunAngle={angStr} val={valStr}");
+            }
+            catch (Exception ex)
+            {
+                Debug.Log($"[Kerbcast-flareprobe-in] cam={name} error: {ex.Message}");
+            }
+        }
 
         private void OnPostRender()
         {
             _postRender++;
-            _frame++;
-            if (_frame % 120 != 0) return; // once every ~120 renders
+            if (_postRender % 120 != 0) return;
             try
             {
                 var hook = HookType != null ? GetComponent(HookType) : null;
                 if (hook == null)
                 {
-                    Debug.Log($"[Kerbcast-flareprobe] cam={name} hookPresent=False " +
-                        $"fires(cull/pre/post)={_preCull}/{_preRender}/{_postRender}");
+                    Debug.Log($"[Kerbcast-flareprobe] cam={name} hookPresent=False");
                     return;
                 }
-
                 bool hookEnabled = hook is Behaviour b && b.enabled;
-                float hookDbuf = HookDbufferField != null ? (float)HookDbufferField.GetValue(hook) : -1f;
-
                 var flare = HookFlareField?.GetValue(hook);
-                bool rendering = false;
-                float rsf = -1f, matDbuf = -1f;
-                int goLayer = -1; bool goActive = false; bool haveGo = false;
-                if (flare != null)
-                {
-                    rendering = FlareRenderingProp != null && (bool)FlareRenderingProp.GetValue(flare, null);
-                    var mat = MaterialField?.GetValue(flare) as Material;
-                    if (mat != null)
-                    {
-                        if (mat.HasProperty("renderSunFlare")) rsf = mat.GetFloat("renderSunFlare");
-                        if (mat.HasProperty("useDbufferOnCamera")) matDbuf = mat.GetFloat("useDbufferOnCamera");
-                    }
-                    var go = FlareGoField?.GetValue(flare) as GameObject;
-                    if (go != null) { goLayer = go.layer; goActive = go.activeInHierarchy; haveGo = true; }
-                }
-
-                Debug.Log(
-                    $"[Kerbcast-flareprobe] cam={name} hookPresent=True hookEnabled={hookEnabled} " +
-                    $"hookDbufField={hookDbuf:F0} fires(cull/pre/post)={_preCull}/{_preRender}/{_postRender} " +
-                    $"FlareRendering={rendering} mat.renderSunFlare={rsf:F0} mat.useDbuffer={matDbuf:F0} " +
-                    $"flareGO.layer={(haveGo ? goLayer.ToString() : "?")} " +
-                    $"flareGO.active={(haveGo ? goActive.ToString() : "?")}");
+                bool rendering = flare != null && FlareRenderingProp != null
+                    && (bool)FlareRenderingProp.GetValue(flare, null);
+                Debug.Log($"[Kerbcast-flareprobe] cam={name} hookEnabled={hookEnabled} " +
+                    $"FlareRendering={rendering}");
             }
             catch (Exception ex)
             {
