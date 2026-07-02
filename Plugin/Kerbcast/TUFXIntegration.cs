@@ -58,9 +58,13 @@ namespace Kerbcast
 
         public bool NeedsPerFrame => false;
 
-        // Every cloned layer, so the post stack matches the in-game composite
-        // across near, far-local terrain, scaled space, and the galaxy skybox.
-        public CameraLayers AppliesToLayers => CameraLayers.All;
+        // Near, scaled, and far-local terrain. Galaxy is deliberately excluded:
+        // TUFX's post stack on the galaxy clone renders the skybox black (the
+        // galaxy layer is otherwise just the star cube, which needs no post), and
+        // with TUFX off that layer renders correctly. The other three layers keep
+        // TUFX so the composite still carries the player's look.
+        public CameraLayers AppliesToLayers =>
+            CameraLayers.Near | CameraLayers.Scaled | CameraLayers.Far;
 
         // TUFX applies the same post-process stack to every layer, so the layer
         // argument is not used; kept to satisfy the contract.
