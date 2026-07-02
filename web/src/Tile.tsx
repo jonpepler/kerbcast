@@ -4,9 +4,11 @@ import {
   useKerbcastCameras,
 } from "@jonpepler/kerbcast-react";
 import type { FeedAction } from "@jonpepler/kerbcast-react";
-import { ListPlus, Pin, PinOff, Plus, WifiOff, X } from "lucide-react";
-import { useMemo, useState } from "react";
+import { Check, ListPlus, Pencil, Pin, PinOff, Plus, WifiOff, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import styled from "styled-components";
+import { loadLabel, saveLabel } from "./labels";
+import { cameraKey } from "./tiles";
 
 /**
  * How the tile is sized by its container:
@@ -44,7 +46,7 @@ export function Tile({
   onToggleSpotlight,
 }: TileProps): React.JSX.Element {
   /*
-   * Corner label: the name of the camera the feed actually displays — which
+   * Corner label: the name of the camera the feed actually displays, which
    * follows CameraFeed's auto-latch/fallback, not just this tile's requested
    * flightId. Tracking the requested id alone mislabels a slot that is showing
    * a borrowed/auto-picked camera (it would read "Tile N" over a live feed).
@@ -69,10 +71,61 @@ export function Tile({
    */
   const cameraMissing =
     flightId !== null && !cameras.some((c) => c.flightId === flightId);
-  const label = useMemo(() => {
+
+  /*
+   * The displayed camera's stable identity (vesselName|partName|cameraName),
+   * or null when the feed shows nothing. Custom labels are keyed off this, NOT
+   * off flightId, so a label survives KSP revert/recover the same way tiles do.
+   * It is derived here for display only; it never feeds CameraFeed's props.
+   */
+  const displayedKey = useMemo(() => {
+    const cam = cameras.find((c) => c.flightId === displayedFlightId);
+    return cam ? cameraKey(cam) : null;
+  }, [cameras, displayedFlightId]);
+
+  const autoLabel = useMemo(() => {
     const cam = cameras.find((c) => c.flightId === displayedFlightId);
     return cam ? buildCameraLabeler(cameras)(cam) : `Tile ${index + 1}`;
   }, [cameras, displayedFlightId, index]);
+
+  /*
+   * Custom label state: seeded from localStorage for the displayed camera and
+   * re-seeded whenever the displayed camera changes. It overrides autoLabel
+   * when set; a cleared label falls back to autoLabel. This lives in Tile chrome
+   * only, so editing it re-renders the title, never the CameraFeed below.
+   */
+  const [customLabel, setCustomLabel] = useState<string | null>(() =>
+    loadLabel(displayedKey),
+  );
+  useEffect(() => {
+    setCustomLabel(loadLabel(displayedKey));
+  }, [displayedKey]);
+
+  const label = customLabel ?? autoLabel;
+
+  // Inline label editor: open state and draft text.
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (editing) inputRef.current?.select();
+  }, [editing]);
+
+  const beginEdit = () => {
+    setDraft(customLabel ?? autoLabel);
+    setEditing(true);
+  };
+
+  const commitEdit = () => {
+    if (displayedKey) setCustomLabel(saveLabel(displayedKey, draft));
+    setEditing(false);
+  };
+
+  const cancelEdit = () => setEditing(false);
+
+  // Only offer renaming when the feed is actually showing a camera.
+  const canRename = displayedKey !== null;
 
   /*
    * Tile-level controls injected into the feed's action bar, so there's a
@@ -126,7 +179,9 @@ export function Tile({
             Remove tile
           </MissingRemove>
         </MissingWrap>
-        <TileCornerLabel>{`Tile ${index + 1}`}</TileCornerLabel>
+        <TileCornerLabel>
+          <TileCornerText>{`Tile ${index + 1}`}</TileCornerText>
+        </TileCornerLabel>
       </TileRoot>
     );
   }
@@ -147,7 +202,44 @@ export function Tile({
           trailingActions={trailingActions}
         />
       </FeedWrap>
-      <TileCornerLabel>{label}</TileCornerLabel>
+      {editing ? (
+        <LabelEditor
+          onSubmit={(e) => {
+            e.preventDefault();
+            commitEdit();
+          }}
+        >
+          <LabelInput
+            ref={inputRef}
+            value={draft}
+            maxLength={48}
+            placeholder={autoLabel}
+            aria-label="Custom feed label"
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") cancelEdit();
+            }}
+            onBlur={commitEdit}
+          />
+          <LabelEditButton type="submit" aria-label="Save label" title="Save label">
+            <Check size={12} strokeWidth={2} aria-hidden="true" />
+          </LabelEditButton>
+        </LabelEditor>
+      ) : (
+        <TileCornerLabel>
+          <TileCornerText>{label}</TileCornerText>
+          {canRename && (
+            <TileRenameButton
+              type="button"
+              aria-label="Rename feed"
+              title="Rename feed"
+              onClick={beginEdit}
+            >
+              <Pencil size={11} strokeWidth={1.75} aria-hidden="true" />
+            </TileRenameButton>
+          )}
+        </TileCornerLabel>
+      )}
     </TileRoot>
   );
 }
@@ -264,19 +356,27 @@ const TileRoot = styled.div<TileRootProps>`
   `}
 `;
 
-/* Label: bottom-left corner, barely visible; fades out on hover because the
-   feed's own title chrome appears and would duplicate it */
+/* Label: bottom-left corner, barely visible. On hover the feed's own title
+   chrome appears and would duplicate the name, so the text fades out; the
+   rename affordance fades IN instead so the operator can edit it. */
 const TileCornerLabel = styled.span`
   position: absolute;
   bottom: 0.4rem;
   left: 0.5rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
   font-size: 0.6rem;
   letter-spacing: 0.06em;
   color: rgba(255, 255, 255, 0.35);
-  pointer-events: none;
   user-select: none;
   text-shadow: 0 1px 3px rgba(0,0,0,0.6);
   z-index: 2;
+`;
+
+/* The name text itself: fades out on hover (the feed chrome covers naming). */
+const TileCornerText = styled.span`
+  pointer-events: none;
   transition: opacity 0.15s ease;
 
   ${TileRoot}:hover & {
@@ -285,6 +385,86 @@ const TileCornerLabel = styled.span`
 
   @media (prefers-reduced-motion: reduce) {
     transition: none;
+  }
+`;
+
+/* Rename pencil: hidden until hover/focus, then fades in where the text was. */
+const TileRenameButton = styled.button`
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.1rem;
+  line-height: 0;
+  background: none;
+  border: none;
+  border-radius: 3px;
+  color: rgba(255, 255, 255, 0.6);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s ease, color 0.12s ease;
+
+  ${TileRoot}:hover & {
+    opacity: 1;
+  }
+
+  &:hover {
+    color: var(--kc-accent);
+  }
+
+  &:focus-visible {
+    opacity: 1;
+    outline: 2px solid var(--kc-accent);
+    outline-offset: 1px;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    transition: none;
+  }
+`;
+
+/* Inline editor shown in place of the corner label while renaming. */
+const LabelEditor = styled.form`
+  position: absolute;
+  bottom: 0.4rem;
+  left: 0.5rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  z-index: 3;
+`;
+
+const LabelInput = styled.input`
+  font-family: inherit;
+  font-size: 0.62rem;
+  letter-spacing: 0.04em;
+  color: var(--kc-text);
+  background: var(--kc-surface);
+  border: 1px solid var(--kc-accent);
+  border-radius: 4px;
+  padding: 0.2rem 0.35rem;
+  width: 12ch;
+  max-width: 60vw;
+
+  &:focus {
+    outline: none;
+  }
+`;
+
+const LabelEditButton = styled.button`
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.2rem;
+  line-height: 0;
+  color: var(--kc-accent);
+  background: var(--kc-surface);
+  border: 1px solid var(--kc-accent);
+  border-radius: 4px;
+  cursor: pointer;
+
+  &:focus-visible {
+    outline: 2px solid var(--kc-accent);
+    outline-offset: 1px;
   }
 `;
 
