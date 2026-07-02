@@ -129,17 +129,25 @@ namespace Kerbcast
                 }
                 if (field == null) return;
 
-                var swap = cam.gameObject.AddComponent<ScattererCameraSwap>();
-                swap.InstanceProperty = _instanceProp;
-                swap.CameraField = field;
-                Track(cam, swap);
+                AddSwap(cam, field);
 
                 // Copy Scatterer's per-camera hooks from the matching stock camera
                 // so the clone renders the full per-camera look (flare + occlusion),
                 // not just the swapped atmosphere. Near <- Camera 00, Scaled <-
                 // Camera ScaledSpace. Far reuses the near swap and needs no hooks.
                 if (layer == CameraLayers.Near)
+                {
+                    // Scatterer's sunflare reads Instance.scaledSpaceCamera in
+                    // updateProperties for its render gate, scale and screen
+                    // position, so the flare only shows when THAT camera faces the
+                    // sun. The flare mesh renders on the near clone (layer 15), so
+                    // point scaledSpaceCamera at the near clone during its render
+                    // too; without this the flare tracks the player's main view
+                    // instead of the stream and never appears on a clone.
+                    if (_scaledField != null && _scaledField != field)
+                        AddSwap(cam, _scaledField);
                     CopyRenderingHooks("Camera 00", cam);
+                }
                 else if (layer == CameraLayers.Scaled)
                     CopyRenderingHooks("Camera ScaledSpace", cam);
             }
@@ -148,6 +156,17 @@ namespace Kerbcast
                 Debug.LogError($"{LogTag} apply to {cam.name} ({layer}) failed: {ex.Message}");
                 RemoveFromLayer(cam, layer);
             }
+        }
+
+        // Attach a camera-reference swap to the clone for one Scatterer singleton
+        // field, tracked so RemoveFromLayer tears it down. A clone can carry more
+        // than one (the near clone swaps both nearCamera and scaledSpaceCamera).
+        private void AddSwap(Camera cam, FieldInfo field)
+        {
+            var swap = cam.gameObject.AddComponent<ScattererCameraSwap>();
+            swap.InstanceProperty = _instanceProp;
+            swap.CameraField = field;
+            Track(cam, swap);
         }
 
         private bool IsUnifiedCameraMode()
