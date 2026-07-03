@@ -158,11 +158,32 @@ namespace Kerbcast
         // when TUFX is not installed. Static so KerbcastCamera can read it.
         public static bool EnableTUFX { get; private set; } = true;
 
-        // Name of the installed TUFX profile to attach to kerbcast's per-camera
-        // volumes. Default empty: volumes inherit TUFX's own scene selection
-        // (whatever the operator picked in TUFX's UI for Flight). No effect
-        // without TUFX installed.
-        public static string TUFXProfile { get; private set; } = "";
+        // Enable EVE cloud/atmosphere/city-lights/celestial-shadow replication
+        // onto kerbcast's cloned cameras. Default true; no effect if EVE is not
+        // installed.
+        public static bool EnableEVE { get; private set; } = true;
+
+        // Enable Scatterer atmosphere, sky, scattering and ocean capture onto
+        // kerbcast's cloned cameras (per-clone singleton camera swap). Default
+        // true; no effect if Scatterer is not installed. Forces MSAA off on the
+        // capture cameras when active.
+        public static bool EnableScatterer { get; private set; } = true;
+
+        // Re-run ParallaxContinued's scatter evaluate and draw for the kerbcast
+        // near terrain camera so surface scatters (rocks, grass) appear on the
+        // stream. Default true; no effect if ParallaxContinued is not installed.
+        public static bool EnableParallax { get; private set; } = true;
+
+        // Add Deferred's ForwardRenderingCompatibility component to kerbcast's
+        // deferred near/far clones so they render correctly instead of black.
+        // Default true; no effect if the Deferred mod is not installed.
+        public static bool EnableDeferred { get; private set; } = true;
+
+        // When the Firefly reentry mod is installed, capture its plasma onto the
+        // kerbcast near camera INSTEAD of kerbcast's own reentry FX (never both).
+        // Default true; set false to keep kerbcast's own reentry effects even when
+        // Firefly is installed. No effect if Firefly isn't installed.
+        public static bool EnableFirefly { get; private set; } = true;
 
         // When true (default), kerbcast Harmony-patches HullcamVDS's
         // CameraFilter.LoadBundle to substitute our rebuilt shaders.linux.
@@ -404,7 +425,11 @@ namespace Kerbcast
             ApplyString(node, "AtmosphericFxLayers", v => settings.AtmosphericFxLayers = ParseAtmoFxLayers(v));
             ApplyBool(node, "EnableHullcamEffects", v => EnableHullcamEffects = v);
             ApplyBool(node, "EnableTUFX", v => EnableTUFX = v);
-            ApplyString(node, "TUFXProfile", v => TUFXProfile = v);
+            ApplyBool(node, "EnableEVE", v => EnableEVE = v);
+            ApplyBool(node, "EnableScatterer", v => EnableScatterer = v);
+            ApplyBool(node, "EnableParallax", v => EnableParallax = v);
+            ApplyBool(node, "EnableDeferred", v => EnableDeferred = v);
+            ApplyBool(node, "EnableFirefly", v => EnableFirefly = v);
             ApplyBool(node, "EnableHullcamLinuxShaderSwap", v => EnableHullcamLinuxShaderSwap = v);
             ApplyBool(node, "DebugCameraLogging", v => DebugCameraLogging = v);
             ApplyBool(node, "EnableTelemetry", v => EnableTelemetry = v);

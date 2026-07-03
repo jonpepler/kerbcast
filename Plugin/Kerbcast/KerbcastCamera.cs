@@ -101,6 +101,9 @@ namespace Kerbcast
         // Whether this camera should replicate KSP's atmospheric FX. Set from
         // settings.cfg at construction; flipped at runtime by the control file.
         private bool _enableFx;
+        // Visual-mod integration host (TUFX, and Scatterer/EVE/... as they land).
+        // Null until SetCameras constructs it. The only mod-aware surface in this class.
+        private IntegrationHost _integrationHost;
         // Pluggable atmospheric-FX host for this camera. Owns the enabled FX
         // effects (core sheath, bowshock, …); each effect renders into the near
         // pass. Null until SetCameras builds it.
@@ -345,21 +348,33 @@ namespace Kerbcast
             // without taking a hard reference to the subclass type for
             // parts where it's not present.
             var zoomable = hullcam as MuMechModuleHullCameraZoom;
-            SupportsZoom = zoomable != null;
             if (zoomable != null)
             {
                 FovMin = zoomable.cameraFoVMin;
                 FovMax = zoomable.cameraFoVMax;
+                // Clamp a fisheye-wide authored max (TurretCam maxes at 100).
+                // Applied here so the initial Fov clamp below and SetFov both
+                // respect the capped maximum.
+                if (_panCap.FovMaxCap.HasValue)
+                    FovMax = Mathf.Min(FovMax, _panCap.FovMaxCap.Value);
             }
             else
             {
                 FovMin = hullcam.cameraFoV;
                 FovMax = hullcam.cameraFoV;
             }
+            // Zoom needs a real FoV range, not just the subclass type. Several
+            // MuMechModuleHullCameraZoom parts pin cameraFoVMin == cameraFoVMax
+            // (DC.munCam 25/25, DC.aerocam2 45/45, RoverCam, base mumech.hullcam
+            // 30/30). With a zero-width range SetFov's Clamp pegs every request
+            // to the single value, so zoom "works once" off the default FoV then
+            // never again. Treat that as non-zoomable so the browser hides the
+            // control and set-fov / set-zoom-rate are honest no-ops.
+            SupportsZoom = zoomable != null && FovMax > FovMin + 0.01f;
             // Snap both the displayed FoV and the slew target so a fresh camera
             // starts settled (SetFov now only moves _fovTarget; the constructor
             // is the one place that snaps Fov directly).
-            Fov = _fovTarget = hullcam.cameraFoV;
+            Fov = _fovTarget = Mathf.Clamp(hullcam.cameraFoV, FovMin, FovMax);
 
             // Cache identity fields now while the Part is guaranteed live.
             // WriteDestroyedManifest (called from Dispose, which may be
@@ -567,6 +582,14 @@ namespace Kerbcast
                 return;
             }
 
+            // Visual-mod integrations (TUFX, and Scatterer/EVE/... as they land). The
+            // host is the only mod-aware surface; the render code below treats all
+            // integrations uniformly. Constructed here so the MSAA format lever is known
+            // before the cloned cameras are configured.
+            _integrationHost = new IntegrationHost();
+            bool integrationsForceNoMsaa = _integrationHost.ForceNoMsaa;
+            bool allowMsaa = !integrationsForceNoMsaa;
+
             // Resolve the yaw mesh transform before camera setup so we can
             // parent the near camera to it. Must happen here, at rest pose,
             // so InverseTransformPoint reads the unrotated frame correctly.
@@ -656,7 +679,7 @@ namespace Kerbcast
             // horizon" in the first multi-camera streaming test). OCISLY's
             // TrackingCamera enables these explicitly for the same reason.
             _nearCam.allowHDR = true;
-            _nearCam.allowMSAA = true;
+            _nearCam.allowMSAA = allowMsaa;
             // Offscreen RT cameras shouldn't run Unity's occlusion logic —
             // it's computed against the main viewport's frustum and either
             // wastes cycles or incorrectly culls objects in our cameras'
@@ -687,7 +710,7 @@ namespace Kerbcast
             _scaledCam.fieldOfView = Hullcam.cameraFoV;
             _scaledCam.targetTexture = _captureRt;
             _scaledCam.allowHDR = true;
-            _scaledCam.allowMSAA = true;
+            _scaledCam.allowMSAA = allowMsaa;
             _scaledCam.useOcclusionCulling = false;
             // Deferred lighting fails silently for offscreen RTs on Mesa/OpenGL
             // (surface goes pure black while the atmosphere limb, which uses its
@@ -706,7 +729,7 @@ namespace Kerbcast
             // fails (vessel-load race, scene weirdness), at least we
             // render a predictable solid-black backdrop instead of
             // whatever Unity defaults Camera to. CopyFrom overwrites
-            // these when it succeeds. JTI does the same.
+            // these when it succeeds.
             _galaxyCam.clearFlags = CameraClearFlags.SolidColor;
             _galaxyCam.backgroundColor = Color.black;
             var sourceGalaxy = FindKspCamera("GalaxyCamera");
@@ -722,8 +745,16 @@ namespace Kerbcast
             _galaxyCam.fieldOfView = Hullcam.cameraFoV;
             _galaxyCam.targetTexture = _captureRt;
             _galaxyCam.allowHDR = true;
-            _galaxyCam.allowMSAA = true;
+            _galaxyCam.allowMSAA = allowMsaa;
             _galaxyCam.useOcclusionCulling = false;
+            // Force Forward, same as the scaled clone. With the Deferred mod the
+            // game runs deferred and this clone inherits DeferredShading via
+            // CopyFrom, but deferred offscreen RTs render pure black on Mesa/
+            // OpenGL (the Deck): the galaxy cube is a forward-authored skybox and
+            // vanished entirely. DeferredIntegration only force-forwards near/far,
+            // so the galaxy clone was the one layer left deferred. The galaxy has
+            // no scene lights, so Forward costs nothing.
+            _galaxyCam.renderingPath = RenderingPath.Forward;
             var galaxyRot = galaxyGo.AddComponent<LayerCamRotator>();
             galaxyRot.NearCamera = _nearCam;
             galaxyRot.UseScaledSpace = false;
@@ -748,7 +779,7 @@ namespace Kerbcast
                 _farCam.fieldOfView = Hullcam.cameraFoV;
                 _farCam.targetTexture = _captureRt;
                 _farCam.allowHDR = true;
-                _farCam.allowMSAA = true;
+                _farCam.allowMSAA = allowMsaa;
                 _farCam.useOcclusionCulling = false;
                 /* Depth: Camera 01 inherits its depth from CopyFrom. Force it
                    between the scaled and near values so the composite is
@@ -769,22 +800,14 @@ namespace Kerbcast
                 Debug.LogWarning($"[Kerbcast] cam={FlightId} 'Camera 01' not found: far layer skipped");
             }
 
-            // TUFX (TexturesUnlimitedFX) post-processing. Reflection-only
-            // — silently no-ops when TUFX isn't installed. Applied to every
-            // layered camera (not just near) so the post stack matches what
-            // the player sees in-game across the whole composite. The
-            // near cam carries the heaviest tonemap+bloom load since it
-            // sees the highest-luminance content (engines, near-vessel
-            // atmosphere); the scaled cam handles the wide-DR atmospheric
-            // gradient that was the original "dark Kerbin / black hole
-            // horizon" complaint that triggered this work; the galaxy cam
-            // applies it to the skybox composite for consistency.
-            if (KerbcastSettings.EnableTUFX)
-            {
-                TUFXIntegration.ApplyToCamera(_nearCam);
-                TUFXIntegration.ApplyToCamera(_scaledCam);
-                TUFXIntegration.ApplyToCamera(_galaxyCam);
-            }
+            // Attach every available integration to each cloned layer. The host skips
+            // integrations that do not opt into a layer and no-ops the unavailable ones.
+            // TUFX's own EnableTUFX setting is honoured inside its IsAvailable probe path.
+            _integrationHost.ApplyToLayer(_nearCam, CameraLayers.Near);
+            _integrationHost.ApplyToLayer(_scaledCam, CameraLayers.Scaled);
+            _integrationHost.ApplyToLayer(_galaxyCam, CameraLayers.Galaxy);
+            if (_farCam != null)
+                _integrationHost.ApplyToLayer(_farCam, CameraLayers.Far);
 
             // Pitch transform — resolved here rather than above because it
             // doesn't affect camera parenting in the current design.
@@ -822,25 +845,6 @@ namespace Kerbcast
             _scaledCam.enabled = false;
             _galaxyCam.enabled = false;
 
-            // Debug log of per-camera cullingMask + source-camera
-            // cullingMask. Gated on settings.cfg DebugCameraLogging
-            // (default off). Hook for the cam-stream-FX investigation
-            // — we suspect KSP dynamically modifies Camera 00's mask
-            // after our one-shot CopyFrom and that's why atmospheric
-            // effects are missing from streams. Logging both sides
-            // lets the operator catch the divergence in KSP.log.
-            if (KerbcastSettings.DebugCameraLogging)
-            {
-                long srcNearMask = sourceNear != null ? sourceNear.cullingMask : 0;
-                long srcScaledMask = sourceScaled != null ? sourceScaled.cullingMask : 0;
-                long srcGalaxyMask = sourceGalaxy != null ? sourceGalaxy.cullingMask : 0;
-                Debug.Log(
-                    $"[Kerbcast-debug] cam={FlightId} cullingMasks " +
-                    $"near=src:0x{srcNearMask:X8}/ours:0x{_nearCam.cullingMask:X8} " +
-                    $"scaled=src:0x{srcScaledMask:X8}/ours:0x{_scaledCam.cullingMask:X8} " +
-                    $"galaxy=src:0x{srcGalaxyMask:X8}/ours:0x{_galaxyCam.cullingMask:X8}");
-            }
-
             // Build the pluggable atmospheric-FX host for the near camera. The
             // effective layer set folds the master toggle in (off → no effects,
             // a genuine no-op). Each effect owns its own rendering surface.
@@ -849,8 +853,17 @@ namespace Kerbcast
             _fxHost.OnVesselChanged(Hullcam?.vessel);
         }
 
-        // Master gate folded into the layer set: FX off ⇒ no layers ⇒ no effects.
-        private AtmoFxLayers EffectiveFxLayers() => _enableFx ? _fxLayers : AtmoFxLayers.None;
+        /* Master gate folded into the layer set: FX off => no layers => no effects.
+           Provider selection: when Firefly is installed and enabled, capture its
+           reentry plasma INSTEAD of kerbcast's own (running both double-plasmas), by
+           clearing the kerbcast-plasma bits and setting the Firefly bit. */
+        private AtmoFxLayers EffectiveFxLayers()
+        {
+            if (!_enableFx) return AtmoFxLayers.None;
+            if (KerbcastSettings.EnableFirefly && FireflyCaptureEffect.IsFireflyAvailable())
+                return (_fxLayers & ~AtmoFxLayers.All) | AtmoFxLayers.Firefly;
+            return _fxLayers;
+        }
 
         // Build this frame's FX inputs from the vessel's flight state. Effects
         // derive their own intensities from these.
@@ -888,6 +901,17 @@ namespace Kerbcast
             return new FxFrameState(v, _nearCam, vel, mach, q, Time.deltaTime, Time.time);
         }
 
+        // Per-frame inputs for visual-mod integrations that need live flight state.
+        // Mirrors BuildFxFrameState's quantities so FX and integrations agree.
+        private IntegrationFrameState BuildIntegrationFrameState(CameraLayers layer)
+        {
+            var v = Hullcam != null ? Hullcam.vessel : null;
+            float mach = v != null ? (float)v.mach : 0f;
+            float q = v != null ? (float)v.dynamicPressurekPa : 0f;
+            double alt = v != null ? v.altitude : 0d;
+            return new IntegrationFrameState(v, layer, Time.deltaTime, mach, q, alt);
+        }
+
         // Cached shader ID for FXCamera's published wind direction global.
         private static readonly int _LightDirection0Id = Shader.PropertyToID("_LightDirection0");
 
@@ -907,25 +931,13 @@ namespace Kerbcast
         /// KerbcastCore on part destruction / vessel modification so stale part
         /// renderers don't linger in an effect's CommandBuffer.
         /// </summary>
-        public void MarkFxDirty() => _fxHost?.OnVesselChanged(Hullcam != null ? Hullcam.vessel : null);
-
-        // Periodic cullingMask diff between our cams and their KSP
-        // source cameras. Catches the case where KSP mutates the
-        // source cam's mask after we CopyFrom'd — our cams would
-        // miss whatever the new layer is. Gated, called once per
-        // minute by KerbcastCore so the log stays readable.
-        public void LogCullingMaskIfDiverged()
+        public void MarkFxDirty()
         {
-            if (!KerbcastSettings.DebugCameraLogging) return;
-            var srcNear = FindKspCamera("Camera 00");
-            if (srcNear == null || _nearCam == null) return;
-            if (srcNear.cullingMask != _nearCam.cullingMask)
-            {
-                Debug.Log(
-                    $"[Kerbcast-debug] cam={FlightId} near cullingMask DIVERGED — " +
-                    $"src:0x{srcNear.cullingMask:X8} ours:0x{_nearCam.cullingMask:X8} " +
-                    $"missing-from-ours:0x{srcNear.cullingMask & ~_nearCam.cullingMask:X8}");
-            }
+            /* Re-reconcile the layer set first: Firefly may have loaded since the
+               last setup, flipping the provider selection. SetEnabledLayers no-ops
+               when the set is unchanged. */
+            _fxHost?.SetEnabledLayers(EffectiveFxLayers());
+            _fxHost?.OnVesselChanged(Hullcam != null ? Hullcam.vessel : null);
         }
 
         private static Camera FindKspCamera(string name)
@@ -976,23 +988,26 @@ namespace Kerbcast
 
         /// <summary>
         /// Cascade table: (resolution multiplier, layers to drop). Lower
-        /// levels are gentler on perception. Resolution reduction wins
-        /// over layer dropping because it preserves scene completeness
-        /// — a blurrier full image is more useful than a sharp scene
-        /// with missing planet terrain. Scaled goes last because it's
-        /// the operator's situational-awareness layer.
+        /// levels are gentler on perception. Resolution reduction wins over
+        /// layer dropping because it preserves scene completeness: a blurrier
+        /// full image is more useful than a sharp scene with a missing layer.
+        /// All layers are kept until the emergency level; only resolution drops
+        /// before then. Galaxy in particular is cheap (one skybox cube, no PQS
+        /// or atmosphere) and is the operator's star-field / orientation
+        /// reference, so shedding it early (as an earlier table did at level 3)
+        /// blacked out the background under load for almost no headroom.
         /// </summary>
         private static readonly (float ResScale, CameraLayers Drop)[] ShedTable =
         {
             (1.00f, CameraLayers.None),                                 // 0: full
             (0.75f, CameraLayers.None),                                 // 1: gentle res drop
             (0.50f, CameraLayers.None),                                 // 2: half res
-            (0.50f, CameraLayers.Galaxy),                               // 3: + drop galaxy
-            (0.25f, CameraLayers.Galaxy),                               // 4: quarter res
-            /* Far is the heaviest layer (full mid-range terrain band) but
-               dropping it reintroduces the black band between the scaled and
-               near handoff; it stays until the absolute last resort. Tier
-               placement is provisional pending Deck perf baseline (§8.0). */
+            (0.35f, CameraLayers.None),                                 // 3: deeper res drop, keep all layers
+            (0.25f, CameraLayers.None),                                 // 4: quarter res, keep all layers
+            /* Emergency last resort only: dropping Far reintroduces the black
+               band between the scaled and near handoff, and dropping Galaxy
+               blacks out the star-field. Tier placement provisional pending the
+               Deck perf baseline (section 8.0). */
             (0.25f, CameraLayers.Galaxy | CameraLayers.Scaled | CameraLayers.Far),  // 5: emergency (last resort; reintroduces far black band)
         };
 
@@ -1480,22 +1495,26 @@ namespace Kerbcast
 
             try
             {
-                // Manual render sequence: galaxy → scaled → near.
+                // Manual render sequence: galaxy → scaled → far → near.
                 // Cameras are permanently disabled (enabled=false) so
                 // Unity's auto-render never fires them; we drive each
                 // layer explicitly here and gate on the current layer mask
                 // (mirroring the old enabled-flag gating).
                 //
-                // The Scaled layer is bracketed by strip/restore of the
-                // "Composite Shadows" CommandBuffer on scaledSunLight —
-                // defensive measure for Scatterer-installed configs where
-                // KSP's deferred renderer attaches such a buffer. No-op
-                // on configs without that buffer attached (our case at
-                // dev time, but anyone running Scatterer would need it).
-                // try/finally ensures restore even if Render() throws.
+                // Strip Scatterer's screen-space shadow CommandBuffers off the
+                // sun light(s) for the WHOLE composite, restoring after the near
+                // render (and in the outer catch, as a safety net). Those buffers
+                // are attached to the sun light for the session and would
+                // otherwise fire during each clone layer render without their
+                // per-camera fade compensator, painting fixed-position, depth-
+                // occluded dark bands at planet depth. No-op when Scatterer (or
+                // another buffer-attaching mod) is absent.
+                ScaledSunLightHelper.StripCompositeShadowsBuffer();
+
                 if (_galaxyCam != null && (_layers & CameraLayers.Galaxy) != 0)
                 {
                     long t0 = _telemetry ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
+                    _integrationHost?.PerFrame(_galaxyCam, CameraLayers.Galaxy, BuildIntegrationFrameState(CameraLayers.Galaxy));
                     _galaxyCam.Render();
                     if (_telemetry)
                         _phaseTimings.Record(RenderPhase.Galaxy,
@@ -1508,7 +1527,6 @@ namespace Kerbcast
                 long scaledStart = _telemetry ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
                 if (_scaledCam != null && (_layers & CameraLayers.Scaled) != 0)
                 {
-                    ScaledSunLightHelper.StripCompositeShadowsBuffer();
                     // ScaledSpaceFader disables scaled-body renderers globally
                     // based on the main camera's angular size. Our camera renders
                     // from a different position, so we manage visibility ourselves:
@@ -1556,6 +1574,7 @@ namespace Kerbcast
                                 $"ambient={RenderSettings.ambientLight} ambientMode={RenderSettings.ambientMode} " +
                                 $"scaledSunLight={(ssl == null ? "null" : $"enabled={ssl.enabled} intensity={ssl.intensity} color={ssl.color} cullingMask={ssl.cullingMask}")}");
                         }
+                        _integrationHost?.PerFrame(_scaledCam, CameraLayers.Scaled, BuildIntegrationFrameState(CameraLayers.Scaled));
                         _scaledCam.Render();
                         if (_firstRender)
                         {
@@ -1591,7 +1610,6 @@ namespace Kerbcast
                             state.Renderer.SetPropertyBlock(_faderMpb);
                             state.Renderer.enabled = state.WasEnabled;
                         }
-                        ScaledSunLightHelper.RestoreCompositeShadowsBuffer();
                     }
                 }
                 if (_telemetry && _scaledCam != null && (_layers & CameraLayers.Scaled) != 0)
@@ -1601,6 +1619,7 @@ namespace Kerbcast
                 if (_farCam != null && (_layers & CameraLayers.Far) != 0)
                 {
                     long farStart = _telemetry ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
+                    _integrationHost?.PerFrame(_farCam, CameraLayers.Far, BuildIntegrationFrameState(CameraLayers.Far));
                     _farCam.Render();
                     if (_telemetry)
                         _phaseTimings.Record(RenderPhase.Far,
@@ -1615,12 +1634,19 @@ namespace Kerbcast
                     // Time the FX build + render + near render together (the
                     // task's "near Render() (+ FX)" phase).
                     long t0 = _telemetry ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
+                    _integrationHost?.PerFrame(_nearCam, CameraLayers.Near, BuildIntegrationFrameState(CameraLayers.Near));
                     _fxHost?.Render(BuildFxFrameState());
                     _nearCam.Render();
                     if (_telemetry)
                         _phaseTimings.Record(RenderPhase.Near,
                             (System.Diagnostics.Stopwatch.GetTimestamp() - t0) * _msPerTick);
                 }
+
+                // Composite done: re-attach Scatterer's sun-light shadow buffers
+                // so the main flight render this frame gets correct shadows. The
+                // outer catch also restores, so a throw mid-composite cannot leave
+                // them stripped.
+                ScaledSunLightHelper.RestoreCompositeShadowsBuffer();
 
                 // Blit the depth-bundled capture RT into the clean readback RT.
                 // When a HullcamVDS filter is active (NightVision etc), it
@@ -1721,6 +1747,11 @@ namespace Kerbcast
             catch (Exception ex)
             {
                 _readbackInFlight = false;
+                // Safety net: if a layer Render() threw mid-composite, the normal
+                // restore above was skipped. Re-attach here so the main flight
+                // render never loses Scatterer's sun-light shadow buffers. No-op
+                // if the normal path already restored (the saved list is cleared).
+                ScaledSunLightHelper.RestoreCompositeShadowsBuffer();
                 LogRateLimited($"capture pipeline threw: {ex.GetType().Name}: {ex.Message}");
             }
         }
@@ -1847,6 +1878,20 @@ namespace Kerbcast
             // destroying the camera they're attached to.
             _fxHost?.Dispose();
             _fxHost = null;
+            // Detach visual-mod integrations before destroying the cameras: this
+            // restores any third-party global/singleton state and removes the
+            // components/buffers each integration added, mirroring the per-layer
+            // ApplyToLayer calls in SetCameras. Destroying the GameObjects also
+            // fires each swap component's OnDisable, but calling RemoveFromLayer
+            // makes the apply/remove contract explicit rather than implicit.
+            if (_integrationHost != null)
+            {
+                if (_nearCam != null) _integrationHost.RemoveFromLayer(_nearCam, CameraLayers.Near);
+                if (_scaledCam != null) _integrationHost.RemoveFromLayer(_scaledCam, CameraLayers.Scaled);
+                if (_galaxyCam != null) _integrationHost.RemoveFromLayer(_galaxyCam, CameraLayers.Galaxy);
+                if (_farCam != null) _integrationHost.RemoveFromLayer(_farCam, CameraLayers.Far);
+                _integrationHost = null;
+            }
             if (_nearCam != null) UnityEngine.Object.Destroy(_nearCam.gameObject);
             if (_scaledCam != null) UnityEngine.Object.Destroy(_scaledCam.gameObject);
             if (_galaxyCam != null) UnityEngine.Object.Destroy(_galaxyCam.gameObject);
