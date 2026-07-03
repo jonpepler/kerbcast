@@ -97,6 +97,16 @@ across scene changes, the space centre, and reverts. What changes is the
 the signal-loss static look and disappear from the picker. Pick a camera on the
 current vessel, or reopen the stream once the new vessel's cameras register.
 
+## Visual mods look slightly different on the feeds
+
+kerbcast renders each feed itself, so most visual mods (Scatterer, EVE, TUFX,
+Deferred, Firefly) come through as you'd expect. One known difference: with
+Parallax installed, ground scatters (rocks, grass, trees) on a feed use the
+same visibility set as your own flight view, so when you look well away from
+where a camera is aimed, some scatters near that feed's edges can thin out.
+Scatters directly in shot render normally. This keeps the feeds smooth and
+leaves your own game view untouched.
+
 ## Still stuck?
 
 Open an issue at <https://github.com/jonpepler/kerbcast/issues> with the

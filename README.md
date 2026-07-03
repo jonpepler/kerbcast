@@ -10,7 +10,8 @@ A from-scratch, high-performance oriented successor to OCISLY for streaming Kerb
 
 - Streams HullcamVDS camera sources to a browser via the bundled kerbcast web UI or through [@jonpepler/kerbcast](https://github.com/jonpepler/kerbcast/pkgs/npm/kerbcast), a TypeScript SDK
 - Supports performance tweak options to keep fps reasonable through degrading resolution, framerate, and shedding render layers. By default, performance should feel vastly improved over the original OCISLY mod
-- Introduces optional shaders for wind and re-entry FX (sorry, no Firefly support yet)
+- Introduces optional shaders for wind and re-entry FX
+- Supports popular visual mods so their effects show on the camera feeds: Scatterer, EVE, TUFX, Deferred, Firefly, and Parallax
 - HullcamVDS implementation enhancements:
   - Honours each camera's `cameraMode` so B&W / CRT / night-vision variants look like they do in the in-game Hullcam GUI
   - Introduces planned but never fully implemented panning options for turret cam and launch cam
