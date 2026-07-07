@@ -358,7 +358,10 @@ const CameraFeedInner = forwardRef<CameraFeedHandle, CameraFeedProps>(
     // Resolution order:
     //   1. Explicit pick, if still present in the list (destroyed or not).
     //   2. Auto: latch the currently-displayed camera. Keep showing it even if
-    //      destroyed; the latch releases only if that flightId leaves the list.
+    //      destroyed, but only while no other live camera exists (destroyed
+    //      tombstones never leave the list on their own, so a destroyed latch
+    //      would otherwise never release). Once a live camera is available,
+    //      release the latch and auto-pick it.
     //   3. Fresh auto-pick: prefer the first live camera; fall back to first
     //      overall only when every camera is destroyed.
     // -------------------------------------------------------------------------
@@ -372,8 +375,12 @@ const CameraFeedInner = forwardRef<CameraFeedHandle, CameraFeedProps>(
       flightId = requestedFlightId;
     } else {
       const latched = displayedRef.current;
+      const latchedCamera =
+        latched !== null ? cameras.find((c) => c.flightId === latched) : undefined;
+      const anyLive = cameras.some((c) => !isCameraDestroyed(c));
       const latchedPresent =
-        latched !== null && cameras.some((c) => c.flightId === latched);
+        latchedCamera !== undefined &&
+        (!isCameraDestroyed(latchedCamera) || !anyLive);
       flightId = latchedPresent
         ? latched
         : (cameras.find((c) => !isCameraDestroyed(c))?.flightId ??

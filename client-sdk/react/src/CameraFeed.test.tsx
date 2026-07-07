@@ -552,6 +552,32 @@ describe("CameraFeed - SIGNAL LOST overlay", () => {
     expect(overlay.textContent).toMatch(/SIGNAL LOST/i);
   });
 
+  it("auto-latch releases a destroyed camera once a live camera exists (vessel switch)", async () => {
+    const { client, sidecar } = await buildConnectedSource([
+      makeCamera({ flightId: 42, cameraName: "Old Vessel Cam" }),
+    ]);
+
+    renderFeed(client, { flightId: null });
+
+    expect(screen.getByRole("heading", { name: "Old Vessel Cam" })).toBeTruthy();
+
+    await act(async () => {
+      sidecar.destroyCamera(42);
+    });
+
+    expect(screen.getByRole("status", { name: /signal lost/i })).toBeTruthy();
+
+    await act(async () => {
+      sidecar.setCameras([
+        toInit(makeCamera({ flightId: 42, cameraName: "Old Vessel Cam", lifecycle: "destroyed" })),
+        toInit(makeCamera({ flightId: 43, cameraName: "New Vessel Cam" })),
+      ]);
+    });
+
+    expect(screen.getByRole("heading", { name: "New Vessel Cam" })).toBeTruthy();
+    expect(screen.queryByRole("status", { name: /signal lost/i })).toBeNull();
+  });
+
   it("renders SIGNAL LOST overlay from initial snapshot when camera starts destroyed", async () => {
     const { client } = await buildConnectedSource([
       makeCamera({
