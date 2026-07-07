@@ -29,22 +29,25 @@ use crate::shared_mem::{ControlBlock, MmapFrameRing, MmapRingConfig};
 
 /// Filesystem identity for a `.ring` file: distinguishes "same path, same
 /// underlying file" from "same path, file was unlinked and a new one
-/// created in its place" (mtime alone can't, on a same-second delete+recreate).
+/// created in its place". Inode is exact on unix; `MetadataExt::file_index`
+/// would give the same on Windows but is still unstable
+/// (`windows_by_handle`, rust-lang/rust#63010), so non-unix falls back to
+/// the mtime in nanoseconds — coarser (a same-tick delete+recreate could in
+/// theory collide) but still a large improvement over never detecting the
+/// swap at all.
 #[cfg(unix)]
 fn ring_file_identity(meta: &std::fs::Metadata) -> u64 {
     use std::os::unix::fs::MetadataExt;
     meta.ino()
 }
 
-#[cfg(windows)]
+#[cfg(not(unix))]
 fn ring_file_identity(meta: &std::fs::Metadata) -> u64 {
-    use std::os::windows::fs::MetadataExt;
-    meta.file_index().unwrap_or(0)
-}
-
-#[cfg(not(any(unix, windows)))]
-fn ring_file_identity(_meta: &std::fs::Metadata) -> u64 {
-    0
+    meta.modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0)
 }
 
 /// On-disk shape of `global.status.json` — the plugin → sidecar push
