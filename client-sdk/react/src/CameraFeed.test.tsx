@@ -36,7 +36,11 @@ import {
 import { createRef } from "react";
 import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { CameraFeed, type CameraFeedHandle } from "./CameraFeed";
+import {
+  CameraFeed,
+  type CameraFeedHandle,
+  type CameraStreamHook,
+} from "./CameraFeed";
 import { KerbcastProvider } from "./context";
 
 // ---------------------------------------------------------------------------
@@ -1530,6 +1534,63 @@ describe("CameraFeed - pan reticle", () => {
 // ---------------------------------------------------------------------------
 // client prop override
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// useStream injection seam
+// ---------------------------------------------------------------------------
+
+describe("CameraFeed - useStream injection seam", () => {
+  const THREE_CAMERAS = [
+    makeCamera({ flightId: 42, cameraName: "Starboard Cam", vesselName: "Kerbal X" }),
+    makeCamera({ flightId: 43, cameraName: "Nose Cam", vesselName: "Kerbal X" }),
+    makeCamera({ flightId: 44, cameraName: "Tail Cam", vesselName: "Kerbal X" }),
+  ];
+
+  it("without useStream, the built-in stream binds to the video (regression)", async () => {
+    const { client, sidecar } = await buildConnectedSource();
+
+    renderFeed(client, { flightId: 42 });
+
+    // Deliver a track so the built-in useKerbcastStream yields a MediaStream.
+    const mid = sidecar.slotMidFor(42);
+    expect(mid).toBeDefined();
+    await act(async () => {
+      sidecar.deliverTrack(mid as string, {} as MediaStreamTrack);
+    });
+
+    const video = document.querySelector("video");
+    expect(video?.srcObject).toBe(client.camera(42).mediaStream);
+  });
+
+  it("routes the video through a custom useStream, called with the RESOLVED flightId", async () => {
+    const { client } = await buildConnectedSource(THREE_CAMERAS);
+
+    const sentinel = {} as MediaStream;
+    const seen: (number | null)[] = [];
+    // Stable identity (declared once per test render tree), so React treats it
+    // as the same hook every render — the rules-of-hooks contract the prop docs.
+    const useCustom: CameraStreamHook = (flightId) => {
+      seen.push(flightId);
+      return flightId === 42 ? sentinel : null;
+    };
+
+    render(
+      <KerbcastProvider client={client}>
+        {/* flightId=null: auto-latch must resolve to the first live camera (42)
+            before the hook is called, proving it sees the resolved id. */}
+        <CameraFeed flightId={null} useStream={useCustom} />
+      </KerbcastProvider>,
+    );
+
+    expect(screen.getByRole("heading", { name: "Starboard Cam" })).toBeTruthy();
+    // Called with the resolved 42, never the requested null.
+    expect(seen).toContain(42);
+    expect(seen).not.toContain(null);
+    // The stream the custom hook returned is what got bound.
+    const video = document.querySelector("video");
+    expect(video?.srcObject).toBe(sentinel);
+  });
+});
 
 describe("CameraFeed - client prop override", () => {
   it("accepts a client prop instead of a provider", async () => {

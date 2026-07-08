@@ -29,4 +29,9 @@ export type { CameraLifecycle } from "./lifecycle";
 
 // CameraFeed component
 export { CameraFeed } from "./CameraFeed";
-export type { CameraFeedHandle, CameraFeedProps, FeedAction } from "./CameraFeed";
+export type {
+  CameraFeedHandle,
+  CameraFeedProps,
+  CameraStreamHook,
+  FeedAction,
+} from "./CameraFeed";

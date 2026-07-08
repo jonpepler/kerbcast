@@ -227,6 +227,16 @@ export interface FeedAction {
   onClick: () => void;
 }
 
+/**
+ * A hook that yields the live `MediaStream` for a resolved flightId. Must be
+ * a stable reference (the same function identity every render) and called
+ * unconditionally, per the rules of hooks. Default: the built-in
+ * `useKerbcastStream`. Consumers wrap this to inject delayed playout,
+ * alternate transports, etc.; the feed stays unaware of what the wrapper
+ * does, and keeps binding whatever stream comes back to its `<video>`.
+ */
+export type CameraStreamHook = (flightId: number | null) => MediaStream | null;
+
 export interface CameraFeedProps {
   /** Override the context client for this feed only. */
   client?: KerbcastClient;
@@ -299,6 +309,14 @@ export interface CameraFeedProps {
    * button so it sits in the corner.
    */
   trailingActions?: FeedAction[];
+  /**
+   * Override how the displayed video stream is sourced for the resolved
+   * flightId. Omit (the default) to use the built-in `useKerbcastStream` —
+   * unchanged behaviour. When supplied it must be a stable reference passed
+   * consistently across renders (it is called as a hook); see
+   * {@link CameraStreamHook}.
+   */
+  useStream?: CameraStreamHook;
 }
 
 export interface CameraFeedHandle {
@@ -328,6 +346,7 @@ const CameraFeedInner = forwardRef<CameraFeedHandle, CameraFeedProps>(
       enableQualityControl = false,
       actions,
       trailingActions,
+      useStream,
     },
     ref,
   ) {
@@ -408,7 +427,11 @@ const CameraFeedInner = forwardRef<CameraFeedHandle, CameraFeedProps>(
       onDisplayedRef.current?.(flightId);
     }, [flightId]);
 
-    const stream = useKerbcastStream(flightId);
+    // `flightId` here is the RESOLVED id (auto-latch / fallback applied), so a
+    // consumer-injected hook never has to duplicate that resolution. The
+    // built-in hook is the default. See CameraStreamHook's rules-of-hooks note.
+    const resolveStream = useStream ?? useKerbcastStream;
+    const stream = resolveStream(flightId);
     const videoRef = useRef<HTMLVideoElement>(null);
     // The feed frame; fullscreen targets this and ResizeObserver measures it.
     const wrapRef = useRef<HTMLDivElement>(null);
