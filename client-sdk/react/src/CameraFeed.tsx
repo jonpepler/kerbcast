@@ -234,6 +234,12 @@ export interface FeedAction {
  * `useKerbcastStream`. Consumers wrap this to inject delayed playout,
  * alternate transports, etc.; the feed stays unaware of what the wrapper
  * does, and keeps binding whatever stream comes back to its `<video>`.
+ *
+ * A replacement takes over the camera subscription slot: the built-in
+ * `useKerbcastStream` (which acquires/releases the slot) does not run when
+ * this is supplied, so a replacement must either compose `useKerbcastStream`
+ * or acquire the slot itself, or the sidecar is never subscribed and the
+ * feed stays black.
  */
 export type CameraStreamHook = (flightId: number | null) => MediaStream | null;
 
