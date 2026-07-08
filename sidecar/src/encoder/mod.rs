@@ -18,7 +18,9 @@ mod nvenc;
 mod software;
 mod videotoolbox;
 
-pub use escalation::{SessionHealth, SessionVerdict, SILENT_SESSION_FRAME_LIMIT};
+pub use escalation::{
+    record_init_failure, SessionHealth, SessionVerdict, SILENT_SESSION_FRAME_LIMIT,
+};
 pub use libva::Libva;
 pub use mediafoundation::MediaFoundation;
 pub use nvenc::Nvenc;

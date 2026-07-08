@@ -24,8 +24,8 @@ use webrtc::media::Sample;
 
 use kerbcast_sidecar::cameras::{CameraRegistry, CameraState};
 use kerbcast_sidecar::encoder::{
-    resolve_bitrate_bps, select_backend, EncodeConfig, EncoderBackend, EncoderChoice, RawFrame,
-    SessionVerdict, Software, SILENT_SESSION_FRAME_LIMIT,
+    record_init_failure, resolve_bitrate_bps, select_backend, EncodeConfig, EncoderBackend,
+    EncoderChoice, RawFrame, SessionVerdict, Software, SILENT_SESSION_FRAME_LIMIT,
 };
 use kerbcast_sidecar::heartbeat::{HeartbeatWatch, HEARTBEAT_FILE};
 use kerbcast_sidecar::protocol::{
@@ -717,8 +717,25 @@ async fn encode_and_fan_out(
             // Hardware backend failed (e.g. VAAPI probe passed but
             // avcodec_open2 rejected the resolution or profile). Fall back
             // to software immediately rather than retrying the same failing
-            // backend every frame.
-            warn!(flight_id = cam.flight_id, error = %e, backend = backend.name(), "encoder init failed; falling back to software");
+            // backend every frame. Also record the failure against this
+            // camera's session health: some drivers (e.g. Media Foundation
+            // on certain D3D devices) fail hardware init on every single
+            // resolution reinit, and without this the camera would retry
+            // the doomed hardware path on every adaptive-quality resize
+            // for the rest of the session instead of pinning to software
+            // after a couple of strikes.
+            let was_hardware = backend.is_hardware();
+            let failed_backend_name = backend.name();
+            warn!(flight_id = cam.flight_id, error = %e, backend = failed_backend_name, "encoder init failed; falling back to software");
+            let verdict =
+                record_init_failure(&mut cam.session_health.lock().unwrap(), was_hardware);
+            if verdict == Some(SessionVerdict::EscalateToSoftware) {
+                warn_escalated(
+                    cam,
+                    failed_backend_name,
+                    "hardware init failed on consecutive reinits",
+                );
+            }
             backend = Box::new(Software::new());
             if let Err(e2) = backend.init(cfg) {
                 warn!(flight_id = cam.flight_id, error = %e2, "software fallback init failed");
@@ -805,7 +822,16 @@ async fn encode_and_fan_out(
         }
         return;
     }
-    cam.session_health.lock().unwrap().note_output();
+    // Only a hardware session producing real output clears strikes. A
+    // software encode succeeding here (the fallback path after a hardware
+    // init failure) says nothing about hardware health, so it must not
+    // wipe out the strike record_init_failure just logged above — otherwise
+    // a camera whose hardware init fails on every resolution reinit would
+    // strike, immediately get cleared by the successful fallback encode,
+    // and never reach SESSION_STRIKE_LIMIT.
+    if backend_is_hardware {
+        cam.session_health.lock().unwrap().note_output();
+    }
     drop(encoder_guard);
 
     // Concatenate NALs into the Annex-B bytestream webrtc-rs expects.

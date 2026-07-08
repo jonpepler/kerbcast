@@ -109,6 +109,20 @@ impl SessionHealth {
     }
 }
 
+/// Record a failed encoder init against a camera's session health, wiring
+/// the reactive escalation machine to init failures (some drivers, e.g.
+/// Media Foundation on certain D3D devices, fail hardware init on every
+/// resolution reinit rather than just going silent post-init). Only
+/// hardware backends strike — software's own init failures have nowhere
+/// softer to fall back to. Returns the verdict, or `None` if the failed
+/// backend wasn't hardware.
+pub fn record_init_failure(
+    health: &mut SessionHealth,
+    was_hardware: bool,
+) -> Option<SessionVerdict> {
+    was_hardware.then(|| health.note_session_error())
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::{EncodeConfig, EncodeError, Nal, RawFrame};
@@ -279,6 +293,63 @@ mod tests {
         assert!(health.forced_software());
         // Further failures on the software path just drop the session.
         assert_eq!(health.note_session_error(), SessionVerdict::DropSession);
+    }
+
+    #[test]
+    fn init_failure_on_hardware_backend_strikes_and_escalates() {
+        let mut health = SessionHealth::new();
+        assert_eq!(
+            record_init_failure(&mut health, true),
+            Some(SessionVerdict::DropSession)
+        );
+        assert!(!health.forced_software());
+        assert_eq!(
+            record_init_failure(&mut health, true),
+            Some(SessionVerdict::EscalateToSoftware)
+        );
+        assert!(health.forced_software());
+    }
+
+    #[test]
+    fn init_failure_on_software_backend_does_not_strike() {
+        let mut health = SessionHealth::new();
+        assert_eq!(record_init_failure(&mut health, false), None);
+        assert!(!health.forced_software());
+    }
+
+    /// Reproduces the exact real call-site sequence in `main.rs`'s
+    /// `encode_and_fan_out`: a hardware init failure strikes, then the
+    /// software fallback it drops into succeeds and produces output. The
+    /// call site must gate its `note_output()` call on `backend_is_hardware`
+    /// (it does not call it here, mirroring that gate) — a software
+    /// session succeeding says nothing about hardware health and must not
+    /// erase the strike `record_init_failure` just recorded. Before that
+    /// gate existed, an unconditional `note_output()` after every
+    /// successful encode (hardware or not) reset `session_strikes` on
+    /// every resolution reinit, so a camera whose hardware init failed on
+    /// every single reinit never reached `SESSION_STRIKE_LIMIT` and kept
+    /// retrying the doomed hardware backend for the rest of the session.
+    #[test]
+    fn hardware_init_failures_survive_an_intervening_software_fallback_success() {
+        let mut health = SessionHealth::new();
+
+        // Reinit #1: hardware init fails (strike 1), software fallback
+        // succeeds — deliberately NOT calling note_output() here, since
+        // the fallback backend is software, not hardware.
+        assert_eq!(
+            record_init_failure(&mut health, true),
+            Some(SessionVerdict::DropSession)
+        );
+        assert!(!health.forced_software());
+
+        // Reinit #2: hardware init fails again. If the strike from #1
+        // had been wiped by an intervening note_output(), this would only
+        // be strike 1 again (DropSession) instead of strike 2 (escalate).
+        assert_eq!(
+            record_init_failure(&mut health, true),
+            Some(SessionVerdict::EscalateToSoftware)
+        );
+        assert!(health.forced_software());
     }
 
     #[test]
