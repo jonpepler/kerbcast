@@ -18,6 +18,7 @@ export type { KerbcastProviderProps, KerbcastSubscriptions } from "./context";
 // Hooks
 export { useKerbcastCameras } from "./hooks/useKerbcastCameras";
 export { useKerbcastStream } from "./hooks/useKerbcastStream";
+export { useKerbcastClock } from "./hooks/useKerbcastClock";
 
 // Camera label utilities
 export { buildCameraLabeler } from "./cameraLabels";

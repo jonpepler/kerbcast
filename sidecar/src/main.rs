@@ -30,7 +30,7 @@ use kerbcast_sidecar::encoder::{
 use kerbcast_sidecar::heartbeat::{HeartbeatWatch, HEARTBEAT_FILE};
 use kerbcast_sidecar::protocol::{
     AdaptiveShedPayload, CameraLifecycle, CameraState as ProtocolCameraState,
-    CameraStateChangedPayload, ServerMessage, SettingsStatePayload,
+    CameraStateChangedPayload, ServerMessage,
 };
 use kerbcast_sidecar::shared_mem::MmapRingConfig;
 use kerbcast_sidecar::signalling::{router, AppState};
@@ -318,7 +318,7 @@ async fn consume_loop(
             let delta = registry.poll_status().await;
             if delta.adaptive_shed.is_some()
                 || !delta.changed_cameras.is_empty()
-                || delta.throttle_main_screen.is_some()
+                || delta.settings.is_some()
             {
                 broadcast_status_delta(&peers, delta).await;
             }
@@ -480,10 +480,8 @@ async fn broadcast_status_delta(
         broadcast(&snapshot, &msg).await;
     }
 
-    if let Some(throttle_main_screen) = delta.throttle_main_screen {
-        let msg = ServerMessage::SettingsState(SettingsStatePayload {
-            throttle_main_screen,
-        });
+    if let Some(settings) = delta.settings {
+        let msg = ServerMessage::SettingsState(settings);
         broadcast(&snapshot, &msg).await;
     }
 }

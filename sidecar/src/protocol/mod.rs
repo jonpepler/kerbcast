@@ -383,6 +383,21 @@ pub struct SettingsStatePayload {
     /// reported by the plugin's `global.status.json`. Reflects what the
     /// plugin has *applied*, not just what was last requested.
     pub throttle_main_screen: bool,
+    /// KSP mission time (`Planetarium.GetUniversalTime()`, seconds) at
+    /// which the video currently being produced was captured. `None` =
+    /// no clock yet (old plugin/sidecar, or first status not seen); a
+    /// consumer treats that as "unknown" and keeps a live passthrough.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capture_ut: Option<f64>,
+    /// Monotonic counter bumped only on a non-monotonic UT jump (revert,
+    /// quickload, scene reload). Consumers resynchronise on any change;
+    /// the absolute value is meaningless.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capture_epoch: Option<u32>,
+    /// Current KSP time-warp multiplier, so a consumer can interpolate
+    /// `capture_ut` between ~1Hz samples. `None` => treat as 1.0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub time_warp_rate: Option<f64>,
 }
 
 /// Messages sent FROM the client TO the sidecar.
@@ -887,6 +902,9 @@ mod tests {
     fn settings_state_roundtrips() {
         let msg = ServerMessage::SettingsState(SettingsStatePayload {
             throttle_main_screen: false,
+            capture_ut: None,
+            capture_epoch: None,
+            time_warp_rate: None,
         });
         let s = serde_json::to_string(&msg).unwrap();
         assert!(s.contains("\"type\":\"settings-state\""));
@@ -894,6 +912,59 @@ mod tests {
         let back: ServerMessage = serde_json::from_str(&s).unwrap();
         match back {
             ServerMessage::SettingsState(p) => assert!(!p.throttle_main_screen),
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn settings_state_omits_absent_capture_fields() {
+        /* No clock present => the three optional fields never hit the wire. */
+        let msg = ServerMessage::SettingsState(SettingsStatePayload {
+            throttle_main_screen: true,
+            capture_ut: None,
+            capture_epoch: None,
+            time_warp_rate: None,
+        });
+        let s = serde_json::to_string(&msg).unwrap();
+        assert!(!s.contains("captureUt"));
+        assert!(!s.contains("captureEpoch"));
+        assert!(!s.contains("timeWarpRate"));
+    }
+
+    #[test]
+    fn settings_state_without_capture_fields_deserializes_to_none() {
+        /* Old-sidecar shape: only throttleMainScreen present. */
+        let json = r#"{"type":"settings-state","content":{"throttleMainScreen":false}}"#;
+        let back: ServerMessage = serde_json::from_str(json).unwrap();
+        match back {
+            ServerMessage::SettingsState(p) => {
+                assert_eq!(p.capture_ut, None);
+                assert_eq!(p.capture_epoch, None);
+                assert_eq!(p.time_warp_rate, None);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn settings_state_capture_fields_roundtrip() {
+        let msg = ServerMessage::SettingsState(SettingsStatePayload {
+            throttle_main_screen: false,
+            capture_ut: Some(12345.5),
+            capture_epoch: Some(7),
+            time_warp_rate: Some(4.0),
+        });
+        let s = serde_json::to_string(&msg).unwrap();
+        assert!(s.contains("\"captureUt\":12345.5"));
+        assert!(s.contains("\"captureEpoch\":7"));
+        assert!(s.contains("\"timeWarpRate\":4.0"));
+        let back: ServerMessage = serde_json::from_str(&s).unwrap();
+        match back {
+            ServerMessage::SettingsState(p) => {
+                assert_eq!(p.capture_ut, Some(12345.5));
+                assert_eq!(p.capture_epoch, Some(7));
+                assert_eq!(p.time_warp_rate, Some(4.0));
+            }
             _ => panic!("wrong variant"),
         }
     }

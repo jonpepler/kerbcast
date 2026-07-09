@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Standalone unit test for CaptureEpoch.cs, the Unity-free monotonic
+    counter behind global.status.json's captureEpoch (bumped on a mission-
+    time discontinuity). Compiles ONLY the helper (no KSP/Unity assemblies).
+    Run: `dotnet run`. Mirrors the SettingsLayer.Tests pattern.
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="../Kerbcast/CaptureEpoch.cs" />
+  </ItemGroup>
+
+</Project>

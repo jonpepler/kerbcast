@@ -737,6 +737,16 @@ export class KerbcastClient extends TypedEmitter<KerbcastClientEvents> {
   private _encoderBackend: string | null = null;
   /** Last-received throttle state from `settings-state`. False until the first push. */
   private _throttleMainScreen = false;
+  /**
+   * Mission-time capture clock from `settings-state`. `_captureUt` is null
+   * until the first clock arrives (and against an old sidecar that never
+   * sends one), so consumers treat it as "no clock". `_captureEpoch` bumps
+   * on discontinuities (revert / quickload / scene reload); only the change
+   * is meaningful. `_warpRate` defaults to 1 when the field is absent.
+   */
+  private _captureUt: number | null = null;
+  private _captureEpoch = 0;
+  private _warpRate = 1;
 
   constructor(cfg: KerbcastClientConfig, transport?: KerbcastTransport) {
     super();
@@ -771,6 +781,22 @@ export class KerbcastClient extends TypedEmitter<KerbcastClientEvents> {
    */
   get throttleMainScreen(): boolean {
     return this._throttleMainScreen;
+  }
+
+  /**
+   * Mission-time capture clock, from the sidecar's ~1Hz `settings-state`.
+   * `captureUt` is the KSP universal time (seconds) the current video was
+   * captured at, or null when no clock is known (old plugin/sidecar, or
+   * before the first push). `epoch` bumps on a UT discontinuity so a
+   * consumer can flush and resync. `warpRate` lets a consumer interpolate
+   * `captureUt` between samples; defaults to 1.
+   */
+  get clock(): { captureUt: number | null; epoch: number; warpRate: number } {
+    return {
+      captureUt: this._captureUt,
+      epoch: this._captureEpoch,
+      warpRate: this._warpRate,
+    };
   }
 
   /**
@@ -1084,6 +1110,16 @@ export class KerbcastClient extends TypedEmitter<KerbcastClientEvents> {
         break;
       case "settings-state":
         this._throttleMainScreen = msg.content.throttleMainScreen;
+        /*
+         * Capture clock: null captureUt means "no clock" (absent field).
+         * Epoch is retained across pushes that omit it (only a present
+         * value updates it); warpRate falls back to 1 when absent.
+         */
+        this._captureUt = msg.content.captureUt ?? null;
+        if (msg.content.captureEpoch != null) {
+          this._captureEpoch = msg.content.captureEpoch;
+        }
+        this._warpRate = msg.content.timeWarpRate ?? 1;
         this.emit("settings-change", msg.content);
         break;
     }

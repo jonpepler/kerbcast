@@ -278,6 +278,24 @@ export interface SettingsStatePayload {
 	 * plugin has *applied*, not just what was last requested.
 	 */
 	throttleMainScreen: boolean;
+	/**
+	 * KSP mission time (`Planetarium.GetUniversalTime()`, seconds) at
+	 * which the video currently being produced was captured. `None` =
+	 * no clock yet (old plugin/sidecar, or first status not seen); a
+	 * consumer treats that as "unknown" and keeps a live passthrough.
+	 */
+	captureUt?: number;
+	/**
+	 * Monotonic counter bumped only on a non-monotonic UT jump (revert,
+	 * quickload, scene reload). Consumers resynchronise on any change;
+	 * the absolute value is meaningless.
+	 */
+	captureEpoch?: number;
+	/**
+	 * Current KSP time-warp multiplier, so a consumer can interpolate
+	 * `capture_ut` between ~1Hz samples. `None` => treat as 1.0.
+	 */
+	timeWarpRate?: number;
 }
 
 /**

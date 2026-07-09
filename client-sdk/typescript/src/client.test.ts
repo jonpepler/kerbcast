@@ -1563,6 +1563,69 @@ describe("KerbcastClient.inboundVideoStats", () => {
     expect(client.throttleMainScreen).toBe(true);
   });
 
+  it("clock.captureUt is null before any settings-state", () => {
+    const sidecar = new MockSidecar();
+    const client = new KerbcastClient(
+      { host: "h", port: 1 },
+      sidecar.createTransport(),
+    );
+    expect(client.clock.captureUt).toBeNull();
+    expect(client.clock.epoch).toBe(0);
+    expect(client.clock.warpRate).toBe(1);
+  });
+
+  it("clock reflects a fired capture clock", async () => {
+    const sidecar = new MockSidecar();
+    const client = new KerbcastClient(
+      { host: "h", port: 1 },
+      sidecar.createTransport(),
+    );
+    vi.spyOn(globalThis, "fetch").mockImplementation(() =>
+      Promise.resolve(MockSidecar.makeOfferResponse([])),
+    );
+    await client.connect();
+    sidecar.open();
+
+    sidecar.fireSettingsState({
+      throttleMainScreen: false,
+      captureUt: 12345.5,
+      captureEpoch: 7,
+      timeWarpRate: 4,
+    });
+
+    expect(client.clock).toEqual({
+      captureUt: 12345.5,
+      epoch: 7,
+      warpRate: 4,
+    });
+  });
+
+  it("clock warpRate defaults to 1 and epoch is retained when fields are absent", async () => {
+    const sidecar = new MockSidecar();
+    const client = new KerbcastClient(
+      { host: "h", port: 1 },
+      sidecar.createTransport(),
+    );
+    vi.spyOn(globalThis, "fetch").mockImplementation(() =>
+      Promise.resolve(MockSidecar.makeOfferResponse([])),
+    );
+    await client.connect();
+    sidecar.open();
+
+    sidecar.fireSettingsState({
+      throttleMainScreen: false,
+      captureUt: 100,
+      captureEpoch: 5,
+      timeWarpRate: 50,
+    });
+    /* A later push omitting epoch/warp: epoch retained, warp back to 1. */
+    sidecar.fireSettingsState({ throttleMainScreen: false, captureUt: 101 });
+
+    expect(client.clock.captureUt).toBe(101);
+    expect(client.clock.epoch).toBe(5);
+    expect(client.clock.warpRate).toBe(1);
+  });
+
   it("MockSidecar.throttleMainScreen reflects set-throttle-main-screen command", async () => {
     const sidecar = new MockSidecar();
     const client = new KerbcastClient(

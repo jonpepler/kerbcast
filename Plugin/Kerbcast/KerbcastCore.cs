@@ -76,6 +76,10 @@ namespace Kerbcast
         private int _fpsIdx;
         private int _fpsCount; // up to FpsSamples; growing-average until full
         private float _fpsAvg;
+        /* Mission-time capture-clock epoch stamped into global.status.json.
+           Bumped on a UT discontinuity (scene load / quickload) so a consumer
+           flushes and resyncs. See CaptureEpoch. */
+        private readonly CaptureEpoch _captureEpoch = new CaptureEpoch();
         // Adaptive-shed decision state machine. The fps thresholds + hysteresis
         // and the anti-flap dwell/back-off all live in ShedController (which is
         // Unity-free and unit-tested). Each LateUpdate we hand it the rolling
@@ -201,6 +205,12 @@ namespace Kerbcast
             GameEvents.onVesselChange.Add(OnVesselChange);
             GameEvents.onPartDestroyed.Add(OnPartDestroyed);
             GameEvents.onVesselWasModified.Add(OnVesselWasModified);
+            /* Mission-time discontinuities: a scene load or a quickload makes
+               universal time jump (revert/quickload run backward). Bump the
+               capture epoch so a clock consumer flushes rather than waiting on
+               a UT that will never arrive. */
+            GameEvents.onGameSceneLoadRequested.Add(OnGameSceneLoadRequested);
+            GameEvents.onGameStatePostLoad.Add(OnGameStatePostLoad);
 
             // Defensive: at Awake time the scene's source cameras (Camera 00,
             // ScaledSpace, GalaxyCamera, FXCamera) may already be disabled —
@@ -282,6 +292,13 @@ namespace Kerbcast
             RebuildCameraList(v, disposeMissing: false);
             MarkFxDirtyForVessel(v);
         }
+
+        /* Scene load / quickload: universal time is about to jump, so mark a
+           capture-clock discontinuity. The `scene`/`node` args are unused;
+           any fire of these events is a resync point. */
+        private void OnGameSceneLoadRequested(GameScenes scene) => _captureEpoch.Bump();
+
+        private void OnGameStatePostLoad(ConfigNode node) => _captureEpoch.Bump();
 
         private void MarkFxDirtyForVessel(Vessel v)
         {
@@ -858,6 +875,13 @@ namespace Kerbcast
                 // flag-off output stays byte-identical to the pre-flag plugin).
                 sb.Append($"  \"shedLevel\": {(_qualityController != null ? _qualityController.Level : 0)},\n");
                 sb.Append($"  \"throttleMainScreen\": {(_throttleEffective ? "true" : "false")},\n");
+                /* Mission-time capture clock: KSP universal time (seconds) and
+                   the current time-warp multiplier at write time, plus the
+                   discontinuity epoch. Round-trip ("R") + InvariantCulture so
+                   the double/float never localises to a comma. */
+                sb.Append($"  \"captureUt\": {Planetarium.GetUniversalTime().ToString("R", System.Globalization.CultureInfo.InvariantCulture)},\n");
+                sb.Append($"  \"captureEpoch\": {_captureEpoch.Value},\n");
+                sb.Append($"  \"timeWarpRate\": {TimeWarp.CurrentRate.ToString("R", System.Globalization.CultureInfo.InvariantCulture)},\n");
                 // Stagger telemetry — watch the budget regulator converge + tune
                 // MaxKerbcastFrameBudgetMs / MinKspFps. staggerBudget: cameras
                 // permitted to capture this tick. kerbcastFrameMs: EMA of kerbcast's
@@ -1158,6 +1182,8 @@ namespace Kerbcast
             GameEvents.onVesselChange.Remove(OnVesselChange);
             GameEvents.onPartDestroyed.Remove(OnPartDestroyed);
             GameEvents.onVesselWasModified.Remove(OnVesselWasModified);
+            GameEvents.onGameSceneLoadRequested.Remove(OnGameSceneLoadRequested);
+            GameEvents.onGameStatePostLoad.Remove(OnGameStatePostLoad);
             foreach (var cam in _cameras) cam.Dispose();
             _cameras.Clear();
             /* Deliberately NOT stopping the sidecar: KerbcastSidecarHost owns

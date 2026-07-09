@@ -55,8 +55,7 @@ use crate::protocol::{
     CameraSnapshotPayload, CameraStateChangedPayload, ClientMessage, ErrorPayload, ErrorSource,
     FlightIdPayload, HelloPayload, Layer, QualityPreset, ServerMessage, SetDegradePayload,
     SetFovPayload, SetLayersPayload, SetPanPayload, SetPanRatePayload, SetQualityPayload,
-    SetRenderSizePayload, SetThrottleMainScreenPayload, SetZoomRatePayload, SettingsStatePayload,
-    SlotMapPayload,
+    SetRenderSizePayload, SetThrottleMainScreenPayload, SetZoomRatePayload, SlotMapPayload,
 };
 
 const CONTROL_CHANNEL_LABEL: &str = "kerbcast-control";
@@ -442,13 +441,11 @@ async fn handle_client_message(
             )
             .await;
             send_camera_snapshot(&registry, &dc).await;
-            /* Prime the client with the current throttle state immediately. */
-            let throttle_main_screen = registry.last_throttle_main_screen().await;
+            /* Prime the client with current global settings (throttle + the
+             * mission-time capture clock, if the plugin has reported one). */
             send_server_message(
                 &dc,
-                &ServerMessage::SettingsState(SettingsStatePayload {
-                    throttle_main_screen,
-                }),
+                &ServerMessage::SettingsState(registry.last_settings().await),
             )
             .await;
             // Announce the initial slot bindings so the client maps its

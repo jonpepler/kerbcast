@@ -24,7 +24,9 @@ use tracing::{info, warn};
 use webrtc::track::track_local::track_local_static_sample::TrackLocalStaticSample;
 
 use crate::encoder::{EncoderBackend, SessionHealth};
-use crate::protocol::{CameraLifecycle, CameraState as ProtocolCameraState, Layer, QualityPreset};
+use crate::protocol::{
+    CameraLifecycle, CameraState as ProtocolCameraState, Layer, QualityPreset, SettingsStatePayload,
+};
 use crate::shared_mem::{ControlBlock, MmapFrameRing, MmapRingConfig};
 
 /// Filesystem identity for a `.ring` file: distinguishes "same path, same
@@ -71,6 +73,15 @@ struct GlobalStatusFile {
     /// older plugin writes; defaults to `false` so existing data is safe.
     #[serde(default)]
     throttle_main_screen: bool,
+    /// Mission-time capture clock (see `SettingsStatePayload`). All three
+    /// absent in older plugin writes; `None` => no clock, surfaced as
+    /// "unknown" to consumers.
+    #[serde(default)]
+    capture_ut: Option<f64>,
+    #[serde(default)]
+    capture_epoch: Option<u32>,
+    #[serde(default)]
+    time_warp_rate: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -93,15 +104,26 @@ struct PerCameraStatus {
     pan_pitch: f32,
 }
 
+/// Project the wire `SettingsStatePayload` out of an on-disk status snapshot.
+fn settings_from_status(s: &GlobalStatusFile) -> SettingsStatePayload {
+    SettingsStatePayload {
+        throttle_main_screen: s.throttle_main_screen,
+        capture_ut: s.capture_ut,
+        capture_epoch: s.capture_epoch,
+        time_warp_rate: s.time_warp_rate,
+    }
+}
+
 /// Diff result from a status poll. Empty vec / None when nothing
 /// changed so the consume loop can skip broadcasting.
 #[derive(Debug, Default)]
 pub struct StatusDelta {
     pub adaptive_shed: Option<(u32, f32)>, // (level, ksp_fps)
     pub changed_cameras: Vec<ProtocolCameraState>,
-    /// Set when the plugin-reported throttle state has changed. The
-    /// consume loop broadcasts `SettingsState` when this is `Some`.
-    pub throttle_main_screen: Option<bool>,
+    /// Set when any global setting (throttle, or the mission-time capture
+    /// clock) changed since the last poll. The consume loop broadcasts one
+    /// `SettingsState` carrying the full current payload when this is `Some`.
+    pub settings: Option<SettingsStatePayload>,
 }
 
 /// Membership churn from one `rescan` pass over the shm dir. With the
@@ -555,6 +577,12 @@ pub struct GlobalStatusFileExport {
     pub cameras: Vec<PerCameraStatusExport>,
     #[serde(default)]
     pub throttle_main_screen: bool,
+    #[serde(default)]
+    pub capture_ut: Option<f64>,
+    #[serde(default)]
+    pub capture_epoch: Option<u32>,
+    #[serde(default)]
+    pub time_warp_rate: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -599,6 +627,9 @@ impl From<&GlobalStatusFile> for GlobalStatusFileExport {
                 })
                 .collect(),
             throttle_main_screen: s.throttle_main_screen,
+            capture_ut: s.capture_ut,
+            capture_epoch: s.capture_epoch,
+            time_warp_rate: s.time_warp_rate,
         }
     }
 }
@@ -633,17 +664,23 @@ impl CameraRegistry {
     }
 
     /*
-     * Last-seen effective throttle state from global.status.json. Returns
-     * `false` when no status has been received yet (plugin hasn't written).
-     * Used by the Hello path to prime a freshly-connected peer's UI.
+     * Last-seen global settings snapshot from global.status.json, as the
+     * wire payload. Throttle defaults to `false` and the capture clock to
+     * `None` when no status has been received yet (plugin hasn't written).
+     * Used by the Hello path to prime a freshly-connected peer.
      */
-    pub async fn last_throttle_main_screen(&self) -> bool {
+    pub async fn last_settings(&self) -> SettingsStatePayload {
         self.last_status
             .lock()
             .await
             .as_ref()
-            .map(|s| s.throttle_main_screen)
-            .unwrap_or(false)
+            .map(settings_from_status)
+            .unwrap_or(SettingsStatePayload {
+                throttle_main_screen: false,
+                capture_ut: None,
+                capture_epoch: None,
+                time_warp_rate: None,
+            })
     }
 
     /// Profiling override (see the field). `POST /profile/render` toggles it.
@@ -985,15 +1022,23 @@ impl CameraRegistry {
         }
 
         /*
-         * Throttle state is global: emit a SettingsState whenever the reported
-         * effective value moves (or on first poll, when `last` is None).
+         * Global settings are broadcast as one SettingsState whenever any of
+         * them moves (or on first poll, when `last` is None). The mission-time
+         * capture_ut advances on every ~1Hz plugin write, so in a live scene
+         * this is the intended ~1Hz clock heartbeat; when KSP is paused UT
+         * holds steady and nothing is emitted.
          */
-        if last
+        let settings_changed = last
             .as_ref()
-            .map(|s| s.throttle_main_screen != parsed.throttle_main_screen)
-            .unwrap_or(true)
-        {
-            delta.throttle_main_screen = Some(parsed.throttle_main_screen);
+            .map(|s| {
+                s.throttle_main_screen != parsed.throttle_main_screen
+                    || s.capture_ut != parsed.capture_ut
+                    || s.capture_epoch != parsed.capture_epoch
+                    || s.time_warp_rate != parsed.time_warp_rate
+            })
+            .unwrap_or(true);
+        if settings_changed {
+            delta.settings = Some(settings_from_status(&parsed));
         }
 
         // Per-camera diffs. Only flag cameras whose effective state moved.
@@ -1414,6 +1459,57 @@ async fn read_manifest(shm_dir: &std::path::Path, flight_id: u32) -> InfoManifes
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A status write whose `captureUt` advanced produces a `settings`
+    /// delta carrying the mission-time clock; an identical re-poll produces
+    /// no settings (the ~1Hz heartbeat only fires when the clock moves).
+    #[tokio::test]
+    async fn poll_status_emits_capture_clock_on_change() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let shm = dir.path();
+        let cfg = MmapRingConfig {
+            slot_count: 4,
+            max_width: 1280,
+            max_height: 720,
+        };
+        let registry = CameraRegistry::new(shm.to_path_buf(), cfg);
+        let status_path = shm.join("global.status.json");
+
+        let write = |ut: f64| {
+            std::fs::write(
+                &status_path,
+                format!(
+                    r#"{{"kspFps":60.0,"shedLevel":0,"cameras":[],"throttleMainScreen":false,"captureUt":{ut},"captureEpoch":3,"timeWarpRate":4.0}}"#
+                ),
+            )
+            .unwrap();
+        };
+
+        write(1000.0);
+        let delta = registry.poll_status().await;
+        let settings = delta.settings.expect("first poll emits settings");
+        assert_eq!(settings.capture_ut, Some(1000.0));
+        assert_eq!(settings.capture_epoch, Some(3));
+        assert_eq!(settings.time_warp_rate, Some(4.0));
+
+        /* Identical re-poll: nothing moved, so no settings. */
+        let delta = registry.poll_status().await;
+        assert!(
+            delta.settings.is_none(),
+            "unchanged status emits no settings"
+        );
+
+        /* UT advances: settings fire again with the new clock. */
+        write(1004.0);
+        let delta = registry.poll_status().await;
+        assert_eq!(
+            delta
+                .settings
+                .expect("advanced UT emits settings")
+                .capture_ut,
+            Some(1004.0)
+        );
+    }
 
     /// `read_manifest` returns `Destroyed` when info.json has
     /// `lifecycle: "destroyed"` — the tombstone the plugin writes on part

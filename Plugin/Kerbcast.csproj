@@ -130,6 +130,7 @@
     <Compile Remove="QualityTier.Tests/**/*.cs" />
     <Compile Remove="SidecarLifecycle.Tests/**/*.cs" />
     <Compile Remove="IntegrationPolicy.Tests/**/*.cs" />
+    <Compile Remove="CaptureEpoch.Tests/**/*.cs" />
   </ItemGroup>
 
 </Project>
