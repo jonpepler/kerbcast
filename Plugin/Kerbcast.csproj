@@ -131,6 +131,7 @@
     <Compile Remove="SidecarLifecycle.Tests/**/*.cs" />
     <Compile Remove="IntegrationPolicy.Tests/**/*.cs" />
     <Compile Remove="CaptureEpoch.Tests/**/*.cs" />
+    <Compile Remove="InFlightSignal.Tests/**/*.cs" />
   </ItemGroup>
 
 </Project>

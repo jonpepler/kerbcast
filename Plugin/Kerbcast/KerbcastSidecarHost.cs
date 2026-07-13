@@ -39,6 +39,7 @@ namespace Kerbcast
         private const float SidecarHealthyUptimeSeconds = 60f;
         private const float HeartbeatIntervalSeconds = 1.0f;
         private const string HeartbeatFileName = "global.heartbeat";
+        private const string InFlightFileName = "global.inflight";
 
         public static KerbcastSidecarHost Instance { get; private set; }
 
@@ -47,6 +48,8 @@ namespace Kerbcast
         private string _heartbeatPath;
         private float _heartbeatCooldown;
         private bool _heartbeatWarned;
+        private string _inFlightPath;
+        private bool _inFlightWarned;
         private SidecarLifecycle _lifecycle;
         private Process _sidecar;
 
@@ -79,12 +82,14 @@ namespace Kerbcast
             _settings = settings;
             _ringDir = ringDir;
             _heartbeatPath = Path.Combine(ringDir, HeartbeatFileName);
+            _inFlightPath = Path.Combine(ringDir, InFlightFileName);
             _lifecycle = new SidecarLifecycle(
                 settings.AutoSpawnSidecar,
                 SidecarMaxRestarts,
                 SidecarRestartDelaySeconds,
                 SidecarHealthyUptimeSeconds);
             WriteHeartbeat();
+            WriteInFlight();
             Debug.Log("[Kerbcast] sidecar host created (persists for the KSP session)");
         }
 
@@ -125,6 +130,7 @@ namespace Kerbcast
             {
                 _heartbeatCooldown = HeartbeatIntervalSeconds;
                 WriteHeartbeat();
+                WriteInFlight();
             }
 
             if (_sidecarExited)
@@ -165,6 +171,23 @@ namespace Kerbcast
             }
         }
 
+        /* Report whether KSP is in a flight scene so the sidecar can tell
+           browsers to show the out-of-flight standby instead of a wall of
+           SIGNAL LOST. Warn once, not per second, if the write fails. */
+        private void WriteInFlight()
+        {
+            try
+            {
+                InFlightSignal.Write(_inFlightPath, HighLogic.LoadedSceneIsFlight);
+            }
+            catch (Exception ex)
+            {
+                if (_inFlightWarned) return;
+                _inFlightWarned = true;
+                Debug.LogWarning($"[Kerbcast] in-flight write failed: {ex.Message}");
+            }
+        }
+
         private void OnApplicationQuit()
         {
             ShutDown();
@@ -193,6 +216,15 @@ namespace Kerbcast
             catch (Exception)
             {
                 /* Best-effort; a leftover heartbeat is overwritten next launch. */
+            }
+            try
+            {
+                if (_inFlightPath != null && File.Exists(_inFlightPath))
+                    File.Delete(_inFlightPath);
+            }
+            catch (Exception)
+            {
+                /* Best-effort; a leftover file is overwritten next launch. */
             }
         }
 
