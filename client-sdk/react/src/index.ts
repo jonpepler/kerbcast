@@ -19,6 +19,10 @@ export type { KerbcastProviderProps, KerbcastSubscriptions } from "./context";
 export { useKerbcastCameras } from "./hooks/useKerbcastCameras";
 export { useKerbcastStream } from "./hooks/useKerbcastStream";
 export { useKerbcastClock } from "./hooks/useKerbcastClock";
+export { useKerbcastInFlight } from "./hooks/useKerbcastInFlight";
+
+// Shared standby glyph (used by CameraFeed + downstream dashboards)
+export { HardHatIcon } from "./HardHatIcon";
 
 // Camera label utilities
 export { buildCameraLabeler } from "./cameraLabels";
