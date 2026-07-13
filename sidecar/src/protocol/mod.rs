@@ -347,6 +347,17 @@ pub struct AdaptiveShedPayload {
     pub reason: String,
 }
 
+/// Scene-state change: whether KSP is currently in a flight scene. Sent
+/// after `Hello` (priming) and whenever the polled in-flight flag flips,
+/// so clients can show a calm out-of-flight standby instead of per-camera
+/// SIGNAL LOST when the whole scene unloads.
+#[typeshare]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SceneStateChangedPayload {
+    pub in_flight: bool,
+}
+
 #[typeshare]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -529,6 +540,9 @@ pub enum ServerMessage {
     /// so a freshly-connected client shows correct state immediately, and
     /// re-broadcast whenever the polled plugin status shows a change.
     SettingsState(SettingsStatePayload),
+    /// Whether KSP is in a flight scene. Primed after `Hello` and
+    /// re-broadcast when the polled in-flight flag changes.
+    SceneStateChanged(SceneStateChangedPayload),
 }
 
 #[cfg(test)]
@@ -912,6 +926,19 @@ mod tests {
         let back: ServerMessage = serde_json::from_str(&s).unwrap();
         match back {
             ServerMessage::SettingsState(p) => assert!(!p.throttle_main_screen),
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn scene_state_changed_roundtrips() {
+        let msg = ServerMessage::SceneStateChanged(SceneStateChangedPayload { in_flight: false });
+        let s = serde_json::to_string(&msg).unwrap();
+        assert!(s.contains("\"type\":\"scene-state-changed\""));
+        assert!(s.contains("\"inFlight\":false"));
+        let back: ServerMessage = serde_json::from_str(&s).unwrap();
+        match back {
+            ServerMessage::SceneStateChanged(p) => assert!(!p.in_flight),
             _ => panic!("wrong variant"),
         }
     }
