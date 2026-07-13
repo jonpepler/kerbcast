@@ -15,7 +15,9 @@ import styled, { css } from "styled-components";
 import { buildCameraLabeler } from "./cameraLabels";
 import { KerbcastProvider, useKerbcastClient } from "./context";
 import { useKerbcastCameras } from "./hooks/useKerbcastCameras";
+import { useKerbcastInFlight } from "./hooks/useKerbcastInFlight";
 import { useKerbcastStream } from "./hooks/useKerbcastStream";
+import { HardHatIcon } from "./HardHatIcon";
 import { isCameraDestroyed } from "./lifecycle";
 
 // ---------------------------------------------------------------------------
@@ -276,6 +278,12 @@ export interface CameraFeedProps {
    */
   showStatic?: boolean;
   /**
+   * Override the client's in-flight signal for this feed only. When known
+   * false, the feed shows the dimmed standby icon instead of SIGNAL LOST.
+   * Defaults to the client's `useKerbcastInFlight()` value.
+   */
+  inFlight?: boolean;
+  /**
    * "auto" (default): ResizeObserver drives `setRenderSize` at a 16:9 crop,
    * debounced 500 ms. "none": no render-size feedback.
    */
@@ -345,6 +353,7 @@ const CameraFeedInner = forwardRef<CameraFeedHandle, CameraFeedProps>(
       onDisplayedCameraChange,
       showDebugInfo = false,
       showStatic,
+      inFlight: inFlightProp,
       renderSize = "auto",
       emptyMessage = "No camera feeds - start a vessel with Hullcam parts installed",
       enableFullscreen = false,
@@ -358,6 +367,9 @@ const CameraFeedInner = forwardRef<CameraFeedHandle, CameraFeedProps>(
   ) {
     const client = useKerbcastClient();
     const cameras = useKerbcastCameras();
+    const inFlightFromClient = useKerbcastInFlight();
+    const inFlight = inFlightProp ?? inFlightFromClient;
+    const outOfFlight = inFlight === false;
 
     /*
      * Reduced-motion auto mode: when `showStatic` prop is undefined, read and
@@ -974,12 +986,22 @@ const CameraFeedInner = forwardRef<CameraFeedHandle, CameraFeedProps>(
                 </QualityMenu>,
                 document.body,
               )}
-            {isDestroyed && (
-              <SignalLostOverlay role="status" aria-label="Signal lost">
-                <SignalLostText $animated={effectiveShowStatic}>SIGNAL LOST</SignalLostText>
-              </SignalLostOverlay>
+            {outOfFlight ? (
+              <StandbyOverlay role="status" aria-label="Standby, no active flight">
+                <StandbyIconWrap>
+                  <HardHatIcon size={40} />
+                </StandbyIconWrap>
+              </StandbyOverlay>
+            ) : (
+              isDestroyed && (
+                <SignalLostOverlay role="status" aria-label="Signal lost">
+                  <SignalLostText $animated={effectiveShowStatic}>
+                    SIGNAL LOST
+                  </SignalLostText>
+                </SignalLostOverlay>
+              )
             )}
-            {!effectiveShowStatic && isStale && !isDestroyed && (
+            {!outOfFlight && !effectiveShowStatic && isStale && !isDestroyed && (
               <>
                 <StaleScrim aria-hidden="true" />
                 <StaleBadge role="status" aria-label="Feed stale">
@@ -1676,6 +1698,22 @@ const SignalLostOverlay = styled.div`
   align-items: center;
   justify-content: center;
   background: rgba(0, 0, 0, 0.25);
+`;
+
+/* Out-of-flight standby: a dark dimmed cover with the shared hard-hat icon
+   only. Supersedes SIGNAL LOST for the whole-scene case; the client keeps
+   the feed blank behind it so no static bleeds through. */
+const StandbyOverlay = styled.div`
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.55);
+`;
+
+const StandbyIconWrap = styled.div`
+  color: rgba(255, 255, 255, 0.55);
 `;
 
 const SignalLostText = styled.span<{ $animated: boolean }>`

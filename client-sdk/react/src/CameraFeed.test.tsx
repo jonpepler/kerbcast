@@ -556,6 +556,34 @@ describe("CameraFeed - SIGNAL LOST overlay", () => {
     expect(overlay.textContent).toMatch(/SIGNAL LOST/i);
   });
 
+  it("shows the standby icon (not SIGNAL LOST) when out of flight", async () => {
+    const { client, sidecar } = await buildConnectedSource();
+
+    renderFeed(client, { flightId: 42 });
+
+    await act(async () => {
+      sidecar.fireSceneState(false);
+      sidecar.destroyCamera(42);
+    });
+
+    expect(screen.queryByRole("status", { name: /signal lost/i })).toBeNull();
+    expect(screen.getByRole("status", { name: /standby/i })).toBeTruthy();
+  });
+
+  it("keeps SIGNAL LOST for a single destroyed camera while in flight", async () => {
+    const { client, sidecar } = await buildConnectedSource();
+
+    renderFeed(client, { flightId: 42 });
+
+    await act(async () => {
+      sidecar.fireSceneState(true);
+      sidecar.destroyCamera(42);
+    });
+
+    expect(screen.getByRole("status", { name: /signal lost/i })).toBeTruthy();
+    expect(screen.queryByRole("status", { name: /standby/i })).toBeNull();
+  });
+
   it("auto-latch releases a destroyed camera once a live camera exists (vessel switch)", async () => {
     const { client, sidecar } = await buildConnectedSource([
       makeCamera({ flightId: 42, cameraName: "Old Vessel Cam" }),
