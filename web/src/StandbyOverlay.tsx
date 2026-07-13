@@ -1,4 +1,4 @@
-import { HardHatIcon, useKerbcastInFlight } from "@ksp-gonogo/kerbcast-react";
+import { StandbyIcon, useKerbcastInFlight } from "@ksp-gonogo/kerbcast-react";
 import styled from "styled-components";
 
 /**
@@ -14,7 +14,7 @@ export function StandbyOverlay() {
   return (
     <Scrim role="status" aria-live="polite">
       <IconWrap aria-hidden="true">
-        <HardHatIcon size={44} />
+        <StandbyIcon size={44} />
       </IconWrap>
       <Copy>Camera feeds activate in a flight scene.</Copy>
     </Scrim>

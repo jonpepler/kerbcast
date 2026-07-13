@@ -17,7 +17,7 @@ import { KerbcastProvider, useKerbcastClient } from "./context";
 import { useKerbcastCameras } from "./hooks/useKerbcastCameras";
 import { useKerbcastInFlight } from "./hooks/useKerbcastInFlight";
 import { useKerbcastStream } from "./hooks/useKerbcastStream";
-import { HardHatIcon } from "./HardHatIcon";
+import { StandbyIcon } from "./StandbyIcon";
 import { isCameraDestroyed } from "./lifecycle";
 
 // ---------------------------------------------------------------------------
@@ -284,6 +284,13 @@ export interface CameraFeedProps {
    */
   inFlight?: boolean;
   /**
+   * Show the per-feed standby icon when out of flight. Default true. Set
+   * false when a container renders its own single out-of-flight overlay
+   * (e.g. the kerbcast web dashboard) so the icon isn't drawn twice; the
+   * feed then just goes dark.
+   */
+  showStandbyIcon?: boolean;
+  /**
    * "auto" (default): ResizeObserver drives `setRenderSize` at a 16:9 crop,
    * debounced 500 ms. "none": no render-size feedback.
    */
@@ -354,6 +361,7 @@ const CameraFeedInner = forwardRef<CameraFeedHandle, CameraFeedProps>(
       showDebugInfo = false,
       showStatic,
       inFlight: inFlightProp,
+      showStandbyIcon = true,
       renderSize = "auto",
       emptyMessage = "No camera feeds - start a vessel with Hullcam parts installed",
       enableFullscreen = false,
@@ -987,11 +995,13 @@ const CameraFeedInner = forwardRef<CameraFeedHandle, CameraFeedProps>(
                 document.body,
               )}
             {outOfFlight ? (
-              <StandbyOverlay role="status" aria-label="Standby, no active flight">
-                <StandbyIconWrap>
-                  <HardHatIcon size={40} />
-                </StandbyIconWrap>
-              </StandbyOverlay>
+              showStandbyIcon && (
+                <StandbyOverlay role="status" aria-label="Standby, no active flight">
+                  <StandbyIconWrap>
+                    <StandbyIcon size={40} />
+                  </StandbyIconWrap>
+                </StandbyOverlay>
+              )
             ) : (
               isDestroyed && (
                 <SignalLostOverlay role="status" aria-label="Signal lost">

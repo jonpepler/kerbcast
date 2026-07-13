@@ -155,6 +155,7 @@ function renderFeed(
     renderSize?: "auto" | "none";
     enableQualityControl?: boolean;
     showStatic?: boolean;
+    showStandbyIcon?: boolean;
     ref?: React.Ref<CameraFeedHandle>;
   },
 ) {
@@ -568,6 +569,20 @@ describe("CameraFeed - SIGNAL LOST overlay", () => {
 
     expect(screen.queryByRole("status", { name: /signal lost/i })).toBeNull();
     expect(screen.getByRole("status", { name: /standby/i })).toBeTruthy();
+  });
+
+  it("hides the per-feed standby icon when showStandbyIcon is false", async () => {
+    const { client, sidecar } = await buildConnectedSource();
+
+    renderFeed(client, { flightId: 42, showStandbyIcon: false });
+
+    await act(async () => {
+      sidecar.fireSceneState(false);
+      sidecar.destroyCamera(42);
+    });
+
+    expect(screen.queryByRole("status", { name: /standby/i })).toBeNull();
+    expect(screen.queryByRole("status", { name: /signal lost/i })).toBeNull();
   });
 
   it("keeps SIGNAL LOST for a single destroyed camera while in flight", async () => {

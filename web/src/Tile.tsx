@@ -193,6 +193,7 @@ export function Tile({
           flightId={flightId}
           showDebugInfo={showDebugInfo}
           showStatic={showStatic}
+          showStandbyIcon={false}
           onSelectCamera={onSelectCamera}
           onDisplayedCameraChange={setDisplayedFlightId}
           enableFullscreen

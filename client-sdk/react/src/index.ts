@@ -22,7 +22,7 @@ export { useKerbcastClock } from "./hooks/useKerbcastClock";
 export { useKerbcastInFlight } from "./hooks/useKerbcastInFlight";
 
 // Shared standby glyph (used by CameraFeed + downstream dashboards)
-export { HardHatIcon } from "./HardHatIcon";
+export { StandbyIcon } from "./StandbyIcon";
 
 // Camera label utilities
 export { buildCameraLabeler } from "./cameraLabels";
