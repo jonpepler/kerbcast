@@ -230,6 +230,13 @@ export interface KerbcastClientEvents {
    * reflects what the plugin has applied, not just what was requested.
    */
   "settings-change": SettingsStatePayload;
+  /**
+   * Fired when a `scene-state-changed` message arrives. `true` in a
+   * flight scene, `false` otherwise, `undefined` before the first
+   * signal. Consumers use this to show a calm out-of-flight standby
+   * instead of per-camera SIGNAL LOST.
+   */
+  "scene-change": boolean | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -557,15 +564,19 @@ class CameraHandle
     const noiseEnabled = this.client._resolveNoise(this._noiseOverride);
 
     if (noiseEnabled) {
+      // Sourceless feeds show static in flight, but go blank (black, no
+      // noise) out of flight so a whole-scene unload is calm.
+      const showStatic = raw ? this._showStatic : this._sourcelessShowStatic();
       // Reuse an existing pipeline; otherwise try to create one.
       if (!this._noisePipeline) {
         const initial = raw ? this._liveIntensity() : SOURCELESS_INTENSITY;
         this._noisePipeline = tryCreateNoisePipeline(raw, initial, {
-          showStatic: this._showStatic,
+          showStatic,
           onStallChange: (stalled) => this._setStalled(stalled),
         });
       } else {
         this._noisePipeline.setSource(raw);
+        this._noisePipeline.setShowStatic(showStatic);
       }
 
       const pipeline = this._noisePipeline;
@@ -584,6 +595,25 @@ class CameraHandle
     // Noise disabled, or captureStream unavailable (no pipeline creatable):
     // expose the raw stream directly, or null when there's no source.
     this._setOutput(raw);
+  }
+
+  /**
+   * Whether a sourceless (destroyed/absent) feed should render static. True
+   * in flight (or before the scene signal), false out of flight so the feed
+   * goes blank rather than a wall of red static when the whole scene unloads.
+   */
+  private _sourcelessShowStatic(): boolean {
+    return this._showStatic && this.client.inFlight !== false;
+  }
+
+  /**
+   * Internal — called by the client when the scene flag flips. Re-drives an
+   * existing sourceless pipeline so it switches between static and blank.
+   */
+  _refreshSceneState(): void {
+    if (this._sourceless) {
+      this._noisePipeline?.setShowStatic(this._sourcelessShowStatic());
+    }
   }
 
   private _setOutput(stream: MediaStream | null): void {
@@ -747,6 +777,8 @@ export class KerbcastClient extends TypedEmitter<KerbcastClientEvents> {
   private _captureUt: number | null = null;
   private _captureEpoch = 0;
   private _warpRate = 1;
+  /** Whether KSP is in a flight scene. `undefined` until the first signal. */
+  private _inFlight: boolean | undefined = undefined;
 
   constructor(cfg: KerbcastClientConfig, transport?: KerbcastTransport) {
     super();
@@ -797,6 +829,15 @@ export class KerbcastClient extends TypedEmitter<KerbcastClientEvents> {
       epoch: this._captureEpoch,
       warpRate: this._warpRate,
     };
+  }
+
+  /**
+   * Whether KSP is currently in a flight scene, from the sidecar's
+   * `scene-state-changed`. `undefined` until the first signal (so a
+   * consumer never flashes the out-of-flight standby on connect).
+   */
+  get inFlight(): boolean | undefined {
+    return this._inFlight;
   }
 
   /**
@@ -1121,6 +1162,16 @@ export class KerbcastClient extends TypedEmitter<KerbcastClientEvents> {
         }
         this._warpRate = msg.content.timeWarpRate ?? 1;
         this.emit("settings-change", msg.content);
+        break;
+      case "scene-state-changed":
+        this._inFlight = msg.content.inFlight;
+        /* Re-drive every handle: out of flight, sourceless feeds go blank
+           instead of showing static. Scene state carries no per-camera
+           state, so nudge each handle to re-evaluate its presentation. */
+        for (const handle of this.handles.values()) {
+          handle._refreshSceneState();
+        }
+        this.emit("scene-change", this._inFlight);
         break;
     }
   }

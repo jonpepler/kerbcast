@@ -270,6 +270,11 @@ export class MockSidecar {
     this._sendToClient({ type: "settings-state", content: payload });
   }
 
+  /** Push a `scene-state-changed` event to the client (flight scene or not). */
+  fireSceneState(inFlight: boolean): void {
+    this._sendToClient({ type: "scene-state-changed", content: { inFlight } });
+  }
+
   /** Configure the slot-pool mids before connecting (dynamic mode). */
   withSlots(mids: string[]): this {
     this._slotMids = [...mids];

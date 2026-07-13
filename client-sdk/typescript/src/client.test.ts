@@ -1522,6 +1522,27 @@ describe("KerbcastClient.inboundVideoStats", () => {
     expect(client.throttleMainScreen).toBe(true);
   });
 
+  it("tracks inFlight from scene-state-changed and emits scene-change", async () => {
+    const sidecar = new MockSidecar();
+    const client = new KerbcastClient(
+      { host: "h", port: 1 },
+      sidecar.createTransport(),
+    );
+    vi.spyOn(globalThis, "fetch").mockImplementation(() =>
+      Promise.resolve(MockSidecar.makeOfferResponse([])),
+    );
+    const seen: (boolean | undefined)[] = [];
+    client.on("scene-change", (v) => seen.push(v));
+    await client.connect();
+    sidecar.open();
+    expect(client.inFlight).toBeUndefined();
+    sidecar.fireSceneState(false);
+    expect(client.inFlight).toBe(false);
+    sidecar.fireSceneState(true);
+    expect(client.inFlight).toBe(true);
+    expect(seen).toEqual([false, true]);
+  });
+
   it("setThrottleMainScreen sends the correct command", async () => {
     const sidecar = new MockSidecar();
     const client = new KerbcastClient(
