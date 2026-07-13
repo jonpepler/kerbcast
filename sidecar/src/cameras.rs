@@ -52,6 +52,22 @@ fn ring_file_identity(meta: &std::fs::Metadata) -> u64 {
         .unwrap_or(0)
 }
 
+/// File the host writes ~1Hz with "1" (in a flight scene) or "0" (not).
+/// Separate from `global.status.json` because the session-persistent host
+/// outlives the flight-only status writer and must report the non-flight
+/// state too.
+pub const INFLIGHT_FILE: &str = "global.inflight";
+
+/// Parse the `global.inflight` body. `Some(true)`/`Some(false)` for the
+/// "1"/"0" the host writes; `None` for anything else (missing, partial).
+pub fn parse_in_flight(body: &str) -> Option<bool> {
+    match body.trim() {
+        "1" => Some(true),
+        "0" => Some(false),
+        _ => None,
+    }
+}
+
 /// On-disk shape of `global.status.json` — the plugin → sidecar push
 /// half of the IPC. The plugin rewrites this file at ~1Hz with the
 /// current effective state for every tracked camera plus the global
@@ -511,6 +527,9 @@ pub struct CameraRegistry {
     ring_cfg: MmapRingConfig,
     pub cameras: RwLock<HashMap<u32, Arc<CameraState>>>,
     last_status: Mutex<Option<GlobalStatusFile>>,
+    /// Last-seen value of the `global.inflight` file, cached so the consume
+    /// loop broadcasts `scene-state-changed` only when the flag flips.
+    last_in_flight: Mutex<Option<bool>>,
     /// Capped ring of every distinct `global.status.json` snapshot seen
     /// since the last `reset_run_logs()`. Powers the harness's
     /// `GET /dumpLogs` endpoint so perf runs can replay the full
@@ -649,6 +668,7 @@ impl CameraRegistry {
             ring_cfg,
             cameras: RwLock::new(HashMap::new()),
             last_status: Mutex::new(None),
+            last_in_flight: Mutex::new(None),
             status_log: Mutex::new(std::collections::VecDeque::new()),
             epoch: Instant::now(),
             force_render: AtomicBool::new(false),
@@ -661,6 +681,29 @@ impl CameraRegistry {
     /// Used by `GET /profile` to serve the latest telemetry snapshot.
     pub fn shm_dir(&self) -> &std::path::Path {
         self.shm_dir.as_path()
+    }
+
+    /// Fresh read of `global.inflight` (no caching). Used to prime a
+    /// connecting peer on Hello.
+    pub async fn read_in_flight(&self) -> Option<bool> {
+        let path = self.shm_dir.join(INFLIGHT_FILE);
+        match tokio::fs::read_to_string(&path).await {
+            Ok(body) => parse_in_flight(&body),
+            Err(_) => None,
+        }
+    }
+
+    /// Poll `global.inflight`, diffing against the cached value. Returns
+    /// `Some(new)` only when the flag changed (including the first
+    /// observation), so the consume loop broadcasts only on change.
+    pub async fn poll_in_flight(&self) -> Option<bool> {
+        let current = self.read_in_flight().await;
+        let mut last = self.last_in_flight.lock().await;
+        if *last != current {
+            *last = current;
+            return current;
+        }
+        None
     }
 
     /*
@@ -1459,6 +1502,38 @@ async fn read_manifest(shm_dir: &std::path::Path, flight_id: u32) -> InfoManifes
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_in_flight_reads_one_zero() {
+        assert_eq!(parse_in_flight("1"), Some(true));
+        assert_eq!(parse_in_flight("0\n"), Some(false));
+        assert_eq!(parse_in_flight(""), None);
+        assert_eq!(parse_in_flight("true"), None);
+    }
+
+    #[tokio::test]
+    async fn poll_in_flight_fires_only_on_change() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let shm = dir.path();
+        let cfg = MmapRingConfig {
+            slot_count: 4,
+            max_width: 1280,
+            max_height: 720,
+        };
+        let reg = CameraRegistry::new(shm.to_path_buf(), cfg);
+        let path = shm.join(INFLIGHT_FILE);
+
+        // No file yet => None, no change from the initial None cache.
+        assert_eq!(reg.poll_in_flight().await, None);
+
+        tokio::fs::write(&path, "1").await.unwrap();
+        assert_eq!(reg.poll_in_flight().await, Some(true));
+        // Same value re-read => no broadcast.
+        assert_eq!(reg.poll_in_flight().await, None);
+
+        tokio::fs::write(&path, "0").await.unwrap();
+        assert_eq!(reg.poll_in_flight().await, Some(false));
+    }
 
     /// A status write whose `captureUt` advanced produces a `settings`
     /// delta carrying the mission-time clock; an identical re-poll produces

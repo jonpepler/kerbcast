@@ -30,7 +30,7 @@ use kerbcast_sidecar::encoder::{
 use kerbcast_sidecar::heartbeat::{HeartbeatWatch, HEARTBEAT_FILE};
 use kerbcast_sidecar::protocol::{
     AdaptiveShedPayload, CameraLifecycle, CameraState as ProtocolCameraState,
-    CameraStateChangedPayload, ServerMessage,
+    CameraStateChangedPayload, SceneStateChangedPayload, ServerMessage,
 };
 use kerbcast_sidecar::shared_mem::MmapRingConfig;
 use kerbcast_sidecar::signalling::{router, AppState};
@@ -321,6 +321,13 @@ async fn consume_loop(
                 || delta.settings.is_some()
             {
                 broadcast_status_delta(&peers, delta).await;
+            }
+            // Scene state lives in a separate host-written file (outlives the
+            // flight-only status writer). Broadcast only when the flag flips.
+            if let Some(in_flight) = registry.poll_in_flight().await {
+                let snapshot: Vec<Arc<KerbcastPeer>> = peers.read().await.clone();
+                let msg = ServerMessage::SceneStateChanged(SceneStateChangedPayload { in_flight });
+                broadcast(&snapshot, &msg).await;
             }
             // Broadcast camera-state-changed for newly-destroyed cameras and
             // acknowledge (delete tombstone). "Clean close" is via the

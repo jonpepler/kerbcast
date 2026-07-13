@@ -53,9 +53,10 @@ use crate::cameras::CameraRegistry;
 use crate::encoder::selected_backend_name;
 use crate::protocol::{
     CameraSnapshotPayload, CameraStateChangedPayload, ClientMessage, ErrorPayload, ErrorSource,
-    FlightIdPayload, HelloPayload, Layer, QualityPreset, ServerMessage, SetDegradePayload,
-    SetFovPayload, SetLayersPayload, SetPanPayload, SetPanRatePayload, SetQualityPayload,
-    SetRenderSizePayload, SetThrottleMainScreenPayload, SetZoomRatePayload, SlotMapPayload,
+    FlightIdPayload, HelloPayload, Layer, QualityPreset, SceneStateChangedPayload, ServerMessage,
+    SetDegradePayload, SetFovPayload, SetLayersPayload, SetPanPayload, SetPanRatePayload,
+    SetQualityPayload, SetRenderSizePayload, SetThrottleMainScreenPayload, SetZoomRatePayload,
+    SlotMapPayload,
 };
 
 const CONTROL_CHANNEL_LABEL: &str = "kerbcast-control";
@@ -448,6 +449,15 @@ async fn handle_client_message(
                 &ServerMessage::SettingsState(registry.last_settings().await),
             )
             .await;
+            /* Prime scene state so a peer connecting out of flight shows the
+             * standby immediately, not a stale live layout. */
+            if let Some(in_flight) = registry.read_in_flight().await {
+                send_server_message(
+                    &dc,
+                    &ServerMessage::SceneStateChanged(SceneStateChangedPayload { in_flight }),
+                )
+                .await;
+            }
             // Announce the initial slot bindings so the client maps its
             // initial cameras to slots by mid — uniform with dynamic
             // Subscribe, no reliance on the answer's camera order.
