@@ -12,6 +12,12 @@ rolling their own transport.
 The Rust crate and this package ship the same SemVer version,
 bumped together by `./scripts/bump-version.sh`.
 
+Building a React app? Use
+[`@ksp-gonogo/kerbcast-react`](https://www.npmjs.com/package/@ksp-gonogo/kerbcast-react),
+which wraps this client in a ready-made `CameraFeed` component plus
+hooks. This package is its core dependency; reach for it directly when
+you want the raw client, a non-React consumer, or your own transport.
+
 ## Install
 
 Hosted on public npm. No registry route or auth needed:
@@ -33,6 +39,11 @@ await cam.setLayers([Layer.Near, Layer.Scaled]);
 await cam.setFov(35);
 await cam.setRenderSize(384, 384);
 await cam.setDegrade(0.5);
+
+// Pan/tilt and zoom, when the camera's mount supports it.
+await cam.setPan(10, -5); // absolute yaw/pitch in degrees
+await cam.setPanRate(0.5, 0); // persistent velocity, -1..1; 0,0 stops
+await cam.setZoomRate(1); // +1 zooms in, holds until superseded
 
 const videoEl = document.querySelector("video")!;
 videoEl.srcObject = cam.mediaStream;
@@ -81,9 +92,12 @@ controls each part actually supports.
 
 - `supportsZoom`, `fov`, `fovMin`, `fovMax`. 19 of 21 stock Hullcam
   VDS parts support runtime FoV via `MuMechModuleHullCameraZoom`.
-- `supportsPan`, `panYawMin/Max`, `panPitchMin/Max`. Reserved for the
-  planned mod extension that adds steerable mounts. Always `false`
-  right now.
+- `supportsPan`, `panYawMin/Max`, `panPitchMin/Max`. Whether this
+  camera's mount steers. Pan/tilt is fully wired end to end (`setPan`,
+  `setPanRate`, and the `PanZoomController` helper below); this flag
+  tells you whether a given part will act on it. Stock Hullcam VDS
+  mounts are fixed and report `false`; steerable mounts report `true`
+  with their travel limits. Hide the pan controls when `false`.
 - `encoderBitrateBps`, `targetBitrateBps`. Current encoder bitrate
   and the REMB-driven target. They diverge briefly when receivers'
   bandwidth estimates move.
@@ -92,6 +106,31 @@ controls each part actually supports.
   skip, producing the macroblocking and stuttering aesthetic of
   in-game CommNet signal loss. Also a real CPU optimisation when
   every consumer wants degraded video.
+
+## Pan/zoom input helper
+
+Driving pan and zoom from a gamepad stick, nudge buttons, or an FoV
+slider means rate deduplication, an analog deadzone, optimistic
+accumulators for discrete nudges, a debounced slider, and echo-sync
+while idle. `PanZoomController` is a headless state machine that handles
+all of that with no DOM or React dependency. A `KerbcastCameraHandle`
+satisfies its command sink structurally, so pass a camera straight in:
+
+```ts
+import { PanZoomController } from "@ksp-gonogo/kerbcast";
+
+const cam = client.camera(flightId);
+const ctrl = new PanZoomController(cam);
+
+ctrl.setPanRate(stickX, stickY); // analog stick
+ctrl.nudgePan(1, 0); // discrete "pan right" button
+ctrl.nudgeZoom(-1); // discrete "zoom in" button
+
+// Keep the controller's view in sync with echoed camera state.
+cam.on("change", (s) => ctrl.syncFromState(s));
+
+ctrl.stop(); // on teardown
+```
 
 ## Multi-language
 
