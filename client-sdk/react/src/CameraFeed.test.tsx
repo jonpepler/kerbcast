@@ -445,6 +445,39 @@ describe("CameraFeed - camera selection", () => {
     ).toBe(true);
   });
 
+  it("renders step buttons inside the action bar alongside injected actions", async () => {
+    // Regression: the step buttons used to sit in the title row and were
+    // covered by the separately-positioned action bar (and any consumer
+    // action buttons) in the top-right corner. They now share the action
+    // bar so the two lay out in one flex row instead of overlapping.
+    const { client } = await buildConnectedSource(THREE_CAMERAS);
+
+    render(
+      <KerbcastProvider client={client}>
+        <CameraFeed
+          flightId={42}
+          actions={[
+            {
+              id: "custom",
+              label: "Custom action",
+              icon: <span>x</span>,
+              onClick: () => {},
+            },
+          ]}
+        />
+      </KerbcastProvider>,
+    );
+
+    const next = screen.getByRole("button", { name: /next camera/i });
+    const custom = screen.getByRole("button", { name: /custom action/i });
+
+    // The injected action's parent is the action bar; the step buttons live
+    // in a wrapper within that same action bar, so it contains both.
+    const actionBar = custom.parentElement;
+    expect(actionBar).not.toBeNull();
+    expect(actionBar?.contains(next)).toBe(true);
+  });
+
   it("Escape closes the open camera menu", async () => {
     const { client } = await buildConnectedSource(THREE_CAMERAS);
 

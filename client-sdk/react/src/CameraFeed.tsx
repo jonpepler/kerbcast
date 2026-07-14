@@ -796,26 +796,6 @@ const CameraFeedInner = forwardRef<CameraFeedHandle, CameraFeedProps>(
               title
             )}
           </TopTitle>
-          {hasCameras && (
-            <StepButtons>
-              <OverlayIconButton
-                type="button"
-                aria-label="Previous camera"
-                disabled={!canStep}
-                onClick={() => stepCamera(-1)}
-              >
-                &#8249;
-              </OverlayIconButton>
-              <OverlayIconButton
-                type="button"
-                aria-label="Next camera"
-                disabled={!canStep}
-                onClick={() => stepCamera(1)}
-              >
-                &#8250;
-              </OverlayIconButton>
-            </StepButtons>
-          )}
         </TitleRow>
 
         {cameraMenu.open &&
@@ -879,11 +859,32 @@ const CameraFeedInner = forwardRef<CameraFeedHandle, CameraFeedProps>(
     const builtInActions =
       flightId !== null && (pipAvailable || fullscreenAvailable || qualityAvailable);
     const hasActionBar =
+      hasCameras ||
       (actions && actions.length > 0) ||
       (trailingActions && trailingActions.length > 0) ||
       builtInActions;
     const actionBar = hasActionBar ? (
         <ActionBar>
+          {hasCameras && (
+            <StepButtons>
+              <OverlayIconButton
+                type="button"
+                aria-label="Previous camera"
+                disabled={!canStep}
+                onClick={() => stepCamera(-1)}
+              >
+                &#8249;
+              </OverlayIconButton>
+              <OverlayIconButton
+                type="button"
+                aria-label="Next camera"
+                disabled={!canStep}
+                onClick={() => stepCamera(1)}
+              >
+                &#8250;
+              </OverlayIconButton>
+            </StepButtons>
+          )}
           {actions?.map(renderAction)}
           {qualityAvailable && (
             <OverlayIconButton
@@ -1393,8 +1394,11 @@ const TopOverlay = styled.div`
 const TitleRow = styled.div`
   display: flex;
   align-items: flex-start;
-  justify-content: space-between;
   gap: 8px;
+  /* Reserve the top-right corner where the ActionBar overlay sits (now home
+     to the camera step buttons too) so a long title ellipsizes rather than
+     sliding underneath the controls. */
+  padding-right: 96px;
 `;
 
 const TopTitle = styled.h3`
