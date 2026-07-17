@@ -36,7 +36,10 @@ namespace Kerbcast.Kos
             FlightId = v.FlightId, PartFlightId = v.PartFlightId, CameraName = v.CameraName, PartName = v.PartName,
             PartTitle = v.PartTitle, SupportsZoom = v.SupportsZoom, SupportsPan = v.SupportsPan, Fov = v.Fov,
             FovMin = v.FovMin, FovMax = v.FovMax, PanYaw = v.PanYaw, PanPitch = v.PanPitch, PanYawMin = v.PanYawMin,
-            PanYawMax = v.PanYawMax, PanPitchMin = v.PanPitchMin, PanPitchMax = v.PanPitchMax, PartHandle = v.Part,
+            PanYawMax = v.PanYawMax, PanPitchMin = v.PanPitchMin, PanPitchMax = v.PanPitchMax,
+            BoresightX = v.BoresightX, BoresightY = v.BoresightY, BoresightZ = v.BoresightZ,
+            PositionX = v.PositionX, PositionY = v.PositionY, PositionZ = v.PositionZ,
+            PartHandle = v.Part,
         };
     }
 }

@@ -61,6 +61,7 @@ docs/*
 GameData/Kerbcast/Sidecar/*/kerbcast-sidecar
 GameData/Kerbcast/Sidecar/*/kerbcast-sidecar.exe
 GameData/Kerbcast/Plugins/*.dll
+GameData/KerbcastKos/Plugins/*.dll
 
 # Runtime user config (default ships from Plugin/settings.cfg)
 GameData/Kerbcast/PluginData/

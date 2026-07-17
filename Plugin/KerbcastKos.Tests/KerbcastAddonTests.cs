@@ -116,6 +116,22 @@ namespace Kerbcast.Kos.Tests
             Assert.Equal((1u, 12f, 5f), fake.LastSetPan);   // pitch carried from the live view
         }
 
+        /* BORESIGHT/POSITION return a kOS Vector carrying the seeded components.
+           Read the suffix directly (not via the CPU) so the assertion sees the
+           real value; proves the Vector is constructed and populated correctly. */
+        [Fact]
+        public void Camera_boresight_returns_the_seeded_vector()
+        {
+            var fake = new FakeKerbcastControl();
+            fake.Seed(new KosCameraView { FlightId = 1, SupportsPan = true, BoresightX = 0.5f, BoresightY = 0.25f, BoresightZ = -1f });
+
+            var vec = (kOS.Suffixed.Vector)ProbeCameraSuffix(fake, 1u, "BORESIGHT");
+
+            Assert.Equal(0.5, vec.X, 3);
+            Assert.Equal(0.25, vec.Y, 3);
+            Assert.Equal(-1.0, vec.Z, 3);
+        }
+
         // ---- Attempted tests: touch shared.Vessel; skip if Unity-bound ----
 
         /* CAMERAS and AVAILABLE both name KSP's Vessel type in their addon
@@ -171,6 +187,19 @@ namespace Kerbcast.Kos.Tests
             var addon = new KerbcastAddon(shared);
             var r = addon.GetSuffix(suffix);
             _ = r.HasValue ? r.Value : null;   // force evaluation
+        }
+
+        /* As ProbeSuffix, but for a per-camera struct suffix: build the struct
+           directly over the fake and force-evaluate the suffix, returning its
+           value so a caller can assert on it. */
+        object ProbeCameraSuffix(FakeKerbcastControl fake, uint id, string suffix)
+        {
+            var shared = (kOS.SharedObjects)System.Runtime.CompilerServices
+                .RuntimeHelpers.GetUninitializedObject(typeof(kOS.SharedObjects));
+            // owner null: this probe only reads BORESIGHT/POSITION, never AIM.
+            var cam = new KerbcastCameraStruct(shared, id, fake, null);
+            var r = cam.GetSuffix(suffix);
+            return r.HasValue ? r.Value : null;
         }
 
         void SkipIfUnityBoundElseFail(Exception ex, string what)

@@ -15,6 +15,8 @@ namespace Kerbcast.Kos
         public float Fov, FovMin, FovMax;
         public float PanYaw, PanPitch;
         public float PanYawMin, PanYawMax, PanPitchMin, PanPitchMax;
+        public float BoresightX, BoresightY, BoresightZ;
+        public float PositionX, PositionY, PositionZ;
         public object PartHandle;
     }
 }

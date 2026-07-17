@@ -17,6 +17,12 @@ namespace Kerbcast
         public float Fov, FovMin, FovMax;
         public float PanYaw, PanPitch;
         public float PanYawMin, PanYawMax, PanPitchMin, PanPitchMax;
+        // World-space optical axis (unit forward) of the capture camera.
+        public float BoresightX, BoresightY, BoresightZ;
+        // Lens position relative to the vessel CoM, in Unity world axes — the
+        // same frame kOS uses for TARGET:POSITION, so a script can do
+        // (TARGET:POSITION - cam:POSITION) directly.
+        public float PositionX, PositionY, PositionZ;
         public global::Part Part;
     }
 
@@ -57,9 +63,17 @@ namespace Kerbcast
             var c = Find(flightId); if (c == null) return false; c.SetPanTarget(yaw, pitch); return true;
         }
 
-        public static bool AimAt(uint flightId, Vector3 worldPoint)
+        /* aimPoint is a kOS-frame vector (ship-relative, e.g. TARGET:POSITION),
+           matching what KerbcastCameraView.Position reports. Convert to a Unity
+           world point via the vessel CoM before handing it to the camera, whose
+           AimAt works in world space. */
+        public static bool AimAt(uint flightId, Vector3 aimPoint)
         {
-            var c = Find(flightId); if (c == null) return false; c.AimAt(worldPoint); return true;
+            var c = Find(flightId); if (c == null) return false;
+            var vessel = c.Hullcam != null ? c.Hullcam.vessel : null;
+            Vector3 worldPoint = vessel != null ? (Vector3)vessel.CoM + aimPoint : aimPoint;
+            c.AimAt(worldPoint);
+            return true;
         }
 
         static KerbcastCamera Find(uint flightId)
@@ -72,6 +86,12 @@ namespace Kerbcast
 
         static KerbcastCameraView ToView(KerbcastCamera c)
         {
+            Vector3 fwd = c.BoresightWorld;
+            // Lens position relative to the vessel CoM (falls back to raw world
+            // if the vessel is gone), matching kOS's ship-relative frame.
+            Vector3 pos = c.PositionWorld;
+            var vessel = c.Hullcam != null ? c.Hullcam.vessel : null;
+            if (vessel != null) pos -= vessel.CoM;
             return new KerbcastCameraView
             {
                 FlightId = c.FlightId,
@@ -82,6 +102,8 @@ namespace Kerbcast
                 PanYaw = c.PanYaw, PanPitch = c.PanPitch,
                 PanYawMin = c.PanYawMin, PanYawMax = c.PanYawMax,
                 PanPitchMin = c.PanPitchMin, PanPitchMax = c.PanPitchMax,
+                BoresightX = fwd.x, BoresightY = fwd.y, BoresightZ = fwd.z,
+                PositionX = pos.x, PositionY = pos.y, PositionZ = pos.z,
                 Part = c.Hullcam != null ? c.Hullcam.part : null,
             };
         }

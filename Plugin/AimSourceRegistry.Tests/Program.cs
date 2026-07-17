@@ -9,10 +9,13 @@ static class Program
 {
     static int failures;
 
-    /* Settable Finished + canned result + a Rearm counter. */
+    /* Settable Finished/Dead + canned result + a Rearm counter. DieOnRearm
+       flips Dead when Rearm runs, modelling a delegate whose context is gone. */
     sealed class FakeLease : IAimLease
     {
         public bool Finished { get; set; }
+        public bool Dead { get; set; }
+        public bool DieOnRearm;
         public bool HasResult;
         public double Rx, Ry, Rz;
         public int Rearms;
@@ -23,7 +26,7 @@ static class Program
             return HasResult;
         }
 
-        public void Rearm() => Rearms++;
+        public void Rearm() { Rearms++; if (DieOnRearm) Dead = true; }
     }
 
     static void Check(string name, bool ok)
@@ -103,6 +106,24 @@ static class Program
             Check("replaced source uses the new lease", applied.Count == 1 && applied[0] == (7u, 1.0, 2.0, 3.0));
             Check("old lease not driven after replace", oldLease.Rearms == 0);
             Check("new lease driven after replace", newLease.Rearms == 1);
+        }
+
+        // 5. A lease that dies on rearm is dropped, so it stops being ticked and
+        //    a fresh SET AIM can take over the same id.
+        {
+            var reg = new AimSourceRegistry();
+            var dying = new FakeLease { Finished = true, HasResult = true, DieOnRearm = true };
+            reg.SetSource(7, dying);
+
+            reg.Tick((id, x, y, z) => { });          // applies once, rearm marks it Dead -> dropped
+            Check("dead lease removed after tick", !reg.HasSource(7));
+
+            var fresh = new FakeLease { Finished = true, HasResult = true, Rx = 5, Ry = 6, Rz = 7 };
+            reg.SetSource(7, fresh);
+            var applied = new List<(uint, double, double, double)>();
+            reg.Tick((id, x, y, z) => applied.Add((id, x, y, z)));
+            Check("fresh lease drives after a dead one was dropped",
+                applied.Count == 1 && applied[0] == (7u, 5.0, 6.0, 7.0));
         }
 
         Console.WriteLine(failures == 0 ? "ALL PASS" : $"{failures} FAILURE(S)");

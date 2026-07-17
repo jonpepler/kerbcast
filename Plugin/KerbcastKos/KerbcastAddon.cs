@@ -17,10 +17,12 @@ namespace Kerbcast.Kos
     {
         public static IKerbcastControl Control;   // test seam; defaulted lazily below
 
-        /* Unity-free lifecycle core for AIM callbacks. The MonoBehaviour pump
-           (created lazily by EnsurePump) drives it once per frame. */
-        public static readonly AimSourceRegistry AimRegistry = new AimSourceRegistry();
-        static KerbcastKosPump pump;
+        /* AIM sources for this CPU's cameras, driven by an IUpdateObserver
+           registered on the CPU's own UpdateHandler (see SetAim). Per-instance,
+           not static: a delegate must be triggered from the cycle of the CPU it
+           belongs to, and each kOS CPU gets its own addon instance. */
+        readonly AimSourceRegistry aimRegistry = new AimSourceRegistry();
+        KerbcastAimObserver observer;
 
         public KerbcastAddon(SharedObjects shared) : base(shared)
         {
@@ -30,28 +32,19 @@ namespace Kerbcast.Kos
         }
 
         /* Register/replace/clear the AIM source for a camera. A null or
-           NoDelegate delegate clears it (the kerboscript "unset" idiom). Kept
-           here (not in the struct) so the Unity/pump-touching code JITs only
-           when AIM is actually used, keeping the struct headless-loadable. */
-        public static void SetAim(uint id, UserDelegate del)
+           NoDelegate delegate clears it. On first use, registers the update
+           observer on THIS CPU's UpdateHandler so the delegate is polled from
+           the CPU cycle (vecdraw's pattern) rather than a Unity Update. */
+        public void SetAim(uint id, UserDelegate del)
         {
-            EnsurePump();
-            AimRegistry.SetSource(
-                id,
-                del == null || del is NoDelegate ? null : new UserDelegateAimLease(del));
-        }
-
-        /* Create the single main-thread pump on first AIM use and wire it to
-           the shared registry + control seam. DontDestroyOnLoad so it survives
-           scene changes for the KSP session. */
-        static void EnsurePump()
-        {
-            if (pump != null) return;
-            var go = new UnityEngine.GameObject("KerbcastKosPump");
-            UnityEngine.Object.DontDestroyOnLoad(go);
-            pump = go.AddComponent<KerbcastKosPump>();
-            pump.Registry = AimRegistry;
-            pump.Control = Control;
+            if (observer == null) observer = new KerbcastAimObserver(aimRegistry);
+            // Re-add every time (HashSet, so idempotent): a CPU reboot /
+            // ClearAllObservers drops it, and only a re-add revives tracking.
+            shared.UpdateHandler.AddObserver(observer);
+            bool track = !(del == null || del is NoDelegate);
+            aimRegistry.SetSource(id, track ? new UserDelegateAimLease(del) : null);
+            UnityEngine.Debug.Log($"[KerbcastKos] SetAim id={id} {(track ? "track (delegate)" : "clear")}"
+                + $"; observer registered, {aimRegistry.Count} source(s)");
         }
 
         public override BooleanValue Available() => Control.IsActive && shared.Vessel != null;
@@ -60,11 +53,11 @@ namespace Kerbcast.Kos
         {
             var list = new ListValue();
             foreach (var v in Control.CamerasFor(shared.Vessel))
-                list.Add(new KerbcastCameraStruct(shared, v.FlightId, Control));
+                list.Add(new KerbcastCameraStruct(shared, v.FlightId, Control, this));
             return list;
         }
 
         KerbcastCameraStruct GetCamera(StringValue uid) =>
-            new KerbcastCameraStruct(shared, Convert.ToUInt32((string)uid), Control);
+            new KerbcastCameraStruct(shared, Convert.ToUInt32((string)uid), Control, this);
     }
 }

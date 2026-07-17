@@ -55,6 +55,12 @@ This mod was built initally for getting best performance out of Steam Deck, and 
 - Sidecar: Rust (stable), out-of-process H.264 encoder and WebRTC signalling.
 - Protocol: Rust types in `sidecar/src/protocol/`, TypeScript SDK at `client-sdk/typescript/`.
 
+## kOS addon (optional)
+
+**KerbcastKos** lets a [kOS](https://github.com/KSP-KOS/KOS) script running on a vessel enumerate that vessel's kerbcast cameras and control them from kerboscript: set field of view, pan steerable mounts, and target-track a moving point (`SET cam:AIM TO { RETURN TARGET:POSITION. }.`). It ships as a separate optional download (`KerbcastKos-*.zip` on the [releases page](https://github.com/ksp-gonogo/kerbcast/releases)) and needs both kerbcast and kOS installed.
+
+Full API and examples: [GameData/KerbcastKos/README.md](GameData/KerbcastKos/README.md).
+
 ## Companion project
 
 [gonogo](https://github.com/ksp-gonogo/gonogo) - a WIP mission-control browser SPA that consumes kerbcast feeds (and a few other things).

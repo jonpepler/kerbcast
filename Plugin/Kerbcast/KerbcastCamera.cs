@@ -565,6 +565,23 @@ namespace Kerbcast
                 WalkTransforms(t.GetChild(i), depth + 1, sb);
         }
 
+        /* Map-view-only Unity layers that must never reach a capture feed:
+           layer 31 = orbit / patched-conic vector lines, layer 24 = MapFX
+           node icons (the "planet bloom" flare). KSP OR's layer 31 into the
+           PlanetariumCamera's cullingMask whenever map view draws its 3D orbit
+           lines, and our scaled layer clones that very camera ("Camera
+           ScaledSpace" IS the PlanetariumCamera). A CopyFrom taken while map
+           view is active therefore inherits the orbit lines, which then render
+           into every subsequent frame. Strip both bits from each clone so the
+           feed always shows only the flight scene. Layer 10 (Scaled Scenery)
+           is untouched, so scaled planets/atmosphere still render. */
+        private const int MapViewLayerMask = (1 << 31) | (1 << 24);
+
+        private static void StripMapViewLayers(Camera cam)
+        {
+            if (cam != null) cam.cullingMask &= ~MapViewLayerMask;
+        }
+
         /* Layered camera stack. Each layer copies the corresponding KSP
            flight camera so depth-ordering, clearFlags, cullingMask, and
            per-layer rendering tricks all inherit correctly. All layers
@@ -809,6 +826,15 @@ namespace Kerbcast
             if (_farCam != null)
                 _integrationHost.ApplyToLayer(_farCam, CameraLayers.Far);
 
+            /* Final word on the cull mask: drop the map-view-only layers from
+               every clone. Done after CopyFrom and every mask-widening step
+               above (the AtmoFx OR, integration masks) so nothing can leave
+               orbit lines / map icons in the feed. */
+            StripMapViewLayers(_nearCam);
+            StripMapViewLayers(_scaledCam);
+            StripMapViewLayers(_galaxyCam);
+            StripMapViewLayers(_farCam);
+
             // Pitch transform — resolved here rather than above because it
             // doesn't affect camera parenting in the current design.
             if (!string.IsNullOrEmpty(_panCap.PitchTransformName))
@@ -994,6 +1020,18 @@ namespace Kerbcast
         /// <summary>Human-readable part title.</summary>
         public string PartTitle => _cachedPartTitle;
 
+        /// <summary>World-space optical axis (unit forward) of the capture
+        /// camera: exactly where the stream points, after pan/aim slew. Lets a
+        /// kOS script steer the vessel to hold a target that the mount alone
+        /// can't reach. Falls back to the part's forward before the camera is
+        /// built.</summary>
+        public UnityEngine.Vector3 BoresightWorld =>
+            _nearCam != null ? _nearCam.transform.forward : Hullcam.part.transform.forward;
+
+        /// <summary>World-space position of the capture camera's lens.</summary>
+        public UnityEngine.Vector3 PositionWorld =>
+            _nearCam != null ? _nearCam.transform.position : Hullcam.part.transform.position;
+
         /// <summary>
         /// Set the pan slew target (degrees) directly. Clamps to the part's pan
         /// bounds and no-ops when the camera can't pan. Writes only the target;
@@ -1016,13 +1054,42 @@ namespace Kerbcast
         public void AimAt(UnityEngine.Vector3 worldPoint)
         {
             if (!SupportsPan) return;
-            var parent = _yawTransform != null ? _yawTransform : Hullcam.part.transform;
-            UnityEngine.Vector3 camWorld = parent.TransformPoint(
-                _nearCam != null ? _nearCam.transform.localPosition : UnityEngine.Vector3.zero);
-            UnityEngine.Vector3 dirLocal = parent.InverseTransformDirection((worldPoint - camWorld).normalized);
-            UnityEngine.Vector3 b = UnityEngine.Quaternion.Inverse(_baseRotation) * dirLocal;
-            float yaw, pitch;
-            Kerbcast.PanAim.YawPitch(new Kerbcast.Vec3(b.x, b.y, b.z), out yaw, out pitch);
+            var lens = _nearCam != null ? _nearCam.transform : Hullcam.part.transform;
+            UnityEngine.Vector3 dirWorld = (worldPoint - lens.position).normalized;
+
+            if (_yawTransform == null)
+            {
+                // No joint: the lens carries the whole pan as
+                // _baseRotation * Euler(-pitch, yaw, 0) in the part frame. Solve in
+                // the part frame, which does not rotate with pan, so the angles are
+                // absolute and stable.
+                UnityEngine.Vector3 local = UnityEngine.Quaternion.Inverse(_baseRotation)
+                    * Hullcam.part.transform.InverseTransformDirection(dirWorld);
+                float y, p;
+                Kerbcast.PanAim.YawPitch(new Kerbcast.Vec3(local.x, local.y, local.z), out y, out p);
+                SetPanTarget(y, p);
+                return;
+            }
+
+            // Joint mount: the joint rotates by pan in its parent frame while the
+            // lens stays fixed at _baseRotation relative to the joint. Solving
+            // against the LIVE joint rotation feeds back — as the joint reaches the
+            // target the residual angle collapses to zero, so the target is pulled
+            // back to rest and it oscillates (judder). Solve against the joint's
+            // REST pose so the angles are absolute.
+            UnityEngine.Transform basis = _yawTransform.parent != null
+                ? _yawTransform.parent : Hullcam.part.transform;
+            UnityEngine.Vector3 t = UnityEngine.Quaternion.Inverse(_yawRestRot)
+                * basis.InverseTransformDirection(dirWorld);           // target in the joint rest frame
+            UnityEngine.Vector3 f0 = _baseRotation * UnityEngine.Vector3.forward;  // lens forward in the joint frame
+            // Yaw about the joint's local Y and pitch about local X, each the angle
+            // that carries the lens forward onto the target. Exact for yaw-only
+            // heads (DC.TurretCam); a close decoupled approximation for compound
+            // yaw+pitch heads. YawInvert matches the apply-side sign convention.
+            float yaw = Mathf.Atan2(t.x, t.z) * Mathf.Rad2Deg - Mathf.Atan2(f0.x, f0.z) * Mathf.Rad2Deg;
+            float pitch = Mathf.Asin(Mathf.Clamp(t.y, -1f, 1f)) * Mathf.Rad2Deg
+                        - Mathf.Asin(Mathf.Clamp(f0.y, -1f, 1f)) * Mathf.Rad2Deg;
+            if (_panCap.YawInvert) yaw = -yaw;
             SetPanTarget(yaw, pitch);
         }
 

@@ -58,7 +58,7 @@ FOR c IN ADDONS:KERBCAST:CAMERAS {
       PRINT "tracking " + TARGET:NAME.
       SET c:AIM TO { RETURN TARGET:POSITION. }.  // recalculating source, re-evaluated each tick
       WAIT 8.
-      SET c:AIM TO 0.                            // clear the source; camera holds last angle
+      c:STOPAIM().                               // stop tracking; camera holds last angle
       PRINT "tracking stopped".
     }
     BREAK.
@@ -82,12 +82,52 @@ On the kerbcast stream (browser/gonogo):
 - The turret camera's view **sweeps right (+45 yaw), then left (-45)**, smoothly. The `PANPITCH`
   line does nothing on `DC.TurretCam` (yaw-only); on `hc.launchcam` the view tilts up ~15.
 - With a target set, the turret **tracks the target continuously** as the vessel/target move
-  (this is the `AIM` source re-evaluating each tick). After `SET c:AIM TO 0`, the camera **holds**
+  (this is the `AIM` source re-evaluating each tick). After `c:STOPAIM()`, the camera **holds**
   its last angle instead of following.
 - Moves are immediate (craft-local, no operator signal delay).
 
+## README examples must run verbatim
+
+The `Example` snippets in `GameData/KerbcastKos/README.md` are the addon's
+advertised surface, so they have to work exactly as printed. Copy each one from
+that README (do not retype from here — the point is to prove what a user actually
+reads) into its own file and run it:
+
+1. **List cameras and capabilities** — prints one line per camera with FOV and
+   `pan` flag. Pass: no exception, one line per Hullcam on the vessel.
+2. **Zoom the first zoom-capable camera in** — pass: that camera's view narrows
+   on the stream, no exception.
+3. **Track the current target, then stop** — needs a target set (`HASTARGET` true)
+   and a steerable mount aboard. Pass: the mount tracks the target for ~10s, then
+   holds its last angle after `c:STOPAIM()`.
+
+If any snippet throws, or a documented suffix (`:NAME`, `:FOV`, `:FOVMIN`,
+`:SUPPORTSPAN`, `:AIM`, `:LOOKAT`, `:BORESIGHT`, `:POSITION`, ...) is missing or
+misbehaves, the README is wrong or the addon is: fix whichever, and re-run. The
+README and the addon ship together, so a drifted example is a release blocker.
+
+### Bonus demo (optional): track a target with the whole craft
+
+The README's `Demo: track a target with the whole craft` script uses `:BORESIGHT`
+and `:POSITION` to steer the vessel so a camera holds a moving target, with a
+steerable mount fine-tracking on top. It needs a target set **and** control
+authority (reaction wheels / RCS) to turn the craft, so it only makes sense in
+flight, not on the pad. Not a v1 pass gate — but it's the headline demo, so run
+it if you can: pass = the target stays framed on the stream while the craft slews
+to follow, and (with a steerable camera) the mount makes the fine corrections.
+The steering math is unverified in sim; if the craft points the wrong way or
+oscillates, note it back so the demo script can be corrected.
+
 ## Pass criteria
 
-`AVAILABLE` is true, `CAMERAS` enumerates the vessel's cameras, FOV and yaw changes are
-visible on the stream, and the `AIM` source visibly tracks then stops on clear. Note any suffix
-that misbehaves (wrong direction, no clamp, exception in the terminal) back to the addon issue.
+All of:
+
+- `AVAILABLE` is true and `CAMERAS` enumerates the vessel's cameras.
+- FOV and yaw changes are visible on the stream (eased, not snapped), clamped to
+  each camera's limits.
+- The `AIM` source visibly tracks a moving target, then holds on `c:STOPAIM()`.
+- **Every example in `GameData/KerbcastKos/README.md` runs verbatim** (the section
+  above).
+
+Note any suffix that misbehaves (wrong direction, no clamp, exception in the
+terminal) back to the addon issue.
