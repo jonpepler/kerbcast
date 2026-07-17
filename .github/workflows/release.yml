@@ -114,15 +114,19 @@ jobs:
       - name: Upgrade npm for OIDC trusted publishing
         run: npm install -g npm@latest
 
-      - name: Verify version sync (tag == Cargo.toml == package.json == Kerbcast.version)
+      - name: Verify version sync (tag == Cargo.toml == package.json == Kerbcast.version == KerbcastKos.version)
         run: |
           TAG_VER="${GITHUB_REF_NAME#v}"
           PKG_VER="$(node -p "require('./client-sdk/typescript/package.json').version")"
           REACT_VER="$(node -p "require('./client-sdk/react/package.json').version")"
           CARGO_VER="$(grep -m1 '^version = ' sidecar/Cargo.toml | sed -E 's/version = "(.*)"/\1/')"
           AVC_VER="$(python3 -c "import json; v=json.load(open('GameData/Kerbcast/Kerbcast.version'))['VERSION']; print(f\"{v['MAJOR']}.{v['MINOR']}.{v['PATCH']}\")")"
-          echo "tag=$TAG_VER cargo=$CARGO_VER typescript=$PKG_VER react=$REACT_VER avc=$AVC_VER"
-          if [ "$TAG_VER" != "$CARGO_VER" ] || [ "$CARGO_VER" != "$PKG_VER" ] || [ "$PKG_VER" != "$REACT_VER" ] || [ "$REACT_VER" != "$AVC_VER" ]; then
+          # KerbcastKos is co-versioned with the core (lockstep): the addon
+          # compile-time links the Kerbcast.dll facade, so a matching version is
+          # the compatibility contract.
+          KOS_VER="$(python3 -c "import json; v=json.load(open('GameData/KerbcastKos/KerbcastKos.version'))['VERSION']; print(f\"{v['MAJOR']}.{v['MINOR']}.{v['PATCH']}\")")"
+          echo "tag=$TAG_VER cargo=$CARGO_VER typescript=$PKG_VER react=$REACT_VER avc=$AVC_VER kos=$KOS_VER"
+          if [ "$TAG_VER" != "$CARGO_VER" ] || [ "$CARGO_VER" != "$PKG_VER" ] || [ "$PKG_VER" != "$REACT_VER" ] || [ "$REACT_VER" != "$AVC_VER" ] || [ "$AVC_VER" != "$KOS_VER" ]; then
             echo "::error::version mismatch: run ./scripts/bump-version.sh $TAG_VER and re-tag"
             exit 1
           fi
@@ -403,6 +407,15 @@ jobs:
             /p:KspManaged="${{ github.workspace }}/ksp-managed/KSP_Data/Managed" \
             /p:KspGameData="${{ github.workspace }}/ksp-managed/GameData"
 
+      # The optional kOS addon. Co-versioned + shipped as its own GameData
+      # tree/zip/listing (GPL-3.0, depends kOS). kOS DLLs come from the same
+      # ksp-managed checkout the plugin uses.
+      - name: Build Kerbcast.Kos.dll
+        run: |
+          dotnet build Plugin/KerbcastKos/KerbcastKos.csproj -c Release \
+            /p:KspManaged="${{ github.workspace }}/ksp-managed/KSP_Data/Managed" \
+            /p:KspGameData="${{ github.workspace }}/ksp-managed/GameData"
+
       - name: Checkout HullcamVDSContinued (shader source)
         uses: actions/checkout@v6
         with:
@@ -520,11 +533,28 @@ jobs:
           echo "GameData/Kerbcast tree:"
           find GameData/Kerbcast -type f | sort
 
-      - name: Create release zip
+      # Assemble the addon's own GameData/KerbcastKos tree. The .version,
+      # LICENSE (GPL-3.0) and NOTICE-KOS.txt are committed and arrive via the
+      # checkout; only the freshly built DLL is dropped in. Kept as a separate
+      # tree so it zips + lists independently of the CC-BY-NC-SA core.
+      - name: Assemble GameData/KerbcastKos
+        run: |
+          set -euo pipefail
+          mkdir -p GameData/KerbcastKos/Plugins
+          cp Plugin/KerbcastKos/bin/Release/Kerbcast.Kos.dll GameData/KerbcastKos/Plugins/
+          echo "GameData/KerbcastKos tree:"
+          find GameData/KerbcastKos -type f | sort
+
+      - name: Create release zips
         run: |
           TAG="${GITHUB_REF_NAME}"
-          zip -r "kerbcast-${TAG}.zip" GameData/
+          # Core zip: only GameData/Kerbcast (not the whole GameData/, so the
+          # addon tree doesn't leak into the core download).
+          zip -r "kerbcast-${TAG}.zip" GameData/Kerbcast/
           echo "RELEASE_ZIP=kerbcast-${TAG}.zip" >> $GITHUB_ENV
+          # Addon zip: only GameData/KerbcastKos.
+          zip -r "KerbcastKos-${TAG}.zip" GameData/KerbcastKos/
+          echo "KOS_RELEASE_ZIP=KerbcastKos-${TAG}.zip" >> $GITHUB_ENV
 
       # No GITHUB_REPO env: cliff.toml uses only local commit data, and
       # setting it makes git-cliff fetch remote metadata it never renders —
@@ -561,6 +591,7 @@ jobs:
             echo "## Assets"
             echo "- \`kerbcast-${TAG}.zip\` — complete install tree (plugin + sidecar + shader bundles + settings)"
             echo "- \`Kerbcast.dll\` — plugin DLL only (for manual installs)"
+            echo "- \`KerbcastKos-${TAG}.zip\` — optional kOS addon (requires kOS; GPL-3.0). Install alongside kerbcast for kerboscript camera control."
             echo ""
             echo "> TypeScript SDK \`@ksp-gonogo/kerbcast@${TAG#v}\` and \`@ksp-gonogo/kerbcast-react@${TAG#v}\` published to npm."
             echo ""
@@ -573,6 +604,7 @@ jobs:
           } > release-notes.md
           gh release create "${TAG}" \
             "${{ env.RELEASE_ZIP }}" \
+            "${{ env.KOS_RELEASE_ZIP }}" \
             Plugin/obj/Release/Kerbcast.dll \
             --title "kerbcast ${TAG}" \
             --notes-file release-notes.md
@@ -627,6 +659,52 @@ jobs:
           rm -f ./sd-cookies sd-changelog.md
           echo "SpaceDock mod ${SPACEDOCK_MOD_ID} updated to ${VERSION} (KSP ${GAME_VERSION})"
 
+      # Mirror the addon onto its own SpaceDock listing (a separate mod: own
+      # deps kOS + Kerbcast, own GPL-3.0 licence, so it can't share the core's
+      # listing). Same credentials, different mod id in SPACEDOCK_KERBCAST_KOS_ADDON_ID.
+      # Skips cleanly until that variable is set, independently of the core
+      # SpaceDock step above.
+      - name: Publish KerbcastKos to SpaceDock
+        if: startsWith(github.ref_name, 'v')
+        env:
+          SPACEDOCK_USERNAME: ${{ secrets.SPACEDOCK_USERNAME }}
+          SPACEDOCK_PASSWORD: ${{ secrets.SPACEDOCK_PASSWORD }}
+          SPACEDOCK_KERBCAST_KOS_ADDON_ID: ${{ vars.SPACEDOCK_KERBCAST_KOS_ADDON_ID }}
+          CLIFF_CHANGELOG: ${{ steps.git-cliff.outputs.content }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SPACEDOCK_USERNAME:-}" ] || [ -z "${SPACEDOCK_PASSWORD:-}" ] || [ -z "${SPACEDOCK_KERBCAST_KOS_ADDON_ID:-}" ]; then
+            echo "::warning::KerbcastKos SpaceDock not configured (need secrets SPACEDOCK_USERNAME, SPACEDOCK_PASSWORD and variable SPACEDOCK_KERBCAST_KOS_ADDON_ID); skipping addon upload"
+            exit 0
+          fi
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#v}"
+          ZIP="${{ env.KOS_RELEASE_ZIP }}"
+          GAME_VERSION="$(python3 -c "import json; v=json.load(open('GameData/KerbcastKos/KerbcastKos.version'))['KSP_VERSION']; print(f\"{v['MAJOR']}.{v['MINOR']}.{v['PATCH']}\")")"
+          CHANGELOG="${CLIFF_CHANGELOG}"
+          if [ -z "$CHANGELOG" ]; then
+            PREV_TAG="$(git describe --tags --abbrev=0 "${TAG}^" 2>/dev/null || true)"
+            CHANGELOG="$(git log --oneline ${PREV_TAG:+${PREV_TAG}..}${TAG})"
+          fi
+          printf '%s\n' "$CHANGELOG" > sd-kos-changelog.md
+
+          login="$(curl -sS -F username="$SPACEDOCK_USERNAME" -F password="$SPACEDOCK_PASSWORD" -c ./sd-kos-cookies https://spacedock.info/api/login)"
+          if printf '%s' "$login" | grep -q '"error"[[:space:]]*:[[:space:]]*true'; then
+            echo "::error::SpaceDock login failed: $login"; exit 1
+          fi
+          resp="$(curl -sS -b ./sd-kos-cookies \
+            -F version="$VERSION" \
+            -F "changelog=<sd-kos-changelog.md" \
+            -F game-version="$GAME_VERSION" \
+            -F notify-followers=yes \
+            -F zipball=@"$ZIP" \
+            "https://spacedock.info/api/mod/${SPACEDOCK_KERBCAST_KOS_ADDON_ID}/update")"
+          if printf '%s' "$resp" | grep -q '"error"[[:space:]]*:[[:space:]]*true'; then
+            echo "::error::KerbcastKos SpaceDock upload failed: $resp"; exit 1
+          fi
+          rm -f ./sd-kos-cookies sd-kos-changelog.md
+          echo "SpaceDock mod ${SPACEDOCK_KERBCAST_KOS_ADDON_ID} (KerbcastKos) updated to ${VERSION} (KSP ${GAME_VERSION})"
+
       # Kerbcast.ckan pins an exact version + download URL + hashes for manual
       # .ckan-file installs. The public NetKAN index resolves independently
       # via the SpaceDock listing (see the "Publish to SpaceDock" step above),
@@ -634,7 +712,7 @@ jobs:
       # stale fast if left unpinned (went stale within a day of v0.18.0), so
       # re-pin from the zip we just published. Runs on main, not the tag: the
       # pin must land where users fetch the raw file from.
-      - name: Re-pin Kerbcast.ckan on main
+      - name: Re-pin Kerbcast.ckan + KerbcastKos.ckan on main
         if: startsWith(github.ref_name, 'v')
         run: |
           set -euo pipefail
@@ -643,36 +721,59 @@ jobs:
           SIZE="$(stat -c%s "$ZIP")"
           SHA1="$(sha1sum "$ZIP" | awk '{print toupper($1)}')"
           SHA256="$(sha256sum "$ZIP" | awk '{print toupper($1)}')"
+          # Addon zip hashes computed before the checkout below discards it.
+          KOS_ZIP="${{ env.KOS_RELEASE_ZIP }}"
+          KOS_SIZE="$(stat -c%s "$KOS_ZIP")"
+          KOS_SHA1="$(sha1sum "$KOS_ZIP" | awk '{print toupper($1)}')"
+          KOS_SHA256="$(sha256sum "$KOS_ZIP" | awk '{print toupper($1)}')"
 
           git fetch origin main
           # The assemble step overwrites tracked files (built shader bundles)
           # in the working tree; nothing there is needed anymore, discard.
           git checkout -f -B main origin/main
 
-          python3 - "$TAG" "$SIZE" "$SHA1" "$SHA256" <<'EOF'
+          python3 - "$TAG" "$SIZE" "$SHA1" "$SHA256" "$KOS_SIZE" "$KOS_SHA1" "$KOS_SHA256" <<'EOF'
           import json
           import sys
-          tag, size, sha1, sha256 = sys.argv[1:5]
-          path = "Kerbcast.ckan"
-          with open(path) as f:
+          tag, size, sha1, sha256, kos_size, kos_sha1, kos_sha256 = sys.argv[1:8]
+          ver = tag.lstrip("v")
+
+          with open("Kerbcast.ckan") as f:
               m = json.load(f)
-          m["version"] = tag.lstrip("v")
+          m["version"] = ver
           m["download"] = [
               f"https://github.com/ksp-gonogo/kerbcast/releases/download/{tag}/kerbcast-{tag}.zip"
           ]
           m["download_size"] = int(size)
           m["download_hash"] = {"sha1": sha1, "sha256": sha256}
-          with open(path, "w") as f:
+          with open("Kerbcast.ckan", "w") as f:
               json.dump(m, f, indent=4)
+              f.write("\n")
+
+          # Addon: pin its own version, download, hashes, AND the exact Kerbcast
+          # dependency version (lockstep — the addon links the plugin facade).
+          with open("KerbcastKos.ckan") as f:
+              k = json.load(f)
+          k["version"] = ver
+          k["download"] = [
+              f"https://github.com/ksp-gonogo/kerbcast/releases/download/{tag}/KerbcastKos-{tag}.zip"
+          ]
+          k["download_size"] = int(kos_size)
+          k["download_hash"] = {"sha1": kos_sha1, "sha256": kos_sha256}
+          for dep in k.get("depends", []):
+              if dep.get("name") == "Kerbcast":
+                  dep["version"] = ver
+          with open("KerbcastKos.ckan", "w") as f:
+              json.dump(k, f, indent=4)
               f.write("\n")
           EOF
 
-          if git diff --quiet Kerbcast.ckan; then
-            echo "Kerbcast.ckan already pins ${TAG}; nothing to do"
+          if git diff --quiet Kerbcast.ckan KerbcastKos.ckan; then
+            echo "Kerbcast.ckan + KerbcastKos.ckan already pin ${TAG}; nothing to do"
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add Kerbcast.ckan
+          git add Kerbcast.ckan KerbcastKos.ckan
           git commit -m "chore(ckan): pin ${TAG}"
           git push origin main
