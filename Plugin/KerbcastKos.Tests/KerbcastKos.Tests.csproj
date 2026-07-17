@@ -1,0 +1,70 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    KerbcastKos.Tests — the headless kerboscript integration test for the
+    kOS bridge addon. Drives the REAL kOS compiler + CPU in a plain .NET
+    process (no live Unity), compiles and runs kerboscript against a
+    Kerbcast.Kos.KerbcastAddon whose IKerbcastControl seam has been preset
+    to a fake, so RealKerbcastControl (the only Unity-touching file) never
+    JITs. Proves suffix reads/writes end to end.
+
+    Run:
+      dotnet test Plugin/KerbcastKos.Tests /p:KspGameData=/path/to/GameData
+
+    net10 like every other Plugin/*.Tests; the net48 addon DLL and net48
+    kOS.dll load fine here (proven by KosSpike).
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>disable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+  </ItemGroup>
+
+  <!-- kOS reference DLLs resolved the way the KSP-facing csprojs do:
+       KspGameData points at a GameData tree containing kOS/Plugins. The
+       built addon (Kerbcast.Kos.dll) is referenced by HintPath too, from the
+       KerbcastKos project's own bin/$(Configuration). Soft-degrade to a build
+       warning (dropping the kOS-touching test source) when either the kOS
+       DLLs or the built addon are absent, so a stock runner still builds.
+       Mirrors Gonogo.Kos.Tests. NO UnityEngine reference: the whole driven
+       path stays Unity-free. -->
+  <PropertyGroup>
+    <KspGameData Condition="'$(KspGameData)' == ''">/Users/jon.pepler/personal/gonogo/local_docs/syncthing/kspdata/GameData</KspGameData>
+    <KosSafeDll>$(KspGameData)/kOS/Plugins/kOS.Safe.dll</KosSafeDll>
+    <KosDll>$(KspGameData)/kOS/Plugins/kOS.dll</KosDll>
+    <KerbcastKosDll>$(MSBuildThisFileDirectory)../KerbcastKos/bin/$(Configuration)/Kerbcast.Kos.dll</KerbcastKosDll>
+    <KosSafeAvailable Condition="Exists('$(KosSafeDll)') And Exists('$(KosDll)') And Exists('$(KerbcastKosDll)')">true</KosSafeAvailable>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(KosSafeAvailable)' == 'true'">
+    <Reference Include="kOS.Safe">
+      <HintPath>$(KosSafeDll)</HintPath>
+    </Reference>
+    <Reference Include="kOS">
+      <HintPath>$(KosDll)</HintPath>
+    </Reference>
+    <Reference Include="Kerbcast.Kos">
+      <HintPath>$(KerbcastKosDll)</HintPath>
+    </Reference>
+    <Compile Include="FakeKerbcastControl.cs" />
+    <Compile Include="KerbcastAddonTests.cs" />
+  </ItemGroup>
+
+  <Target Name="WarnKerbcastKosSkipped" BeforeTargets="Build" Condition="'$(KosSafeAvailable)' != 'true'">
+    <Warning Text="kOS DLLs (under KspGameData=$(KspGameData)) and/or the built Kerbcast.Kos.dll ($(KerbcastKosDll)) not found — the KerbcastKos headless integration tests are SKIPPED. Build Plugin/KerbcastKos first, then pass /p:KspGameData=&lt;GameData containing kOS/Plugins&gt;." />
+  </Target>
+
+</Project>
