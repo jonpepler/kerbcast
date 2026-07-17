@@ -2,8 +2,37 @@ kerbcast
 Copyright (c) 2026 Jon Pepler
 
 This work is licensed under the Creative Commons
-Attribution-NonCommercial-ShareAlike 4.0 International License.
+Attribution-NonCommercial-ShareAlike 4.0 International License
+(CC BY-NC-SA 4.0), with the exceptions listed below.
 Full legal text follows.
+
+
+Scope
+-----
+
+CC BY-NC-SA 4.0 covers kerbcast's own code by default: the plugin
+(Plugin/Kerbcast), the sidecar (sidecar/), and the web page (web/).
+
+These parts carry a different licence, and this file does not apply
+to them:
+
+  client-sdk/typescript          MIT       see its own LICENSE
+  client-sdk/react               MIT       see its own LICENSE
+      The client SDKs are the interface to kerbcast rather than the
+      work itself, so they are permissive: anyone may build against
+      the protocol without inheriting kerbcast's terms. Versions of
+      @ksp-gonogo/kerbcast and @ksp-gonogo/kerbcast-react published
+      before 1.6.0 were released under CC BY-NC-SA 4.0.
+
+  Plugin/KerbcastKos             GPL-3.0-only
+      Optional kOS addon; direct-links GPLv3 kOS.
+      See Plugin/KerbcastKos/NOTICE-KOS.txt.
+
+  GameData/Kerbcast/HullcamShaders/shaders.linux
+                                 GPL-3.0
+      Built from HullcamVDSContinued shader sources; shipped as a
+      separate work under GPL's mere-aggregation clause.
+      See GameData/Kerbcast/HullcamShaders/LICENSE.md.
 
 
 Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International

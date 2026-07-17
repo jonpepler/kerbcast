@@ -2,7 +2,7 @@
   "name": "@ksp-gonogo/kerbcast-react",
   "version": "1.5.1",
   "description": "React components and hooks for kerbcast camera feeds.",
-  "license": "CC-BY-NC-SA-4.0",
+  "license": "MIT",
   "author": "Jon Pepler",
   "homepage": "https://github.com/ksp-gonogo/kerbcast#readme",
   "bugs": {

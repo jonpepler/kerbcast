@@ -138,7 +138,11 @@ const useDelayedStream: CameraStreamHook = (flightId) => {
 
 ## License
 
+[MIT](./LICENSE). This SDK is the interface to kerbcast, so it is permissive:
+build what you like against it. The kerbcast mod itself is
 [CC BY-NC-SA 4.0](https://github.com/ksp-gonogo/kerbcast/blob/main/LICENSE).
+
+Versions published before 1.6.0 carry the older CC BY-NC-SA 4.0 licence.
 
 ## Versioning
 
