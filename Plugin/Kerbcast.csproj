@@ -132,6 +132,8 @@
     <Compile Remove="IntegrationPolicy.Tests/**/*.cs" />
     <Compile Remove="CaptureEpoch.Tests/**/*.cs" />
     <Compile Remove="InFlightSignal.Tests/**/*.cs" />
+    <Compile Remove="PanAim.Tests/**/*.cs" />
+    <Compile Remove="KosSpike/**/*.cs" />
   </ItemGroup>
 
 </Project>
