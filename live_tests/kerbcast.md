@@ -107,7 +107,7 @@ Client → sidecar (`ClientMessage`):
 | `set-layers` | `{ "flightId": n, "layers": ["NEAR","SCALED","GALAXY"] }` | server-wide |
 | `set-render-size` | `{ "flightId": n, … }` | even pixels only; capped at ring max |
 | `set-fov` | `{ "flightId": n, "fov": deg }` | ignored when `supportsZoom == false` |
-| `set-pan` | `{ "flightId": n, … }` | absolute; no stock parts support pan yet |
+| `set-pan` | `{ "flightId": n, … }` | absolute; ignored unless `supportsPan == true` (steerable mounts: `DC.TurretCam`, `hc.launchcam`) |
 | `set-pan-rate` / `set-zoom-rate` | `{ "flightId": n, … }` | persistent velocity, −1..=1; zero stops; `Error` reply if unsupported |
 | `set-degrade` | `{ "flightId": n, "level": 0.0–1.0 }` | max-across-subscribers wins |
 | `set-quality` | `{ "flightId": n, "preset": "half" }` | viewer resolution preset (`full`/`threeQuarter`/`half`/`quarter`; omit or null = auto); last write wins; can only lower below the operator ceiling |

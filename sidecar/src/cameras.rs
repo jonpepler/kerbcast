@@ -190,8 +190,8 @@ pub struct ControlState {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fov: Option<f32>,
     /// Operator-requested pan/tilt in degrees. None = "neutral / rest".
-    /// Ignored for parts where `supports_pan == false` (every shipping
-    /// part today; reserved for the planned mod extension).
+    /// Ignored for parts where `supports_pan == false` (the fixed-mount
+    /// majority); honored by steerable mounts (`DC.TurretCam`, `hc.launchcam`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pan_yaw: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]

@@ -111,10 +111,10 @@ export interface CameraState {
 	fovMin: number;
 	fovMax: number;
 	/**
-	 * Whether the part supports pan/tilt (kerbcast-side mod extension —
-	 * no stock Hullcam parts are steerable, but the extended mod adds
-	 * pan to specific parts). False on every shipping part today;
-	 * clients should hide pan controls until this flips true.
+	 * Whether the part supports pan/tilt. True on parts with a steerable
+	 * mount in the plugin's `PartCapabilities` table (today: `DC.TurretCam`,
+	 * yaw-only; `hc.launchcam`, yaw+pitch); false on fixed-mount parts, which
+	 * are the majority. Clients hide pan controls when false.
 	 */
 	supportsPan: boolean;
 	panYaw: number;
@@ -356,10 +356,10 @@ export type ClientMessage =
 	| { type: "set-fov", content: SetFovPayload }
 	/**
 	 * Pan/tilt the camera (yaw and pitch, both degrees from the
-	 * part's resting forward). No stock Hullcam parts support this
-	 * yet — the message is ignored until the planned mod extension
-	 * adds steerable mounts to specific parts. Clients should hide
-	 * pan controls until `supportsPan == true` for the camera.
+	 * part's resting forward). Honored by parts with a steerable mount
+	 * (`supportsPan == true`, e.g. `DC.TurretCam` / `hc.launchcam`);
+	 * silently ignored for fixed-mount parts. Clients should hide pan
+	 * controls until `supportsPan == true` for the camera.
 	 */
 	| { type: "set-pan", content: SetPanPayload }
 	/**
