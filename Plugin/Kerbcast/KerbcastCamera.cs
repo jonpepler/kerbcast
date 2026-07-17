@@ -986,6 +986,46 @@ namespace Kerbcast
             _fovTarget = clamped;
         }
 
+        /// <summary>Operator/part-facing camera name (falls back to the part
+        /// title). Snapshot from construction so it is safe after teardown.</summary>
+        public string CameraName => _cachedCameraName;
+        /// <summary>Part config name (e.g. "DC.TurretCam").</summary>
+        public string PartName => _cachedPartName;
+        /// <summary>Human-readable part title.</summary>
+        public string PartTitle => _cachedPartTitle;
+
+        /// <summary>
+        /// Set the pan slew target (degrees) directly. Clamps to the part's pan
+        /// bounds and no-ops when the camera can't pan. Writes only the target;
+        /// Refresh() slews the current toward it, so scripted pan animates like
+        /// operator pan.
+        /// </summary>
+        public void SetPanTarget(float yaw, float pitch)
+        {
+            if (!SupportsPan) return;
+            _panYawTarget = Mathf.Clamp(yaw, _panCap.YawMin, _panCap.YawMax);
+            _panPitchTarget = Mathf.Clamp(pitch, _panCap.PitchMin, _panCap.PitchMax);
+        }
+
+        /// <summary>
+        /// Aim the camera at a world-space point by inverting the mount-frame
+        /// rotation the plugin applies (baseRot * Euler(-pitch, yaw, 0)) and
+        /// delegating to <see cref="SetPanTarget"/>. No-op when the camera can't
+        /// pan. Pairs with the shipped Kerbcast.PanAim.YawPitch math.
+        /// </summary>
+        public void AimAt(UnityEngine.Vector3 worldPoint)
+        {
+            if (!SupportsPan) return;
+            var parent = _yawTransform != null ? _yawTransform : Hullcam.part.transform;
+            UnityEngine.Vector3 camWorld = parent.TransformPoint(
+                _nearCam != null ? _nearCam.transform.localPosition : UnityEngine.Vector3.zero);
+            UnityEngine.Vector3 dirLocal = parent.InverseTransformDirection((worldPoint - camWorld).normalized);
+            UnityEngine.Vector3 b = UnityEngine.Quaternion.Inverse(_baseRotation) * dirLocal;
+            float yaw, pitch;
+            Kerbcast.PanAim.YawPitch(new Kerbcast.Vec3(b.x, b.y, b.z), out yaw, out pitch);
+            SetPanTarget(yaw, pitch);
+        }
+
         /// <summary>
         /// Cascade table: (resolution multiplier, layers to drop). Lower
         /// levels are gentler on perception. Resolution reduction wins over

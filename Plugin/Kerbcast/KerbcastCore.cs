@@ -47,6 +47,14 @@ namespace Kerbcast
         private const int RingSlots = 4;
         private static readonly string RingDir = ResolveRingDir();
 
+        /* Live singleton for the flight scene, set in Awake / cleared in
+           OnDestroy. The in-process KerbcastControl facade (used by the
+           kOS add-on) resolves cameras through this. */
+        public static KerbcastCore Instance { get; private set; }
+
+        // Read-only view of the tracked cameras for the KerbcastControl facade.
+        internal System.Collections.Generic.IReadOnlyList<KerbcastCamera> Cameras => _cameras;
+
         /* ~0.5s at 60fps: long enough that a transient scene-change hiccup
            doesn't evict a healthy camera, short enough to stop a genuinely
            broken one from log-spamming for minutes. */
@@ -153,6 +161,7 @@ namespace Kerbcast
 
         private void Awake()
         {
+            Instance = this;
             Debug.Log("[Kerbcast] KerbcastCore.Awake — initialising");
 
             _settings = KerbcastSettings.Load();
@@ -1172,6 +1181,8 @@ namespace Kerbcast
 
         private void OnDestroy()
         {
+            if (Instance == this) Instance = null;
+
             // ALWAYS restore the main flight cameras on scene exit so a
             // revert / quit-to-KSC / quit-to-main-menu doesn't leave KSP
             // with a dead viewport. This is unconditional even if the
