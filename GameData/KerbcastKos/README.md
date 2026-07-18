@@ -10,8 +10,7 @@ target-track a moving point.
 - kerbcast (the camera mod itself)
 - kOS
 
-Install both alongside this addon. On CKAN the dependencies are declared, so it
-pulls them in for you.
+Install both alongside this addon.
 
 ## API
 
