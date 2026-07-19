@@ -406,6 +406,15 @@ async fn consume_loop(
             for flight_id in peer.bound_flight_ids().await {
                 if let Some(cam) = registry.get(flight_id).await {
                     cam.forget_degrade(peer.peer_id).await;
+                    // The reload/stale-peer tell: if a departed peer was
+                    // pinning effective via the noisiest-consumer max, this
+                    // shows the level relaxing the moment it is reaped.
+                    info!(
+                        peer_id = peer.peer_id,
+                        flight_id,
+                        effective = cam.current_degrade(),
+                        "peer reaped: degrade forgotten",
+                    );
                 }
             }
             // Deadman: a browser that dropped mid-hold must not leave a
