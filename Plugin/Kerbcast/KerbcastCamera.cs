@@ -73,11 +73,12 @@ namespace Kerbcast
            so one persistently-broken camera can't break the rest. */
         public int RefreshFailureStreak { get; set; }
 
-        /* Pan capability from the mount (null when the part can't pan). Owns the
-           joint resolution + the YawInvert/axis mapping; core keeps the target
-           solve, rate integration, slew and clamp. Held typed so core can read
-           the slew/rate config + resolved joint that aren't on IPanCapability. */
-        private readonly HullcamPanCapability _pan;
+        /* Pan capability from the mount (null when the source can't pan). Owns
+           the joint resolution + the YawInvert/axis mapping; core keeps the
+           target solve, rate integration, slew and clamp, reading the rate
+           config + resolved joint through the IPanCapability contract so it
+           stays source-agnostic. */
+        private readonly IPanCapability _pan;
         public bool SupportsPan => _pan != null;
         public float PanYawMin => _pan != null ? _pan.YawMin : 0f;
         public float PanYawMax => _pan != null ? _pan.YawMax : 0f;
@@ -307,9 +308,9 @@ namespace Kerbcast
             AtmoFxLayers fxLayers)
         {
             Mount = mount;
-            // Pan is delivered through the mount now; held typed so core can read
-            // the slew/rate config + resolved joint that IPanCapability omits.
-            _pan = mount.Pan as HullcamPanCapability;
+            // Pan is delivered through the mount as the IPanCapability contract;
+            // core steers purely through the interface, never a concrete type.
+            _pan = mount.Pan;
             FlightId = flightId;
             MaxWidth = maxWidth;
             MaxHeight = maxHeight;
