@@ -879,15 +879,22 @@ impl CameraRegistry {
             // manifests never carry the field, and the manifest read above
             // already happened for destroyed detection, so this adds no extra
             // I/O.
+            //
+            // Defensive on a partial read: a well-formed kerbal manifest always
+            // carries "seat" or "eva", so a parsed None means the re-read caught
+            // a mid-write (the plugin's write is not guaranteed atomic). Keep the
+            // last good value in that case — never clobber to null — so the
+            // operator's label can't flicker blank and back.
             if cam.kind == CameraKind::Kerbal {
-                let next = crew_location_from_manifest(manifest.crew_location.as_deref());
-                if cam.set_crew_location(next) {
-                    info!(
-                        flight_id = id,
-                        crew_location = ?next,
-                        "kerbal crew_location changed — relabeling subscribers",
-                    );
-                    crew_relabeled.push(*id);
+                if let Some(next) = crew_location_from_manifest(manifest.crew_location.as_deref()) {
+                    if cam.set_crew_location(Some(next)) {
+                        info!(
+                            flight_id = id,
+                            crew_location = ?next,
+                            "kerbal crew_location changed — relabeling subscribers",
+                        );
+                        crew_relabeled.push(*id);
+                    }
                 }
             }
         }
@@ -1835,6 +1842,51 @@ mod tests {
         assert_eq!(info.crew_location, Some(CrewLocation::Eva));
         // ...and the camera is marked dirty so subscribers relabel live.
         assert!(registry.take_dirty_cameras().await.contains(&flight_id));
+    }
+
+    /// A partial/failed manifest read (no `crew_location` parsed) must NOT
+    /// clobber a live kerbal camera's value. The plugin never writes null for
+    /// a kerbal, so a parsed `None` means the re-read caught a mid-write; the
+    /// last good value is kept and the camera is NOT marked dirty (no spurious
+    /// blank relabel / flicker).
+    #[tokio::test]
+    async fn rescan_keeps_kerbal_crew_location_on_partial_manifest_read() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let shm = dir.path();
+        let flight_id: u32 = 9_013;
+        let cfg = MmapRingConfig {
+            slot_count: 4,
+            max_width: 64,
+            max_height: 64,
+        };
+        MmapFrameRing::create(&shm.join(format!("{flight_id}.ring")), cfg).expect("create ring");
+        let info_path = shm.join(format!("{flight_id}.info.json"));
+
+        // Attach on EVA.
+        let eva = format!(
+            r#"{{"flight_id":{flight_id},"kind":"kerbal","kerbal_persistent_id":42,"crew_location":"eva","part_name":"","part_title":"","camera_name":"Jeb's Face","vessel_name":"Kerbal X","supports_zoom":false,"fov":0.0,"fov_min":0.0,"fov_max":0.0,"supports_pan":false,"pan_yaw_min":0.0,"pan_yaw_max":0.0,"pan_pitch_min":0.0,"pan_pitch_max":0.0}}"#,
+        );
+        tokio::fs::write(&info_path, eva).await.unwrap();
+        let registry = CameraRegistry::new(shm.to_path_buf());
+        registry.rescan().await;
+        let cam = registry.get(flight_id).await.expect("camera attached");
+        assert_eq!(cam.crew_location(), Some(CrewLocation::Eva));
+        let _ = registry.take_dirty_cameras().await;
+
+        // A re-read that yields no crew_location (partial write / mid-rewrite):
+        // valid JSON, field absent -> parses to None.
+        let no_loc = format!(
+            r#"{{"flight_id":{flight_id},"kind":"kerbal","kerbal_persistent_id":42,"part_name":"","part_title":"","camera_name":"Jeb's Face","vessel_name":"Kerbal X","supports_zoom":false,"fov":0.0,"fov_min":0.0,"fov_max":0.0,"supports_pan":false,"pan_yaw_min":0.0,"pan_yaw_max":0.0,"pan_pitch_min":0.0,"pan_pitch_max":0.0}}"#,
+        );
+        tokio::fs::write(&info_path, no_loc).await.unwrap();
+        registry.rescan().await;
+
+        // Value kept, not cleared; no spurious relabel.
+        assert_eq!(cam.crew_location(), Some(CrewLocation::Eva));
+        assert!(
+            registry.take_dirty_cameras().await.is_empty(),
+            "partial read must not mark the camera dirty",
+        );
     }
 
     /// A part manifest with no `kind` field at all (every manifest written
