@@ -30,6 +30,15 @@ namespace Kerbcast
         public IEnumerable<ICamera> Enumerate(Vessel vessel, IReadOnlyCollection<uint> existingFlightIds)
         {
             var result = new List<ICamera>();
+            /* One dedupe set for BOTH loops, seeded from the already-tracked ids and
+               grown as we build. existingFlightIds alone is not enough: when this
+               runs against an EVA vessel, the seated loop below walks the KerbalEVA
+               part and adds the kerbal, then the EVA sweep finds the same vessel —
+               and the new camera is only in `result`, not in existingFlightIds, so a
+               set keyed on existingFlightIds would build a SECOND camera on the same
+               ring (MmapFrameRing.Create truncates+remaps rather than throwing, so
+               the try/catch wouldn't catch it). */
+            var seen = new HashSet<uint>(existingFlightIds);
             foreach (var part in vessel.parts)
             {
                 foreach (var pcm in part.protoModuleCrew)
@@ -40,7 +49,8 @@ namespace Kerbcast
                        entry would also collide at wire-id 0x80000000, so skip. */
                     if (pcm.persistentID == 0) continue;
                     uint flightId = CameraId.KerbalWireId(pcm.persistentID);
-                    if (existingFlightIds.Contains(flightId)) continue;
+                    if (seen.Contains(flightId)) continue;
+                    seen.Add(flightId);
 
                     try
                     {
@@ -56,11 +66,11 @@ namespace Kerbcast
             /* EVA kerbals are their own one-part vessels, so the per-vessel seated
                sweep above misses anyone already on EVA (or on a vessel not being
                scanned this pass). Sweep loaded EVA vessels so each gets a
-               KerbalFaceCamera at the SAME persistentID-based wire-id. Dedupe on
-               existingFlightIds means a kerbal tracked while seated who then walks
-               out the hatch is NOT rebuilt here: its existing camera switches to the
-               EVA backend in place (KerbalFaceCamera.ResolveLocation), keeping one
-               ring with no teardown. */
+               KerbalFaceCamera at the SAME persistentID-based wire-id. Dedupe via
+               `seen` (which now includes anything the seated loop just added) means a
+               kerbal tracked while seated who then walks out the hatch is NOT rebuilt
+               here: its existing camera switches to the EVA backend in place
+               (KerbalFaceCamera.ResolveLocation), keeping one ring with no teardown. */
             var loaded = FlightGlobals.VesselsLoaded;
             if (loaded != null)
             {
@@ -75,7 +85,8 @@ namespace Kerbcast
                     if (pcm == null || pcm.type == ProtoCrewMember.KerbalType.Tourist) continue;
                     if (pcm.persistentID == 0) continue;
                     uint flightId = CameraId.KerbalWireId(pcm.persistentID);
-                    if (existingFlightIds.Contains(flightId)) continue;
+                    if (seen.Contains(flightId)) continue;
+                    seen.Add(flightId);
 
                     try
                     {

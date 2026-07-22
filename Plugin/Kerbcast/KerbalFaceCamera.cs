@@ -188,16 +188,30 @@ namespace Kerbcast
         /* Live-resolve where this kerbal is right now, keyed on the stable
            persistentID. Never caches the KerbalEVA / seat / Kerbal refs. Updates
            _occupiedPart to the current owning part as a side effect so
-           Vessel/OwnsPart/liveness track a seat<->EVA switch. EVA is checked
-           first (definitive: a one-part EVA vessel whose sole crew is us), then
-           the last-known seat part (fast path), then a full loaded-vessel scan
-           for a re-seat into a different part. */
+           Vessel/OwnsPart/liveness track a seat<->EVA switch. Order is chosen for
+           the steady-state cost of the per-frame IsAlive sweep: the seated
+           fast-path (last-known part still holds us) is O(1) and tried first, then
+           the EVA loop (definitive: a one-part EVA vessel whose sole crew is us),
+           then a full loaded-vessel scan for a re-seat into a different part. The
+           fast-path's !isEVA guard means a kerbal who left the seat (part no longer
+           holds it, or the part's vessel is now the EVA vessel) still falls through
+           to the EVA/full paths, so the reorder can't mis-report a state. */
         private CrewLocation ResolveLocation(out Part part, out KerbalEVA eva)
         {
             eva = null;
             part = null;
             var loaded = FlightGlobals.VesselsLoaded;
             if (loaded == null) return CrewLocation.None;
+
+            // Seated fast path (O(1) steady state): still crew of the last-known
+            // part, and that part isn't an EVA vessel (a kerbal on EVA is handled by
+            // the EVA loop below, never claimed as seated here).
+            if (_occupiedPart != null && _occupiedPart.vessel != null
+                && !_occupiedPart.vessel.isEVA && PartHoldsSelf(_occupiedPart))
+            {
+                part = _occupiedPart;
+                return CrewLocation.Seat;
+            }
 
             // EVA: KerbalEVA's own crew[0] is this kerbal.
             for (int i = 0; i < loaded.Count; i++)
@@ -214,14 +228,6 @@ namespace Kerbcast
                     _occupiedPart = part;
                     return CrewLocation.Eva;
                 }
-            }
-
-            // Seated fast path: still crew of the last-known part.
-            if (_occupiedPart != null && _occupiedPart.vessel != null
-                && !_occupiedPart.vessel.isEVA && PartHoldsSelf(_occupiedPart))
-            {
-                part = _occupiedPart;
-                return CrewLocation.Seat;
             }
 
             // Seated full scan: re-seated into a different (loaded) part.
@@ -425,7 +431,14 @@ namespace Kerbcast
                     + $"  \"kerbal_persistent_id\": {_persistentId.ToString(inv)},\n"
                     + $"  \"crew_location\": \"{_crewLocation}\"\n"
                     + "}\n";
-                File.WriteAllText(_infoPath, json);
+                // Atomic write: drop into .tmp + rename so the sidecar never reads a
+                // half-written file. Matters now that UpdateCrewLocationManifest
+                // rewrites this live during streaming while the sidecar re-reads it
+                // each rescan (mirrors KerbcastCore's status write + InFlightSignal).
+                var tmp = _infoPath + ".tmp";
+                File.WriteAllText(tmp, json);
+                if (File.Exists(_infoPath)) File.Delete(_infoPath);
+                File.Move(tmp, _infoPath);
             }
             catch (Exception ex)
             {
