@@ -1,9 +1,10 @@
 /* Kerbal face camera. Implements ICamera so KerbcastCore's capture loop
    tracks it uniformly, allocates a per-camera mmap ring and writes an
    info.json manifest. When a peer subscribes (via the shared-memory control
-   block) it renders KSP's IVA portrait camera into a 512x512 ring frame each
-   tick through the shared CaptureCore tail. Liveness is resolved from the
-   owning part + persistentID each call; the ProtoCrewMember/Part refs are
+   block) it renders KSP's IVA portrait camera into a square ring frame
+   (min(512, tier width, tier height) per side, so sub-512 tiers still fit)
+   each tick through the shared CaptureCore tail. Liveness is resolved from
+   the owning part + persistentID each call; the ProtoCrewMember/Part refs are
    never assumed live, and the IVA avatar (KerbalRef) is re-resolved every
    tick rather than cached. */
 
@@ -31,6 +32,13 @@ namespace Kerbcast
         private readonly string _infoPath;
         private readonly string _controlPath;
         private bool _disposed;
+
+        // Square capture side: min(512, tier width, tier height), so the ring
+        // and the capture RT can never drift apart. Below-512 tiers (e.g. low
+        // at 640x360) previously produced 512x512 frames into a ring sized for
+        // the tier, throwing on every frame; this clamps the capture itself
+        // down to whatever the tier actually allows.
+        private readonly int _captureDim;
 
         // Shared-memory control block written by the sidecar. Opened lazily
         // once the file appears (mirrors KerbcastCamera). Kerbal cameras only
@@ -73,9 +81,11 @@ namespace Kerbcast
             _ringPath = Path.Combine(ringDir, $"{FlightId}.ring");
             _infoPath = Path.Combine(ringDir, $"{FlightId}.info.json");
             _controlPath = Path.Combine(ringDir, $"{FlightId}.control.bin");
-            // Ring allocated at the global max even though no frames flow yet,
-            // so a later capture stage can write without reallocating.
-            _ring = MmapFrameRing.Create(_ringPath, ringSlots, width, height);
+            _captureDim = Math.Min(512, Math.Min(width, height));
+            // Ring sized to match the capture dim exactly: the capture stage
+            // (EnsureCapture) renders at the same _captureDim, so ring and
+            // frame can never disagree regardless of quality tier.
+            _ring = MmapFrameRing.Create(_ringPath, ringSlots, _captureDim, _captureDim);
             WriteInfoManifest();
         }
 
@@ -133,8 +143,9 @@ namespace Kerbcast
 
         // Lazily build the capture tail on first subscribe. Filterless: a plain
         // Blit passed to Publish, minimal failure/reset callbacks (kerbal
-        // cameras have no telemetry columns of their own). 512x512 fits inside
-        // the ring's slot capacity (allocated at the settings render size).
+        // cameras have no telemetry columns of their own). _captureDim matches
+        // the ring exactly (both derived in the ctor), so capture never
+        // exceeds the ring's slot capacity on any tier.
         private CaptureCore EnsureCapture()
         {
             if (_capture == null)
@@ -144,7 +155,7 @@ namespace Kerbcast
                 // must leave _capture null so the next tick retries construction,
                 // rather than latching a half-initialized capture tail.
                 var capture = new CaptureCore(_ring, _phaseTimings, LogRateLimited, () => _consecutiveErrors = 0);
-                capture.BuildTargets(512, 512);
+                capture.BuildTargets(_captureDim, _captureDim);
                 _capture = capture;
             }
             return _capture;
