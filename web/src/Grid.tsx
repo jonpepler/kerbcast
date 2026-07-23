@@ -31,7 +31,10 @@ interface GridProps {
 const GAP = 16; // 1rem; keep in sync with Root `gap`
 
 export function Grid({ tiles, onTilesChange, showDebugInfo, showStatic }: GridProps): React.JSX.Element {
-  const cameras = useKerbcastCameras();
+  // Part cams only: kerbal face cams live in the crew bar, so the grid's
+  // seeding / add-all / missing-count / reconcile never pull one in. Part-camera
+  // grid behaviour is otherwise unchanged.
+  const cameras = useKerbcastCameras().filter((c) => c.kind !== "kerbal");
   const [showPerfNote, setShowPerfNote] = useState(false);
 
   const commit = (next: TileData[]) => {

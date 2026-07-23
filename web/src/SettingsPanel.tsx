@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import { X } from "lucide-react";
 import styled from "styled-components";
-import type { ThemePreference } from "./settings";
+import type { CrewBarPlacement, ThemePreference } from "./settings";
 
 interface SettingsProps {
   theme: ThemePreference;
@@ -9,10 +9,14 @@ interface SettingsProps {
   /** Effective (resolved) value of the show-static setting. */
   showStatic: boolean;
   showPerfWarnings: boolean;
+  crewPlacement: CrewBarPlacement;
+  crewDissolve: boolean;
   onThemeChange: (t: ThemePreference) => void;
   onDebugChange: (enabled: boolean) => void;
   onShowStaticChange: (enabled: boolean) => void;
   onShowPerfWarningsChange: (enabled: boolean) => void;
+  onCrewPlacementChange: (placement: CrewBarPlacement) => void;
+  onCrewDissolveChange: (dissolve: boolean) => void;
   onClose: () => void;
 }
 
@@ -21,10 +25,14 @@ export function Settings({
   debug,
   showStatic,
   showPerfWarnings,
+  crewPlacement,
+  crewDissolve,
   onThemeChange,
   onDebugChange,
   onShowStaticChange,
   onShowPerfWarningsChange,
+  onCrewPlacementChange,
+  onCrewDissolveChange,
   onClose,
 }: SettingsProps): React.JSX.Element {
   const panelRef = useRef<HTMLDivElement>(null);
@@ -98,6 +106,36 @@ export function Settings({
             onChange={(e) => onShowPerfWarningsChange(e.target.checked)}
             style={{ accentColor: "var(--kc-accent)", width: "1rem", height: "1rem" }}
           />
+        </FieldRow>
+
+        <SectionLabel style={{ marginTop: "0.75rem" }}>Crew</SectionLabel>
+
+        <FieldRow>
+          <div>
+            <FieldLabel htmlFor="kc-crew-dissolve-toggle">Dissolve crew bar</FieldLabel>
+            <FieldHint>Show crew faces inline with the grid instead of a docked bar</FieldHint>
+          </div>
+          <input
+            id="kc-crew-dissolve-toggle"
+            type="checkbox"
+            checked={crewDissolve}
+            onChange={(e) => onCrewDissolveChange(e.target.checked)}
+            style={{ accentColor: "var(--kc-accent)", width: "1rem", height: "1rem" }}
+          />
+        </FieldRow>
+
+        <FieldRow>
+          <FieldLabel htmlFor="kc-crew-placement-select">Crew bar position</FieldLabel>
+          <NativeSelect
+            id="kc-crew-placement-select"
+            value={crewPlacement}
+            disabled={crewDissolve}
+            onChange={(e) => onCrewPlacementChange(e.target.value as CrewBarPlacement)}
+          >
+            <option value="row">Bottom row</option>
+            <option value="column">Side column</option>
+            <option value="wrap">Wrap</option>
+          </NativeSelect>
         </FieldRow>
 
         <SectionLabel style={{ marginTop: "0.75rem" }}>Developer</SectionLabel>

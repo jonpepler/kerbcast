@@ -574,7 +574,7 @@ describe("App - settings", () => {
     fireEvent.click(screen.getByRole("button", { name: /settings/i }));
     await waitFor(() => screen.getByRole("dialog"));
 
-    const select = screen.getByRole("combobox") as HTMLSelectElement;
+    const select = screen.getByLabelText("Theme") as HTMLSelectElement;
     await act(async () => {
       fireEvent.change(select, { target: { value: "dark" } });
     });
@@ -594,7 +594,7 @@ describe("App - settings", () => {
     fireEvent.click(screen.getByRole("button", { name: /settings/i }));
     await waitFor(() => screen.getByRole("dialog"));
 
-    const select = screen.getByRole("combobox") as HTMLSelectElement;
+    const select = screen.getByLabelText("Theme") as HTMLSelectElement;
     await act(async () => {
       fireEvent.change(select, { target: { value: "auto" } });
     });

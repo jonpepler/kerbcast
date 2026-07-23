@@ -3,6 +3,7 @@ import { KerbcastProvider, useKerbcastCameras } from "@ksp-gonogo/kerbcast-react
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import styled from "styled-components";
 import { ConnectionManager } from "./connectionManager";
+import { CrewBar } from "./CrewBar";
 import { DevPanel } from "./DevPanel";
 import { ErrorToast } from "./ErrorToast";
 import { Grid } from "./Grid";
@@ -12,16 +13,20 @@ import { ShedBanner } from "./ShedBanner";
 import { StandbyOverlay } from "./StandbyOverlay";
 import {
   applyTheme,
+  loadCrewBarDissolve,
+  loadCrewBarPlacement,
   loadDebug,
   loadShowPerfWarnings,
   loadShowStatic,
   loadTheme,
+  saveCrewBarDissolve,
+  saveCrewBarPlacement,
   saveDebug,
   saveShowPerfWarnings,
   saveShowStatic,
   saveTheme,
 } from "./settings";
-import type { ThemePreference } from "./settings";
+import type { CrewBarPlacement, ThemePreference } from "./settings";
 import { loadTiles, reconcileTiles, saveTiles, seedTiles } from "./tiles";
 import type { Tile as TileData } from "./tiles";
 
@@ -72,6 +77,13 @@ export function App({ client }: AppProps): React.JSX.Element {
   const [showPerfWarnings, setShowPerfWarnings] = useState<boolean>(() => loadShowPerfWarnings());
   const [settingsOpen, setSettingsOpen] = useState(false);
 
+  // Crew-bar settings: placement + dissolve persist; minimise is transient
+  // (a bar control, resets on reload). Kerbal face cams render only here, never
+  // as part-grid tiles — dissolve just moves this group docked <-> inline.
+  const [crewPlacement, setCrewPlacement] = useState<CrewBarPlacement>(() => loadCrewBarPlacement());
+  const [crewDissolve, setCrewDissolve] = useState<boolean>(() => loadCrewBarDissolve());
+  const [crewMinimised, setCrewMinimised] = useState(false);
+
   // Tile state
   const storedTiles = loadTiles();
   const [tiles, setTiles] = useState<TileData[]>(() => storedTiles ?? []);
@@ -101,40 +113,57 @@ export function App({ client }: AppProps): React.JSX.Element {
             debug={debug}
             showStatic={showStatic}
             showPerfWarnings={showPerfWarnings}
+            crewPlacement={crewPlacement}
+            crewDissolve={crewDissolve}
             onThemeChange={(t: ThemePreference) => { saveTheme(t); applyTheme(t); setTheme(t); }}
             onDebugChange={(d: boolean) => { saveDebug(d); setDebug(d); }}
             onShowStaticChange={(s: boolean) => { saveShowStatic(s); setShowStaticExplicit(s); }}
             onShowPerfWarningsChange={(v: boolean) => { saveShowPerfWarnings(v); setShowPerfWarnings(v); }}
+            onCrewPlacementChange={(p: CrewBarPlacement) => { saveCrewBarPlacement(p); setCrewPlacement(p); }}
+            onCrewDissolveChange={(d: boolean) => { saveCrewBarDissolve(d); setCrewDissolve(d); }}
             onClose={() => setSettingsOpen(false)}
           />
         )}
         {showPerfWarnings && <ShedBanner client={client} />}
         <ErrorToast client={client} />
         <MainArea>
-          <ScrollArea>
-            {/* CameraSeeder and CameraReconciler use useKerbcastCameras inside KerbcastProvider */}
-            <CameraSeeder
-              tilesSeeded={tilesSeeded}
-              onSeed={(seeded) => {
-                setTiles(seeded);
-                saveTiles(seeded);
-                setTilesSeeded(true);
-              }}
-            />
-            <CameraReconciler
-              tiles={tiles}
-              onReconcile={handleReconcile}
-            />
-            <Grid
-              tiles={tiles}
-              onTilesChange={setTiles}
-              showDebugInfo={debug}
-              showStatic={showStatic}
-            />
-            {debug && (
-              <DevPanel client={client} tileFlightIds={tileFlightIds} />
+          <DockLayout $side={!crewDissolve && crewPlacement === "column"}>
+            <ScrollArea>
+              {/* CameraSeeder and CameraReconciler use useKerbcastCameras inside KerbcastProvider */}
+              <CameraSeeder
+                tilesSeeded={tilesSeeded}
+                onSeed={(seeded) => {
+                  setTiles(seeded);
+                  saveTiles(seeded);
+                  setTilesSeeded(true);
+                }}
+              />
+              <CameraReconciler
+                tiles={tiles}
+                onReconcile={handleReconcile}
+              />
+              <Grid
+                tiles={tiles}
+                onTilesChange={setTiles}
+                showDebugInfo={debug}
+                showStatic={showStatic}
+              />
+              {/* Dissolved crew: render inline in the content flow, below the grid. */}
+              {crewDissolve && <CrewBar placement={crewPlacement} inline />}
+              {debug && (
+                <DevPanel client={client} tileFlightIds={tileFlightIds} />
+              )}
+            </ScrollArea>
+            {/* Docked crew bar (default). Same CrewBar instance across placement /
+                minimise changes — CSS reflow only, feeds never remount. */}
+            {!crewDissolve && (
+              <CrewBar
+                placement={crewPlacement}
+                minimised={crewMinimised}
+                onToggleMinimise={() => setCrewMinimised((v) => !v)}
+              />
             )}
-          </ScrollArea>
+          </DockLayout>
           <StandbyOverlay />
         </MainArea>
       </PageShell>
@@ -152,7 +181,8 @@ interface CameraSeederProps {
 }
 
 function CameraSeeder({ tilesSeeded, onSeed }: CameraSeederProps): null {
-  const cameras = useKerbcastCameras();
+  // Part cams only: kerbal face cams live in the crew bar, never the tile grid.
+  const cameras = useKerbcastCameras().filter((c) => c.kind !== "kerbal");
 
   useEffect(() => {
     if (tilesSeeded) return;
@@ -183,7 +213,8 @@ interface CameraReconcilerProps {
  * "reconnecting" until the user manually rebinds them.
  */
 function CameraReconciler({ tiles, onReconcile }: CameraReconcilerProps): null {
-  const cameras = useKerbcastCameras();
+  // Part cams only: never rebind/repurpose a grid tile onto a kerbal face cam.
+  const cameras = useKerbcastCameras().filter((c) => c.kind !== "kerbal");
 
   useEffect(() => {
     if (cameras.length === 0) return;
@@ -220,6 +251,15 @@ const MainArea = styled.main`
   overflow: hidden;
   display: flex;
   flex-direction: column;
+`;
+
+/* Holds the scrolling grid area plus the docked crew bar. Row when the crew
+   bar docks to the side (column placement); column otherwise (bottom dock). */
+const DockLayout = styled.div<{ $side: boolean }>`
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: ${(p) => (p.$side ? "row" : "column")};
 `;
 
 const ScrollArea = styled.div`
