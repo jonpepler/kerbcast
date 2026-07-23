@@ -29,7 +29,7 @@ import {
   saveTheme,
 } from "./settings";
 import type { CrewBarPlacement, ThemePreference } from "./settings";
-import { loadTiles, reconcileTiles, saveTiles, seedTiles } from "./tiles";
+import { loadTiles, pruneCrewTiles, reconcileTiles, saveTiles, seedTiles } from "./tiles";
 import type { Tile as TileData } from "./tiles";
 
 interface AppProps {
@@ -246,10 +246,16 @@ function CameraReconciler({ mergeCrew, tiles, onReconcile }: CameraReconcilerPro
   const cameras = mergeCrew ? all : all.filter((c) => c.kind !== "kerbal");
 
   useEffect(() => {
-    if (cameras.length === 0) return;
-    const reconciled = reconcileTiles(tiles, cameras);
+    // Guard on the unfiltered list: a craft with ONLY kerbal cams has an empty
+    // filtered `cameras` but still needs pruning below.
+    if (all.length === 0) return;
+    // Merge OFF: evict any kerbal tile stranded by a prior merge-ON session
+    // (kerbals belong in the crew bar, not the grid) before reconciling. Needs
+    // the unfiltered `all` to see kerbal ids. Merge ON: kerbals stay grid tiles.
+    const pruned = mergeCrew ? tiles : pruneCrewTiles(tiles, all);
+    const reconciled = reconcileTiles(pruned, cameras);
     if (reconciled !== tiles) onReconcile(reconciled);
-  }, [cameras, tiles, onReconcile]);
+  }, [all, cameras, tiles, mergeCrew, onReconcile]);
 
   return null;
 }

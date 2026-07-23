@@ -13,7 +13,7 @@
 
 import { KerbcastClient } from "@ksp-gonogo/kerbcast";
 import type { CameraLifecycle } from "@ksp-gonogo/kerbcast";
-import { Layer } from "@ksp-gonogo/kerbcast";
+import { CameraKind, CrewLocation, Layer } from "@ksp-gonogo/kerbcast";
 import type { MockCameraInit } from "@ksp-gonogo/kerbcast/testing";
 import { MockSidecar } from "@ksp-gonogo/kerbcast/testing";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -532,6 +532,36 @@ describe("App - remove controls", () => {
     const stored = JSON.parse(localStorage.getItem("kerbcast:tiles") ?? "[]") as
       { flightId: number | null }[];
     expect(stored.map((t) => t.flightId)).toEqual([1]);
+  });
+
+  it("merge OFF prunes a kerbal tile stranded by a prior merge-ON session", async () => {
+    // Repro: kerbal was a grid tile while merged (persisted), then merge went
+    // OFF. On reload the stranded kerbal tile would keep rendering in the grid,
+    // duplicating the crew bar. The reconciler must evict it. Merge is OFF by
+    // default (loadCrewMerge), so no localStorage crewMerge key is set here.
+    saveTiles([
+      { flightId: 1, spotlit: false, key: "Kerbal X|mumech.MuMechModuleHullCamera|Alpha" },
+      { flightId: 201, spotlit: false, key: "Kerbal X||Jebediah Kerman" },
+    ]);
+
+    const { client, openSidecar } = buildFixture([
+      makeCamera({ flightId: 1, cameraName: "Alpha" }),
+      makeCamera({
+        flightId: 201,
+        kind: CameraKind.Kerbal,
+        crewLocation: CrewLocation.Seat,
+        cameraName: "Jebediah Kerman",
+      }),
+    ]);
+    await renderApp(client);
+    await act(async () => { openSidecar(); });
+
+    // Only the part tile survives; the kerbal tile is pruned from the grid.
+    await waitFor(() => {
+      const stored = JSON.parse(localStorage.getItem("kerbcast:tiles") ?? "[]") as
+        { flightId: number | null }[];
+      expect(stored.map((t) => t.flightId)).toEqual([1]);
+    });
   });
 
   it("offers no remove-lost control when nothing is lost", async () => {
