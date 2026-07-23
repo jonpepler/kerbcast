@@ -475,8 +475,11 @@ pub enum ClientMessage {
     /// Override the operator layer mask for one camera. Server-wide
     /// state — all consumers see the change.
     SetLayers(SetLayersPayload),
-    /// Override the operator render size for one camera. Even pixels
-    /// only (H.264 chroma); server caps at the ring's allocated max.
+    /// Cap the auto-resolution for one camera. As of Stage 6 this is a
+    /// CEILING on the demand-driven size (effective = min(auto max-across-
+    /// consumers, this cap)), NOT an authoritative set: it cannot force a
+    /// camera larger than current consumers report, only smaller. Even
+    /// pixels only (H.264 chroma); server caps at the ring's allocated max.
     SetRenderSize(SetRenderSizePayload),
     /// A consumer reporting its OWN current display size in px; the sidecar
     /// aggregates MAX-across-consumers to drive auto-resolution
