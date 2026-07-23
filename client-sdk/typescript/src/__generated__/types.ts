@@ -40,6 +40,18 @@ export enum CrewLocation {
 }
 
 /**
+ * Which moving thing a pan+zoom camera should auto-aim at. `None` = tracking
+ * off (manual pan resumes). `ActiveVessel` and `Target` resolve to a world
+ * position from `FlightGlobals` (the active vessel, or its target) with no
+ * orbit math. Only surfaces on cameras with BOTH pan and zoom.
+ */
+export enum TrackMode {
+	None = "none",
+	ActiveVessel = "activeVessel",
+	Target = "target",
+}
+
+/**
  * Layer mask. Mirrors `Kerbcast.CameraLayers` on the plugin side.
  * Receiving clients use this for both the rendered-layer status reports
  * and per-camera layer requests.
@@ -105,6 +117,13 @@ export interface CameraState {
 	 * part cameras.
 	 */
 	crewLocation?: CrewLocation;
+	/**
+	 * Server-authoritative auto-track state for a pan+zoom camera (the
+	 * operator's persistent intent). `None` (the default) = not tracking.
+	 * Every browser reflects this; a browser track overrides a kOS aim on the
+	 * same camera (send `SetTrackTarget` with `none` to hand back to kOS).
+	 */
+	trackMode?: TrackMode;
 	partName: string;
 	partTitle: string;
 	cameraName: string;
@@ -321,6 +340,20 @@ export interface SetThrottleMainScreenPayload {
 	enabled: boolean;
 }
 
+/**
+ * Ask a pan+zoom camera to auto-track a moving vessel (or stop). Mirrors
+ * `SetRenderSizePayload` in shape. Server-authoritative: the sidecar holds the
+ * chosen mode per camera and publishes it in `CameraState.track_mode`, so
+ * every browser reflects the same tracking state (never optimistic-local).
+ * 
+ * Precedence note (for operators): a browser track OVERRIDES a kOS aim on the
+ * same camera; set `mode: none` to hand aiming back to kOS.
+ */
+export interface SetTrackTargetPayload {
+	flightId: number;
+	mode: TrackMode;
+}
+
 export interface SetZoomRatePayload {
 	flightId: number;
 	/**
@@ -401,6 +434,14 @@ export type ClientMessage =
 	 * pixels only (H.264 chroma); server caps at the ring's allocated max.
 	 */
 	| { type: "set-render-size", content: SetRenderSizePayload }
+	/**
+	 * Auto-track a moving vessel with a pan+zoom camera (or stop). The sidecar
+	 * holds the chosen `mode` per camera and publishes it in
+	 * `CameraState.track_mode`, so tracking state is server-authoritative and
+	 * consistent across browsers. A browser track OVERRIDES a kOS aim on the
+	 * same camera; send `mode: none` to hand aiming back to kOS.
+	 */
+	| { type: "set-track-target", content: SetTrackTargetPayload }
 	/**
 	 * A consumer reporting its OWN current display size in px; the sidecar
 	 * aggregates MAX-across-consumers to drive auto-resolution

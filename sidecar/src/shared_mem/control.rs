@@ -37,7 +37,21 @@
 //!   +52  4   u32 viewer_level   (viewer quality clamp: index into the
 //!                                plugin's QualityClamp.ViewerScales; absent
 //!                                = auto, no viewer clamp)
+//!   +56  4   u32 track_mode     (auto-track: 0=none, 1=active-vessel,
+//!                                2=target. Present-bit CLEAR = none/off; the
+//!                                sidecar always writes full state, so "absent"
+//!                                unambiguously means not-tracking here, unlike
+//!                                the leave-untouched semantics of the fields
+//!                                above.)
 //! ```
+//!
+//! NOTE: this field is an APPEND with its own `fields_present` bit, NOT a layout
+//! version bump. The bitmask is forward-compatible by construction: an old
+//! reader ignores a bit it doesn't know and never touches +56 (previously-zero
+//! reserved body space), so v2 and v3-with-track_mode interoperate. Only a
+//! field REORDER or a body-size change needs a `CONTROL_LAYOUT_VERSION` bump.
+//! The golden fixture stays byte-identical (its `fixture_state` leaves
+//! track_mode = None, so the bit is clear and +56 is zero).
 //!
 //! Seqlock (single writer / single reader): the writer stores `seq` odd
 //! (Release), writes the body, then stores `seq` even (Release). The reader
@@ -54,7 +68,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use memmap2::{MmapMut, MmapOptions};
 
 use crate::cameras::ControlState;
-use crate::protocol::Layer;
+use crate::protocol::{Layer, TrackMode};
 
 /// "KCTRLB1\0" little-endian. Distinct from the frame ring's "KERBCAST1".
 pub const CONTROL_MAGIC: u64 = 0x0031_424C_5254_434B;
@@ -85,6 +99,7 @@ const B_ZOOM_RATE: usize = 40;
 const B_PAN_SEQ: usize = 44;
 const B_FOV_SEQ: usize = 48;
 const B_VIEWER_LEVEL: usize = 52;
+const B_TRACK_MODE: usize = 56;
 
 // `fields_present` bits — one per Option/Vec field that can be "unset".
 pub const FP_LAYERS: u32 = 1 << 0;
@@ -97,6 +112,17 @@ pub const FP_PAN_YAW_RATE: u32 = 1 << 6;
 pub const FP_PAN_PITCH_RATE: u32 = 1 << 7;
 pub const FP_ZOOM_RATE: u32 = 1 << 8;
 pub const FP_VIEWER_LEVEL: u32 = 1 << 9;
+pub const FP_TRACK_MODE: u32 = 1 << 10;
+
+/// Auto-track mode → the u32 the plugin decodes (0=none, 1=active-vessel,
+/// 2=target). Keep in lockstep with ControlBlock.cs's SetTrackMode mapping.
+pub fn track_mode_to_u32(m: TrackMode) -> u32 {
+    match m {
+        TrackMode::None => 0,
+        TrackMode::ActiveVessel => 1,
+        TrackMode::Target => 2,
+    }
+}
 
 pub fn layers_to_mask(layers: &[Layer]) -> u32 {
     let mut mask = 0u32;
@@ -201,6 +227,13 @@ impl ControlBlock {
         if s.viewer_level.is_some() {
             present |= FP_VIEWER_LEVEL;
         }
+        // track_mode: bit set only when actively tracking. Bit CLEAR = none/off
+        // (the sidecar always writes full state, so the plugin reads absence as
+        // "stop tracking", not "leave untouched"). Keeps the golden fixture
+        // byte-identical while none is the default.
+        if s.track_mode != TrackMode::None {
+            present |= FP_TRACK_MODE;
+        }
 
         self.put_u32(B_FIELDS_PRESENT, present);
         // subscribed (u8) + 3 pad bytes.
@@ -222,6 +255,7 @@ impl ControlBlock {
         self.put_u32(B_PAN_SEQ, s.pan_seq);
         self.put_u32(B_FOV_SEQ, s.fov_seq);
         self.put_u32(B_VIEWER_LEVEL, s.viewer_level.unwrap_or(0));
+        self.put_u32(B_TRACK_MODE, track_mode_to_u32(s.track_mode));
     }
 }
 
@@ -244,6 +278,9 @@ pub struct ControlSnapshot {
     pub pan_seq: u32,
     pub fov_seq: u32,
     pub viewer_level: Option<u32>,
+    /// Auto-track mode (0=none/1=active-vessel/2=target). `None` when the
+    /// present bit is clear = not tracking.
+    pub track_mode: Option<u32>,
 }
 
 fn rd_u32(buf: &[u8], at: usize) -> u32 {
@@ -257,7 +294,7 @@ fn rd_f32(buf: &[u8], at: usize) -> f32 {
 /// magic+version. Returns `None` if the bytes don't carry our layout — the
 /// reader's "not ready / wrong build" gate.
 pub fn decode(buf: &[u8]) -> Option<ControlSnapshot> {
-    if buf.len() < CONTROL_HEADER_SIZE + B_VIEWER_LEVEL + 4 {
+    if buf.len() < CONTROL_HEADER_SIZE + B_TRACK_MODE + 4 {
         return None;
     }
     if u64::from_le_bytes(buf[H_MAGIC..H_MAGIC + 8].try_into().unwrap()) != CONTROL_MAGIC {
@@ -297,6 +334,7 @@ pub fn decode(buf: &[u8]) -> Option<ControlSnapshot> {
         pan_seq: rd_u32(buf, b + B_PAN_SEQ),
         fov_seq: rd_u32(buf, b + B_FOV_SEQ),
         viewer_level: opt_u32(FP_VIEWER_LEVEL, B_VIEWER_LEVEL),
+        track_mode: opt_u32(FP_TRACK_MODE, B_TRACK_MODE),
     })
 }
 
@@ -322,6 +360,9 @@ mod tests {
             pan_seq: 9,
             fov_seq: 4,
             viewer_level: Some(2), // viewer asked for the half preset
+            // Left None so the golden fixture stays byte-identical (the append
+            // is forward-compatible; track_mode has its own dedicated test).
+            track_mode: TrackMode::None,
         }
     }
 
@@ -386,6 +427,30 @@ mod tests {
         blk.write(&fixture_state());
         assert_eq!(blk.seq_atomic().load(Ordering::Relaxed), 4);
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn track_mode_roundtrips_and_defaults_absent() {
+        // Absent (None) when not tracking: bit clear, decodes as None.
+        let snap = decode(&write_to_vec(&fixture_state())).expect("decodes");
+        assert_eq!(snap.track_mode, None);
+        assert_eq!(snap.fields_present & FP_TRACK_MODE, 0);
+
+        // Present + value when tracking (2 = target).
+        let tracking = ControlState {
+            track_mode: TrackMode::Target,
+            ..fixture_state()
+        };
+        let snap = decode(&write_to_vec(&tracking)).expect("decodes");
+        assert_eq!(snap.track_mode, Some(2));
+        assert_ne!(snap.fields_present & FP_TRACK_MODE, 0);
+
+        // active-vessel = 1.
+        let active = ControlState {
+            track_mode: TrackMode::ActiveVessel,
+            ..fixture_state()
+        };
+        assert_eq!(decode(&write_to_vec(&active)).unwrap().track_mode, Some(1));
     }
 
     #[test]

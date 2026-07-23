@@ -161,6 +161,12 @@ pub struct CameraState {
     /// part cameras.
     #[serde(default)]
     pub crew_location: Option<CrewLocation>,
+    /// Server-authoritative auto-track state for a pan+zoom camera (the
+    /// operator's persistent intent). `None` (the default) = not tracking.
+    /// Every browser reflects this; a browser track overrides a kOS aim on the
+    /// same camera (send `SetTrackTarget` with `none` to hand back to kOS).
+    #[serde(default)]
+    pub track_mode: TrackMode,
     pub part_name: String,
     pub part_title: String,
     pub camera_name: String,
@@ -254,6 +260,35 @@ pub struct SetRenderSizePayload {
     pub flight_id: u32,
     pub width: u32,
     pub height: u32,
+}
+
+/// Which moving thing a pan+zoom camera should auto-aim at. `None` = tracking
+/// off (manual pan resumes). `ActiveVessel` and `Target` resolve to a world
+/// position from `FlightGlobals` (the active vessel, or its target) with no
+/// orbit math. Only surfaces on cameras with BOTH pan and zoom.
+#[typeshare]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum TrackMode {
+    #[default]
+    None,
+    ActiveVessel,
+    Target,
+}
+
+/// Ask a pan+zoom camera to auto-track a moving vessel (or stop). Mirrors
+/// `SetRenderSizePayload` in shape. Server-authoritative: the sidecar holds the
+/// chosen mode per camera and publishes it in `CameraState.track_mode`, so
+/// every browser reflects the same tracking state (never optimistic-local).
+///
+/// Precedence note (for operators): a browser track OVERRIDES a kOS aim on the
+/// same camera; set `mode: none` to hand aiming back to kOS.
+#[typeshare]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetTrackTargetPayload {
+    pub flight_id: u32,
+    pub mode: TrackMode,
 }
 
 /// A consumer reporting its OWN current display size in px for one camera.
@@ -481,6 +516,12 @@ pub enum ClientMessage {
     /// camera larger than current consumers report, only smaller. Even
     /// pixels only (H.264 chroma); server caps at the ring's allocated max.
     SetRenderSize(SetRenderSizePayload),
+    /// Auto-track a moving vessel with a pan+zoom camera (or stop). The sidecar
+    /// holds the chosen `mode` per camera and publishes it in
+    /// `CameraState.track_mode`, so tracking state is server-authoritative and
+    /// consistent across browsers. A browser track OVERRIDES a kOS aim on the
+    /// same camera; send `mode: none` to hand aiming back to kOS.
+    SetTrackTarget(SetTrackTargetPayload),
     /// A consumer reporting its OWN current display size in px; the sidecar
     /// aggregates MAX-across-consumers to drive auto-resolution
     /// (meet-the-minimum-need). Distinct from the operator `SetRenderSize`
@@ -617,6 +658,37 @@ mod tests {
     use super::*;
 
     #[test]
+    fn set_track_target_roundtrips() {
+        let msg = ClientMessage::SetTrackTarget(SetTrackTargetPayload {
+            flight_id: 7,
+            mode: TrackMode::ActiveVessel,
+        });
+        let s = serde_json::to_string(&msg).unwrap();
+        assert!(s.contains("\"type\":\"set-track-target\""));
+        assert!(s.contains("\"content\":"));
+        assert!(s.contains("\"flightId\":7"));
+        assert!(s.contains("\"mode\":\"activeVessel\""));
+        let back: ClientMessage = serde_json::from_str(&s).unwrap();
+        match back {
+            ClientMessage::SetTrackTarget(p) => {
+                assert_eq!(p.flight_id, 7);
+                assert_eq!(p.mode, TrackMode::ActiveVessel);
+            }
+            _ => panic!("wrong variant"),
+        }
+
+        // The wire tags for each mode + the default.
+        assert_eq!(TrackMode::default(), TrackMode::None);
+        for (mode, tag) in [
+            (TrackMode::None, "none"),
+            (TrackMode::ActiveVessel, "activeVessel"),
+            (TrackMode::Target, "target"),
+        ] {
+            assert_eq!(serde_json::to_string(&mode).unwrap(), format!("\"{tag}\""));
+        }
+    }
+
+    #[test]
     fn set_layers_roundtrips() {
         let msg = ClientMessage::SetLayers(SetLayersPayload {
             flight_id: 123,
@@ -674,6 +746,7 @@ mod tests {
                 kind: CameraKind::Part,
                 kerbal_persistent_id: None,
                 crew_location: None,
+                track_mode: TrackMode::None,
                 part_name: "navCam1".into(),
                 part_title: "NavCam".into(),
                 camera_name: "NavCam".into(),
@@ -727,6 +800,7 @@ mod tests {
             kind: CameraKind::Part,
             kerbal_persistent_id: None,
             crew_location: None,
+            track_mode: TrackMode::None,
             part_name: String::new(),
             part_title: String::new(),
             camera_name: String::new(),
@@ -1145,6 +1219,7 @@ mod tests {
             kind: CameraKind::Kerbal,
             kerbal_persistent_id: Some(123456),
             crew_location: Some(CrewLocation::Eva),
+            track_mode: TrackMode::None,
             part_name: String::new(),
             part_title: String::new(),
             camera_name: "Jebediah Kerman".into(),

@@ -26,7 +26,7 @@ use webrtc::track::track_local::track_local_static_sample::TrackLocalStaticSampl
 use crate::encoder::{EncoderBackend, SessionHealth};
 use crate::protocol::{
     CameraKind, CameraLifecycle, CameraState as ProtocolCameraState, CrewLocation, Layer,
-    QualityPreset, SettingsStatePayload,
+    QualityPreset, SettingsStatePayload, TrackMode,
 };
 use crate::shared_mem::{ControlBlock, MmapFrameRing};
 
@@ -232,6 +232,18 @@ pub struct ControlState {
     /// raise it, and never touches the adaptive machinery.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub viewer_level: Option<u32>,
+    /// Server-authoritative auto-track mode for a pan+zoom camera (the
+    /// operator's persistent intent). `None` = not tracking. Flushed to the
+    /// control block for the plugin, and published in the protocol
+    /// `CameraState.track_mode` so every browser reflects it. A browser track
+    /// overrides a kOS aim on the same camera; `None` hands aiming back to kOS.
+    #[serde(skip_serializing_if = "track_mode_is_none")]
+    pub track_mode: TrackMode,
+}
+
+/// serde skip helper: keep the debug JSON clean for the common not-tracking case.
+fn track_mode_is_none(m: &TrackMode) -> bool {
+    *m == TrackMode::None
 }
 
 /// Public shape returned by `GET /cameras` — what a browser sees before
@@ -256,6 +268,9 @@ pub struct CameraInfo {
     /// Which source a kerbal camera is currently rendering. `None` for
     /// part cameras.
     pub crew_location: Option<CrewLocation>,
+    /// Server-authoritative auto-track mode for a pan+zoom camera. `None` =
+    /// not tracking. Every browser reflects this.
+    pub track_mode: TrackMode,
     pub max_width: u32,
     pub max_height: u32,
     pub part_name: String,
@@ -441,6 +456,12 @@ pub struct CameraState {
     /// lock-free (encode_and_fan_out runs per-frame, the f32 is
     /// already bit-pattern-stable for our levels).
     pub effective_degrade: AtomicU32,
+    /// Auto-track mode published to browsers (0=none/1=active-vessel/2=target),
+    /// the cheap lock-free mirror of `ControlState.track_mode`. `ControlState`
+    /// is the flush-to-plugin snapshot; this atomic is the publish source read
+    /// by `list()`/`protocol_state` without locking. `apply_track_target` is the
+    /// single writer and sets both, so they can't drift.
+    pub track_mode_bits: AtomicU32,
     /// Last wall-clock instant we *encoded* (and emitted NALs to) a frame.
     /// The consume loop uses this to pace encodes against the configured
     /// `fps`, instead of running once per ring write at LateUpdate's
@@ -550,6 +571,27 @@ impl CameraState {
     /// part cameras. Cheap copy out of the interior-mutable cell.
     pub fn crew_location(&self) -> Option<CrewLocation> {
         *self.crew_location.lock().unwrap()
+    }
+
+    /// Current published auto-track mode (lock-free read of the atomic mirror).
+    pub fn track_mode(&self) -> TrackMode {
+        match self.track_mode_bits.load(Ordering::Acquire) {
+            1 => TrackMode::ActiveVessel,
+            2 => TrackMode::Target,
+            _ => TrackMode::None,
+        }
+    }
+
+    /// Set the published track-mode mirror. `apply_track_target` calls this
+    /// alongside writing `ControlState.track_mode` so the publish + flush
+    /// sources stay in lockstep.
+    fn set_track_mode_bits(&self, mode: TrackMode) {
+        let bits = match mode {
+            TrackMode::None => 0,
+            TrackMode::ActiveVessel => 1,
+            TrackMode::Target => 2,
+        };
+        self.track_mode_bits.store(bits, Ordering::Release);
     }
 
     /// Overwrite the crew location on the live camera. Called by `rescan`
@@ -1072,6 +1114,7 @@ impl CameraRegistry {
                             target_bitrate_bps: AtomicU32::new(0),
                             bandwidth_estimates: Mutex::new(std::collections::HashMap::new()),
                             effective_degrade: AtomicU32::new(0),
+                            track_mode_bits: AtomicU32::new(0),
                             last_encoded_at: Mutex::new(None),
                             last_sequence: AtomicU64::new(0),
                             subscribers: AtomicUsize::new(0),
@@ -1153,6 +1196,7 @@ impl CameraRegistry {
                 kind: s.kind,
                 kerbal_persistent_id: s.kerbal_persistent_id,
                 crew_location: s.crew_location(),
+                track_mode: s.track_mode(),
                 max_width: s.max_width,
                 max_height: s.max_height,
                 part_name: s.part_name.clone(),
@@ -1283,6 +1327,7 @@ impl CameraRegistry {
                 kind: cam.kind,
                 kerbal_persistent_id: cam.kerbal_persistent_id,
                 crew_location: cam.crew_location(),
+                track_mode: cam.track_mode(),
                 part_name: cam.part_name.clone(),
                 part_title: cam.part_title.clone(),
                 camera_name: cam.camera_name.clone(),
@@ -1487,6 +1532,32 @@ impl CameraRegistry {
         Ok(())
     }
 
+    /// Apply a browser auto-track request: store the mode (server-authoritative,
+    /// last write wins across peers), mirror it to the publish atomic, flush it
+    /// to the plugin's control block, and mark the camera dirty so every browser
+    /// reflects the new tracking state. The plugin only acts on it for a pan+zoom
+    /// camera; `None` stops tracking. A browser track overrides a kOS aim on the
+    /// same camera. Errors only on an unknown camera.
+    pub async fn apply_track_target(&self, flight_id: u32, mode: TrackMode) -> Result<(), String> {
+        let Some(cam) = self.get(flight_id).await else {
+            return Err(format!("no camera with flight_id={flight_id}"));
+        };
+        let snapshot = {
+            let mut ctrl = cam.control.lock().await;
+            ctrl.track_mode = mode;
+            ctrl.clone()
+        };
+        // Mirror to the lock-free publish source BEFORE the broadcast so
+        // list()/protocol_state read the new value.
+        cam.set_track_mode_bits(mode);
+        if let Err(e) = self.flush_control(flight_id, &snapshot).await {
+            warn!(flight_id, error = %e, "track target flush failed");
+            return Err(format!("control flush failed: {e}"));
+        }
+        self.mark_camera_dirty(flight_id).await;
+        Ok(())
+    }
+
     /// Recompute a camera's effective render size (auto MAX-across-consumers ∩
     /// manual cap) and flush it into `ControlState.width/height` → the plugin.
     /// Called after any display-size report, forget, or manual-cap change. The
@@ -1656,6 +1727,7 @@ impl CameraRegistry {
             kind: cam.kind,
             kerbal_persistent_id: cam.kerbal_persistent_id,
             crew_location: cam.crew_location(),
+            track_mode: cam.track_mode(),
             part_name: cam.part_name.clone(),
             part_title: cam.part_title.clone(),
             camera_name: cam.camera_name.clone(),

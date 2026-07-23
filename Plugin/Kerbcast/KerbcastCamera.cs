@@ -1050,6 +1050,39 @@ namespace Kerbcast
             SetPanTarget(yaw, pitch);
         }
 
+        /* Browser auto-track (issue #6). 0=none, 1=active-vessel, 2=target,
+           set from the control block (SetTrackTarget) each poll. None (the
+           default) makes Refresh's track step a single bool check with no other
+           effect, so the kOS aim path is untouched. */
+        private int _trackMode = TrackAim.ModeNone;
+
+        /// <summary>Set the browser auto-track mode (0=none/1=active-vessel/
+        /// 2=target). Called from PollControlFile. Only acted on for a pan+zoom
+        /// camera; a browser track overrides a kOS aim on the same camera.</summary>
+        public void SetTrackMode(int mode) => _trackMode = mode;
+
+        /* Resolve the current track target's WORLD position from FlightGlobals
+           only (no orbit math): the active vessel's CoM, or its target's
+           transform. Null when there is no active vessel / no target this
+           frame (a no-op tick). */
+        private UnityEngine.Vector3? ResolveTrackTarget()
+        {
+            if (_trackMode == TrackAim.ModeActiveVessel)
+            {
+                var v = FlightGlobals.ActiveVessel;
+                return v != null ? (UnityEngine.Vector3?)v.CoM : null;
+            }
+            if (_trackMode == TrackAim.ModeTarget)
+            {
+                var tgt = FlightGlobals.ActiveVessel != null
+                    ? FlightGlobals.ActiveVessel.targetObject
+                    : null;
+                var tr = tgt != null ? tgt.GetTransform() : null;
+                return tr != null ? (UnityEngine.Vector3?)tr.position : null;
+            }
+            return null;
+        }
+
         /// <summary>
         /// Cascade table: (resolution multiplier, layers to drop). Lower
         /// levels are gentler on perception. Resolution reduction wins over
@@ -1281,6 +1314,12 @@ namespace Kerbcast
                     _zoomRate = Mathf.Clamp(snap.ZoomRate.Value, -1f, 1f);
                 }
 
+                // Auto-track mode (issue #6). The sidecar always writes full
+                // state, so an absent bit means "not tracking" (none), not
+                // "leave unchanged"; hence the ?? 0. Only acted on for a pan+zoom
+                // camera in Refresh; a browser track overrides a kOS aim.
+                SetTrackMode((int)(snap.TrackMode ?? 0u));
+
                 if (SupportsPan)
                 {
                     // Absolute pan is applied only when panSeq changes (covers
@@ -1414,6 +1453,21 @@ namespace Kerbcast
             {
                 _controlCheckCountdown = 1;
                 PollControlFile();
+            }
+
+            // Browser auto-track (issue #6): resolve the tracked world point and
+            // set the pan target BEFORE the slew, so the existing MoveTowards
+            // filter animates toward it. Gated on a real mode + a pan+zoom mount;
+            // track_mode==none (the default) makes this a single bool check with
+            // no other effect, so the kOS aim path is untouched. A browser track
+            // overrides a kOS aim on the same camera (this runs in LateUpdate,
+            // after kOS's in-cycle aim). AimAt no-ops if the point is unresolved.
+            // TODO(auto-zoom gate): distance-driven zoom is a DISTINCT primitive
+            // (TrackAim.FovForDistance); wire it behind its own control field.
+            if (TrackAim.ShouldAim(_trackMode, SupportsPan, SupportsZoom))
+            {
+                UnityEngine.Vector3? target = ResolveTrackTarget();
+                if (target.HasValue) AimAt(target.Value);
             }
 
             // Pan slew runs every tick regardless of subscription state so

@@ -55,7 +55,7 @@ use crate::protocol::{
     FlightIdPayload, HelloPayload, Layer, QualityPreset, ReportDisplaySizePayload,
     SceneStateChangedPayload, ServerMessage, SetDegradePayload, SetFovPayload, SetLayersPayload,
     SetPanPayload, SetPanRatePayload, SetQualityPayload, SetRenderSizePayload,
-    SetThrottleMainScreenPayload, SetZoomRatePayload, SlotMapPayload,
+    SetThrottleMainScreenPayload, SetTrackTargetPayload, SetZoomRatePayload, SlotMapPayload,
 };
 
 const CONTROL_CHANNEL_LABEL: &str = "kerbcast-control";
@@ -509,6 +509,21 @@ async fn handle_client_message(
         }
         ClientMessage::SetQuality(SetQualityPayload { flight_id, preset }) => {
             apply_quality_change(&registry, &dc, flight_id, preset).await;
+        }
+        ClientMessage::SetTrackTarget(SetTrackTargetPayload { flight_id, mode }) => {
+            /* Server-authoritative auto-track: store + flush the mode; the
+            broadcast (mark_dirty) syncs every browser. A browser track
+            overrides a kOS aim on the same camera. */
+            if let Err(message) = registry.apply_track_target(flight_id, mode).await {
+                send_server_message(
+                    &dc,
+                    &ServerMessage::Error(ErrorPayload {
+                        message,
+                        source: ErrorSource::Sidecar,
+                    }),
+                )
+                .await;
+            }
         }
         ClientMessage::RequestKeyframe(FlightIdPayload { flight_id }) => {
             // The encoder backends expose `request_keyframe()`; we call
