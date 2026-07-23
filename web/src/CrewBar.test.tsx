@@ -177,6 +177,74 @@ describe("CrewBar", () => {
     expect(screen.getByText(/add crew/i)).toBeTruthy();
   });
 
+  it("offers visible spotlight / fullscreen / PiP / close controls per face", async () => {
+    const { client } = await buildConnectedFixture([
+      { flightId: 201, kind: CameraKind.Kerbal, crewLocation: CrewLocation.Seat, cameraName: "Jebediah Kerman" },
+    ]);
+    await act(async () => { renderCrewBar(client); });
+
+    expect(screen.getByRole("button", { name: /spotlight this feed/i })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /fullscreen/i })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /picture in picture/i })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /^close$/i })).toBeTruthy();
+  });
+
+  it("spotlight toggles on the SAME face node (no remount)", async () => {
+    const { client } = await buildConnectedFixture([
+      { flightId: 201, kind: CameraKind.Kerbal, crewLocation: CrewLocation.Seat, cameraName: "Jebediah Kerman" },
+    ]);
+    let container!: HTMLElement;
+    await act(async () => { ({ container } = renderCrewBar(client)); });
+
+    const before = container.querySelector('[data-flight-id="201"]');
+    expect(before?.getAttribute("data-spotlit")).toBe("false");
+
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: /spotlight this feed/i })); });
+
+    const after = container.querySelector('[data-flight-id="201"]');
+    expect(after).toBe(before); // identical DOM node — CSS reflow, not a remount
+    expect(after?.getAttribute("data-spotlit")).toBe("true");
+    // Toggle icon flips to the un-spotlight affordance.
+    expect(screen.getByRole("button", { name: /remove from spotlight/i })).toBeTruthy();
+  });
+
+  it("never remounts a face across placement + minimise changes (same instance)", async () => {
+    const { client } = await buildConnectedFixture([
+      { flightId: 201, kind: CameraKind.Kerbal, crewLocation: CrewLocation.Seat, cameraName: "Jebediah Kerman" },
+    ]);
+
+    // ONE mounted CrewBar; rerender (not remount) with new props each step.
+    const props = (placement: CrewBarPlacement, minimised: boolean) => (
+      <KerbcastProvider client={client}>
+        <CrewBar
+          placement={placement}
+          minimised={minimised}
+          onToggleMinimise={() => {}}
+          closed={new Set()}
+          onClose={() => {}}
+          onOpen={() => {}}
+        />
+      </KerbcastProvider>
+    );
+
+    let container!: HTMLElement;
+    let rerender!: (ui: React.ReactElement) => void;
+    await act(async () => { ({ container, rerender } = render(props("row", false))); });
+
+    const face0 = container.querySelector('[data-flight-id="201"]');
+    const video0 = container.querySelector("video");
+    expect(face0).not.toBeNull();
+    expect(video0).not.toBeNull();
+
+    for (const [placement, minimised] of [["column", false], ["wrap", false], ["row", true], ["row", false]] as [CrewBarPlacement, boolean][]) {
+      await act(async () => { rerender(props(placement, minimised)); });
+      // The face + its <video> are the IDENTICAL DOM nodes — a CSS reflow, never
+      // a remount. (The merge toggle IS an expected remount, tracked separately.)
+      expect(container.querySelector('[data-flight-id="201"]')).toBe(face0);
+      expect(container.querySelector("video")).toBe(video0);
+    }
+  });
+
   it("renders nothing when there are no kerbal cams", async () => {
     const { client } = await buildConnectedFixture([
       { flightId: 101, cameraName: "NavCam", partName: "mumech.MuMechModuleHullCamera" },

@@ -15,12 +15,12 @@
  * mounted feeds — switching either never remounts a KerbalFaceFeed.
  */
 
-import { CrewLocation } from "@ksp-gonogo/kerbcast";
+import { CameraKind, CrewLocation } from "@ksp-gonogo/kerbcast";
 import type { CameraState } from "@ksp-gonogo/kerbcast";
 import { KerbalFaceFeed, buildCameraLabeler, isCameraDestroyed, useKerbcastCameras } from "@ksp-gonogo/kerbcast-react";
 import type { FeedAction } from "@ksp-gonogo/kerbcast-react";
-import { PanelBottomClose, PanelBottomOpen, Plus, X } from "lucide-react";
-import { useMemo, useRef } from "react";
+import { Maximize2, PanelBottomClose, PanelBottomOpen, PictureInPicture2, Pin, PinOff, Plus, X } from "lucide-react";
+import { useMemo, useRef, useState } from "react";
 import styled from "styled-components";
 import type { CrewBarPlacement } from "./settings";
 
@@ -45,10 +45,15 @@ export function CrewBar({
 }: CrewBarProps): React.JSX.Element | null {
   const cameras = useKerbcastCameras();
   const kerbals = useMemo(
-    () => cameras.filter((c) => c.kind === "kerbal"),
+    () => cameras.filter((c) => c.kind === CameraKind.Kerbal),
     [cameras],
   );
   const labelFor = useMemo(() => buildCameraLabeler(cameras), [cameras]);
+
+  // Spotlit crew face (transient, single at a time). A CSS size change on the
+  // SAME mounted feed — never a remount. In merge mode kerbal cams are part-grid
+  // tiles and use the part 2x2 spotlight instead, so this is crew-bar-only.
+  const [spotlitId, setSpotlitId] = useState<number | null>(null);
 
   // No crew cameras at all -> render nothing (don't reserve empty space). When
   // crew exist but are all closed we still render the header so "Add crew" is
@@ -99,7 +104,18 @@ export function CrewBar({
       {/* Faces stay mounted when minimised — collapsed via CSS, never unmounted. */}
       <Faces $placement={placement} $minimised={minimised} aria-hidden={minimised}>
         {open.map((k) => (
-          <CrewFace key={k.flightId} cam={k} onClose={() => onClose(k.flightId)} />
+          <CrewFace
+            key={k.flightId}
+            cam={k}
+            spotlit={spotlitId === k.flightId}
+            onToggleSpotlight={() =>
+              setSpotlitId((cur) => (cur === k.flightId ? null : k.flightId))
+            }
+            onClose={() => {
+              if (spotlitId === k.flightId) setSpotlitId(null);
+              onClose(k.flightId);
+            }}
+          />
         ))}
       </Faces>
     </Root>
@@ -110,18 +126,48 @@ export function CrewBar({
 // A single crew face
 // ---------------------------------------------------------------------------
 
-function CrewFace({ cam, onClose }: { cam: CameraState; onClose: () => void }): React.JSX.Element {
+interface CrewFaceProps {
+  cam: CameraState;
+  spotlit: boolean;
+  onToggleSpotlight: () => void;
+  onClose: () => void;
+}
+
+function CrewFace({ cam, spotlit, onToggleSpotlight, onClose }: CrewFaceProps): React.JSX.Element {
   const wrapRef = useRef<HTMLDivElement>(null);
   const destroyed = isCameraDestroyed(cam);
   const eva = cam.crewLocation === CrewLocation.Eva;
   const name = cam.cameraName || "Kerbal";
 
-  // Fullscreen the FACE CONTAINER (the video goes fullscreen with it) — the
-  // KerbalFaceFeed primitive doesn't expose its <video>, so element fullscreen
-  // on the wrapper is the composable path. Close hides this face from the bar
-  // (persisted; reopen via the Add crew menu).
+  // Visible hover controls, mirroring the part-cam CameraFeed set: spotlight,
+  // fullscreen, PiP, close. Fullscreen targets the face CONTAINER (the video
+  // goes fullscreen with it); PiP needs the <video> element itself, which the
+  // KerbalFaceFeed primitive doesn't expose, so we take the one <video> inside
+  // this wrapper (a primitive-exposed ref is the cleaner long-term path). Close
+  // hides the face from the bar (persisted; reopen via the Add crew menu).
   const actions = useMemo<FeedAction[]>(
     () => [
+      {
+        id: "spotlight",
+        label: spotlit ? "Remove from spotlight" : "Spotlight this feed",
+        icon: spotlit
+          ? <PinOff size={13} strokeWidth={2} aria-hidden="true" />
+          : <Pin size={13} strokeWidth={2} aria-hidden="true" />,
+        active: spotlit,
+        onClick: onToggleSpotlight,
+      },
+      {
+        id: "fullscreen",
+        label: "Fullscreen",
+        icon: <Maximize2 size={13} strokeWidth={2} aria-hidden="true" />,
+        onClick: () => toggleFullscreen(wrapRef.current),
+      },
+      {
+        id: "pip",
+        label: "Picture in picture",
+        icon: <PictureInPicture2 size={13} strokeWidth={2} aria-hidden="true" />,
+        onClick: () => togglePictureInPicture(wrapRef.current),
+      },
       {
         id: "close",
         label: "Close",
@@ -129,11 +175,19 @@ function CrewFace({ cam, onClose }: { cam: CameraState; onClose: () => void }): 
         onClick: onClose,
       },
     ],
-    [onClose],
+    [spotlit, onToggleSpotlight, onClose],
   );
 
   return (
-    <FaceWrap ref={wrapRef} data-testid="crew-face" data-flight-id={cam.flightId} data-destroyed={destroyed} onDoubleClick={() => toggleFullscreen(wrapRef.current)}>
+    <FaceWrap
+      ref={wrapRef}
+      $spotlit={spotlit}
+      data-testid="crew-face"
+      data-flight-id={cam.flightId}
+      data-destroyed={destroyed}
+      data-spotlit={spotlit}
+      onDoubleClick={() => toggleFullscreen(wrapRef.current)}
+    >
       <KerbalFaceFeed flightId={cam.flightId} actions={actions} showStandby={!destroyed}>
         <Overlay>
           <Badge $eva={eva}>{eva ? "EVA" : "IVA"}</Badge>
@@ -157,6 +211,21 @@ function toggleFullscreen(el: HTMLElement | null): void {
     (document.exitFullscreen ?? d.webkitExitFullscreen)?.call(document);
   } else {
     (e.requestFullscreen ?? e.webkitRequestFullscreen)?.call(e);
+  }
+}
+
+/* PiP needs the HTMLVideoElement (element fullscreen accepts any element, PiP
+   does not). The primitive renders exactly one <video> in the face frame; grab
+   it from the wrapper. No-op where PiP is unsupported (iOS Safari, etc). */
+function togglePictureInPicture(wrap: HTMLElement | null): void {
+  const video = wrap?.querySelector("video") as HTMLVideoElement | null;
+  if (!video) return;
+  const d = document as Document & { pictureInPictureEnabled?: boolean };
+  if (!d.pictureInPictureEnabled) return;
+  if (document.pictureInPictureElement === video) {
+    void document.exitPictureInPicture().catch(() => {});
+  } else {
+    void video.requestPictureInPicture().catch(() => {});
   }
 }
 
@@ -307,10 +376,12 @@ const Faces = styled.div<{ $placement: CrewBarPlacement; $minimised: boolean }>`
         ? `flex-direction: row; flex-wrap: wrap; overflow-y: auto; align-content: flex-start;`
         : `flex-direction: row; flex-wrap: nowrap; overflow-x: auto;`}
 
-  /* Minimise collapses the strip without unmounting the feeds. */
+  /* Minimise collapses the strip without unmounting the feeds. visibility:hidden
+     takes the faces (and their action buttons) out of the tab order + a11y tree,
+     so a keyboard user can't focus controls inside the aria-hidden collapsed bar. */
   ${(p) =>
     p.$minimised
-      ? `max-height: 0; padding-top: 0; padding-bottom: 0; overflow: hidden; opacity: 0; pointer-events: none;`
+      ? `max-height: 0; padding-top: 0; padding-bottom: 0; overflow: hidden; opacity: 0; visibility: hidden; pointer-events: none;`
       : ``}
   transition: max-height 0.18s ease, opacity 0.18s ease;
 
@@ -319,11 +390,19 @@ const Faces = styled.div<{ $placement: CrewBarPlacement; $minimised: boolean }>`
   }
 `;
 
-const FaceWrap = styled.div`
+const FaceWrap = styled.div<{ $spotlit: boolean }>`
   position: relative;
-  width: ${FACE}px;
-  height: ${FACE}px;
+  /* Spotlight grows the face to a ~2x square on the SAME mounted feed (CSS
+     only, never a remount); it reflows in place (wrap: ~2x2 footprint; row/
+     column: a bigger square the strip grows to fit). Stays square. */
+  width: ${(p) => (p.$spotlit ? FACE * 2 : FACE)}px;
+  height: ${(p) => (p.$spotlit ? FACE * 2 : FACE)}px;
   flex: 0 0 auto;
+  transition: width 0.18s ease, height 0.18s ease;
+
+  @media (prefers-reduced-motion: reduce) {
+    transition: none;
+  }
 
   /* Actions (top-right, from the primitive) hover-reveal: hidden until the face
      is hovered or a control is focused (keyboard reachable). */

@@ -1,3 +1,4 @@
+import { CameraKind } from "@ksp-gonogo/kerbcast";
 import type { KerbcastClient } from "@ksp-gonogo/kerbcast";
 import { KerbcastProvider, useKerbcastCameras } from "@ksp-gonogo/kerbcast-react";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
@@ -208,7 +209,10 @@ function CameraSeeder({ mergeCrew, tilesSeeded, onSeed }: CameraSeederProps): nu
   // Merge OFF: part cams only (kerbal face cams live in the crew bar). Merge ON:
   // kerbal cams are seedable/addable grid tiles like part cams.
   const all = useKerbcastCameras();
-  const cameras = mergeCrew ? all : all.filter((c) => c.kind !== "kerbal");
+  const cameras = useMemo(
+    () => (mergeCrew ? all : all.filter((c) => c.kind !== CameraKind.Kerbal)),
+    [all, mergeCrew],
+  );
 
   useEffect(() => {
     if (tilesSeeded) return;
@@ -241,9 +245,13 @@ interface CameraReconcilerProps {
  */
 function CameraReconciler({ mergeCrew, tiles, onReconcile }: CameraReconcilerProps): null {
   // Merge OFF: part cams only (never rebind a grid tile onto a kerbal). Merge
-  // ON: kerbal cams reconcile like part cams.
+  // ON: kerbal cams reconcile like part cams. Memoised so a new filtered-array
+  // identity doesn't re-run the effect every commit.
   const all = useKerbcastCameras();
-  const cameras = mergeCrew ? all : all.filter((c) => c.kind !== "kerbal");
+  const cameras = useMemo(
+    () => (mergeCrew ? all : all.filter((c) => c.kind !== CameraKind.Kerbal)),
+    [all, mergeCrew],
+  );
 
   useEffect(() => {
     // Guard on the unfiltered list: a craft with ONLY kerbal cams has an empty

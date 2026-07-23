@@ -18,7 +18,7 @@ import {
   toggleSpotlight,
   updateTile,
 } from "./tiles";
-import { CameraLifecycle } from "@ksp-gonogo/kerbcast";
+import { CameraKind, CameraLifecycle } from "@ksp-gonogo/kerbcast";
 import type { Tile as TileData } from "./tiles";
 
 interface GridProps {
@@ -39,7 +39,7 @@ export function Grid({ mergeCrew, tiles, onTilesChange, showDebugInfo, showStati
   // are regular grid cameras, indistinguishable from part cams. Part-camera grid
   // behaviour is unchanged either way.
   const all = useKerbcastCameras();
-  const cameras = mergeCrew ? all : all.filter((c) => c.kind !== "kerbal");
+  const cameras = mergeCrew ? all : all.filter((c) => c.kind !== CameraKind.Kerbal);
   const [showPerfNote, setShowPerfNote] = useState(false);
 
   const commit = (next: TileData[]) => {
