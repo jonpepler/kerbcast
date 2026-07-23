@@ -21,13 +21,16 @@ namespace Kerbcast
 
         private readonly ProtoCrewMember _pcm;
         /* Current owning part: the seat part while seated, the EVA part while on
-           EVA. Re-resolved every tick from _persistentId (never a cached KerbalEVA
+           EVA. Re-resolved every tick by kerbal NAME (never a cached KerbalEVA
            /seat ref) so Vessel/OwnsPart stay correct across a seat<->EVA switch and
            the feed never tears down. */
         private Part _occupiedPart;
+        /* Stable identity key: the roster name (unique + stable across seat<->EVA).
+           The wire-id and all liveness/ownership matching derive from it, NOT from
+           persistentID, which KSP reassigns on EVA. */
+        private readonly string _kerbalName;
         // Identity snapshot at construction, mirroring KerbcastCamera: the
         // manifest writers stay safe even when the part is dying by teardown.
-        private readonly uint _persistentId;
         private readonly string _cachedCameraName;
         private readonly string _cachedVesselName;
 
@@ -85,8 +88,8 @@ namespace Kerbcast
         {
             _pcm = pcm;
             _occupiedPart = occupiedPart;
-            FlightId = CameraId.KerbalWireId(pcm.persistentID);
-            _persistentId = pcm.persistentID;
+            _kerbalName = pcm.name;
+            FlightId = CameraId.KerbalWireId(_kerbalName);
             _cachedCameraName = pcm.displayName;
             var vessel = occupiedPart != null ? occupiedPart.vessel : null;
             _cachedVesselName = vessel != null
@@ -185,8 +188,8 @@ namespace Kerbcast
             _consecutiveErrors++;
         }
 
-        /* Live-resolve where this kerbal is right now, keyed on the stable
-           persistentID. Never caches the KerbalEVA / seat / Kerbal refs. Updates
+        /* Live-resolve where this kerbal is right now, keyed on the stable roster
+           name. Never caches the KerbalEVA / seat / Kerbal refs. Updates
            _occupiedPart to the current owning part as a side effect so
            Vessel/OwnsPart/liveness track a seat<->EVA switch. Order is chosen for
            the steady-state cost of the per-frame IsAlive sweep: the seated
@@ -221,7 +224,7 @@ namespace Kerbcast
                 var ev = v.evaController;
                 if (ev == null || ev.part == null) continue;
                 var crew = ev.part.protoModuleCrew;
-                if (crew.Count > 0 && crew[0] != null && crew[0].persistentID == _persistentId)
+                if (crew.Count > 0 && crew[0] != null && crew[0].name == _kerbalName)
                 {
                     eva = ev;
                     part = ev.part;
@@ -255,7 +258,7 @@ namespace Kerbcast
             if (p == null) return false;
             var crew = p.protoModuleCrew;
             for (int c = 0; c < crew.Count; c++)
-                if (crew[c] != null && crew[c].persistentID == _persistentId) return true;
+                if (crew[c] != null && crew[c].name == _kerbalName) return true;
             return false;
         }
 
@@ -400,7 +403,10 @@ namespace Kerbcast
         // Same hand-rolled JSON shape as KerbcastCamera's active manifest, with
         // kerbal-specific fields. part_name/part_title empty, all fov/pan
         // numerics 0, supports_* false; adds kind, kerbal_persistent_id and
-        // crew_location so the sidecar can distinguish a face camera.
+        // crew_location so the sidecar can distinguish a face camera. The stable
+        // correlation key is flight_id (name-derived); camera_name carries the
+        // human name. kerbal_persistent_id is informational raw persistentID and
+        // is NOT stable across seat<->EVA (KSP reassigns it) — don't correlate on it.
         public void WriteInfoManifest()
         {
             WriteManifest("active");
@@ -428,7 +434,7 @@ namespace Kerbcast
                     + "  \"pan_yaw_max\": 0,\n"
                     + "  \"pan_pitch_min\": 0,\n"
                     + "  \"pan_pitch_max\": 0,\n"
-                    + $"  \"kerbal_persistent_id\": {_persistentId.ToString(inv)},\n"
+                    + $"  \"kerbal_persistent_id\": {_pcm.persistentID.ToString(inv)},\n"
                     + $"  \"crew_location\": \"{_crewLocation}\"\n"
                     + "}\n";
                 // Atomic write: drop into .tmp + rename so the sidecar never reads a
