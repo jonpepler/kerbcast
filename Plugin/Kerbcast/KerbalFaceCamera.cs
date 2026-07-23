@@ -4,7 +4,7 @@
    block) it renders KSP's IVA portrait camera into a square ring frame
    (min(512, tier width, tier height) per side, so sub-512 tiers still fit)
    each tick through the shared CaptureCore tail. Liveness is resolved from
-   the owning part + persistentID each call; the ProtoCrewMember/Part refs are
+   the roster name each call; the ProtoCrewMember/Part refs are
    never assumed live, and the IVA avatar (KerbalRef) is re-resolved every
    tick rather than cached. */
 
@@ -54,7 +54,7 @@ namespace Kerbcast
         private bool _subscribed;
 
         /* Where the kerbal currently is. Resolved live each tick from
-           _persistentId; drives which portrait stack Refresh renders and the
+           _kerbalName; drives which portrait stack Refresh renders and the
            crew_location the manifest reports. */
         private enum CrewLocation { None, Seat, Eva }
 
@@ -113,7 +113,8 @@ namespace Kerbcast
 
         // Alive == a live instance of this kerbal exists EITHER seated OR on EVA.
         // Going EVA must NOT kill the feed (that was the seat-only gap bug), so
-        // liveness is keyed on the stable persistentID across both states.
+        // liveness is keyed on the stable roster name across both states
+        // (persistentID is reassigned on EVA and can't be used).
         // ResolveLocation also refreshes _occupiedPart to the current part so
         // Vessel/OwnsPart stay correct here even between Refresh ticks.
         public bool IsAlive => ResolveLocation(out _, out _) != CrewLocation.None;
