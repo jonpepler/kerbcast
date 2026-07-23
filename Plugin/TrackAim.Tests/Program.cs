@@ -44,5 +44,22 @@ Check(
     TrackAim.FovForDistance(0f, 10f, 90f, 1000f, 40f) == 90f,
     "degenerate zero distance -> fovMax (no divide-by-zero)");
 
+// A mid-range distance yields a value STRICTLY inside the bounds (the normal
+// "sets FOV from distance while tracking" case, not a clamp): 1500m against a
+// 1000m/40deg reference -> ~26.7deg, in (10,90).
+float mid = TrackAim.FovForDistance(1500f, 10f, 90f, 1000f, 40f);
+Check(mid > 10f && mid < 90f && Math.Abs(mid - 26.666f) < 0.01f,
+    "mid-range distance -> in-range fov (auto-zoom frames by distance)");
+
+// Auto-zoom rides the SAME ShouldAim gate as the aim (no separate control), so
+// the ModeNone checks above ARE the no-zoom-when-off guarantee: when ShouldAim
+// is false the track block never runs, so SetFov is never called and zoom is
+// untouched. Assert the gate here too so the FOV zero-effect can't silently
+// regress independently of the aim.
+Check(!TrackAim.ShouldAim(TrackAim.ModeNone, true, true),
+    "mode none -> no auto-zoom (FOV zero-effect rides the aim gate)");
+Check(TrackAim.ShouldAim(TrackAim.ModeActiveVessel, true, true),
+    "tracking pan+zoom -> auto-zoom runs (same gate as the aim)");
+
 Console.WriteLine(failures == 0 ? "ALL PASS" : $"{failures} FAILED");
 return failures == 0 ? 0 : 1;

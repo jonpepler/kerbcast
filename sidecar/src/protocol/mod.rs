@@ -282,7 +282,9 @@ pub enum TrackMode {
 /// every browser reflects the same tracking state (never optimistic-local).
 ///
 /// Precedence note (for operators): a browser track OVERRIDES a kOS aim on the
-/// same camera; set `mode: none` to hand aiming back to kOS.
+/// same camera; set `mode: none` to hand aiming back to kOS. While tracking, the
+/// camera also AUTO-ZOOMS to keep the target framed (distance-driven), owning the
+/// zoom over any manual FoV; `mode: none` restores manual zoom untouched.
 #[typeshare]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

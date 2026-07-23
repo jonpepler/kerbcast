@@ -1056,6 +1056,14 @@ namespace Kerbcast
            effect, so the kOS aim path is untouched. */
         private int _trackMode = TrackAim.ModeNone;
 
+        /* Auto-zoom reference pair for TrackAim.FovForDistance: at
+           AutoZoomReferenceDistanceM the framing FoV is AutoZoomReferenceFovDeg;
+           closer widens, farther narrows (clamped to [FovMin,FovMax]). A heuristic
+           tuning constant (no per-part target-size datum), so a tracked vessel that
+           recedes stays framed. */
+        private const float AutoZoomReferenceDistanceM = 1000f;
+        private const float AutoZoomReferenceFovDeg = 20f;
+
         /// <summary>Set the browser auto-track mode (0=none/1=active-vessel/
         /// 2=target). Called from PollControlFile. Only acted on for a pan+zoom
         /// camera; a browser track overrides a kOS aim on the same camera.</summary>
@@ -1462,12 +1470,28 @@ namespace Kerbcast
             // no other effect, so the kOS aim path is untouched. A browser track
             // overrides a kOS aim on the same camera (this runs in LateUpdate,
             // after kOS's in-cycle aim). AimAt no-ops if the point is unresolved.
-            // TODO(auto-zoom gate): distance-driven zoom is a DISTINCT primitive
-            // (TrackAim.FovForDistance); wire it behind its own control field.
+            // Auto-zoom rides the SAME gate as the aim: automatic whenever a track
+            // mode is set (Jon's call — a tracked vessel that flies away stays
+            // framed), no separate control. While tracking, auto-zoom OWNS the zoom
+            // (overrides manual, as the aim owns pan); track_mode==none skips the
+            // whole block, so the zero-effect-when-off guarantee covers FOV too (no
+            // zoom write when not tracking). The aim math (AimAt) and zoom math
+            // (TrackAim.FovForDistance) stay distinct — this only CALLS both.
             if (TrackAim.ShouldAim(_trackMode, SupportsPan, SupportsZoom))
             {
                 UnityEngine.Vector3? target = ResolveTrackTarget();
-                if (target.HasValue) AimAt(target.Value);
+                if (target.HasValue)
+                {
+                    AimAt(target.Value);
+                    // Frame by camera->target distance; SetFov clamps to
+                    // [FovMin,FovMax] and slews, so a receding vessel stays framed
+                    // smoothly. Reference pair (distance,fov) is a heuristic tuning
+                    // constant, not a per-part datum.
+                    float distance = (target.Value - PositionWorld).magnitude;
+                    SetFov(TrackAim.FovForDistance(
+                        distance, FovMin, FovMax,
+                        AutoZoomReferenceDistanceM, AutoZoomReferenceFovDeg));
+                }
             }
 
             // Pan slew runs every tick regardless of subscription state so
