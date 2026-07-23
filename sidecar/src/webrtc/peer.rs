@@ -471,6 +471,11 @@ async fn handle_client_message(
         }) => {
             apply_render_size_change(&registry, &dc, flight_id, width, height).await;
         }
+        // TODO(S6-T2): record this per-consumer display size into the camera's
+        // MAX-across-consumers resolution tracker (and clear it on unsubscribe /
+        // peer reap). No-op until the tracker lands; parses today so the wire
+        // message is accepted rather than erroring.
+        ClientMessage::ReportDisplaySize(_payload) => {}
         ClientMessage::SetFov(SetFovPayload { flight_id, fov }) => {
             apply_fov_change(&registry, &dc, flight_id, fov).await;
         }
