@@ -4,7 +4,7 @@
    block) it renders KSP's IVA portrait camera into a square ring frame
    (min(512, tier width, tier height) per side, so sub-512 tiers still fit)
    each tick through the shared CaptureCore tail. Liveness is resolved from
-   the owning part + persistentID each call; the ProtoCrewMember/Part refs are
+   the roster name each call; the ProtoCrewMember/Part refs are
    never assumed live, and the IVA avatar (KerbalRef) is re-resolved every
    tick rather than cached. */
 
@@ -20,10 +20,17 @@ namespace Kerbcast
         public uint FlightId { get; }
 
         private readonly ProtoCrewMember _pcm;
-        private readonly Part _occupiedPart;
+        /* Current owning part: the seat part while seated, the EVA part while on
+           EVA. Re-resolved every tick by kerbal NAME (never a cached KerbalEVA
+           /seat ref) so Vessel/OwnsPart stay correct across a seat<->EVA switch and
+           the feed never tears down. */
+        private Part _occupiedPart;
+        /* Stable identity key: the roster name (unique + stable across seat<->EVA).
+           The wire-id and all liveness/ownership matching derive from it, NOT from
+           persistentID, which KSP reassigns on EVA. */
+        private readonly string _kerbalName;
         // Identity snapshot at construction, mirroring KerbcastCamera: the
         // manifest writers stay safe even when the part is dying by teardown.
-        private readonly uint _persistentId;
         private readonly string _cachedCameraName;
         private readonly string _cachedVesselName;
 
@@ -45,6 +52,17 @@ namespace Kerbcast
         // read the subscription flag: no pan/zoom/layers.
         private ControlBlock _controlBlock;
         private bool _subscribed;
+
+        /* Where the kerbal currently is. Resolved live each tick from
+           _kerbalName; drives which portrait stack Refresh renders and the
+           crew_location the manifest reports. */
+        private enum CrewLocation { None, Seat, Eva }
+
+        /* Last crew_location written to the info.json manifest ("seat" / "eva").
+           The manifest is re-written on a transition so the sidecar (which
+           re-reads it per rescan) reflects the switch on the same ring. Starts
+           "seat" to match the ctor's first WriteInfoManifest. */
+        private string _crewLocation = "seat";
 
         // Reusable capture tail: pooled capture/readback RT pair + in-flight
         // readback bookkeeping + ring write. Built lazily on first subscribe at
@@ -70,8 +88,8 @@ namespace Kerbcast
         {
             _pcm = pcm;
             _occupiedPart = occupiedPart;
-            FlightId = CameraId.KerbalWireId(pcm.persistentID);
-            _persistentId = pcm.persistentID;
+            _kerbalName = pcm.name;
+            FlightId = CameraId.KerbalWireId(_kerbalName);
             _cachedCameraName = pcm.displayName;
             var vessel = occupiedPart != null ? occupiedPart.vessel : null;
             _cachedVesselName = vessel != null
@@ -86,6 +104,11 @@ namespace Kerbcast
             // (EnsureCapture) renders at the same _captureDim, so ring and
             // frame can never disagree regardless of quality tier.
             _ring = MmapFrameRing.Create(_ringPath, ringSlots, _captureDim, _captureDim);
+            // A kerbal discovered already on EVA (CrewProvider's EVA sweep) must
+            // stamp its FIRST manifest "eva", not the default "seat" — otherwise an
+            // EVA cam that is never subscribed reports "seat" in /cameras until the
+            // first subscribe re-resolves it.
+            if (vessel != null && vessel.isEVA) _crewLocation = "eva";
             WriteInfoManifest();
         }
 
@@ -93,11 +116,13 @@ namespace Kerbcast
         // reports no vessel rather than throwing.
         public Vessel Vessel => _occupiedPart != null ? _occupiedPart.vessel : null;
 
-        // Alive == the kerbal is still seated in the owning part.
-        public bool IsAlive =>
-            _occupiedPart != null
-            && _occupiedPart.vessel != null
-            && _occupiedPart.protoModuleCrew.Contains(_pcm);
+        // Alive == a live instance of this kerbal exists EITHER seated OR on EVA.
+        // Going EVA must NOT kill the feed (that was the seat-only gap bug), so
+        // liveness is keyed on the stable roster name across both states
+        // (persistentID is reassigned on EVA and can't be used).
+        // ResolveLocation also refreshes _occupiedPart to the current part so
+        // Vessel/OwnsPart stay correct here even between Refresh ticks.
+        public bool IsAlive => ResolveLocation(out _, out _) != CrewLocation.None;
 
         // Peer-driven capture gate, backed by the control block's subscription
         // flag. Idle (unsubscribed) kerbal cameras do no render/readback work.
@@ -169,6 +194,147 @@ namespace Kerbcast
             _consecutiveErrors++;
         }
 
+        /* Live-resolve where this kerbal is right now, keyed on the stable roster
+           name. Never caches the KerbalEVA / seat / Kerbal refs. Updates
+           _occupiedPart to the current owning part as a side effect so
+           Vessel/OwnsPart/liveness track a seat<->EVA switch. Order is chosen for
+           the steady-state cost of the per-frame IsAlive sweep: the seated
+           fast-path (last-known part still holds us) is O(1) and tried first, then
+           the EVA loop (definitive: a one-part EVA vessel whose sole crew is us),
+           then a full loaded-vessel scan for a re-seat into a different part. The
+           fast-path's !isEVA guard means a kerbal who left the seat (part no longer
+           holds it, or the part's vessel is now the EVA vessel) still falls through
+           to the EVA/full paths, so the reorder can't mis-report a state. */
+        private CrewLocation ResolveLocation(out Part part, out KerbalEVA eva)
+        {
+            eva = null;
+            part = null;
+            var loaded = FlightGlobals.VesselsLoaded;
+            if (loaded == null) return CrewLocation.None;
+
+            // Seated fast path (O(1) steady state): still crew of the last-known
+            // part, and that part isn't an EVA vessel (a kerbal on EVA is handled by
+            // the EVA loop below, never claimed as seated here).
+            if (_occupiedPart != null && _occupiedPart.vessel != null
+                && !_occupiedPart.vessel.isEVA && PartHoldsSelf(_occupiedPart))
+            {
+                part = _occupiedPart;
+                return CrewLocation.Seat;
+            }
+
+            // EVA: KerbalEVA's own crew[0] is this kerbal.
+            for (int i = 0; i < loaded.Count; i++)
+            {
+                var v = loaded[i];
+                if (v == null || !v.isEVA) continue;
+                var ev = v.evaController;
+                if (ev == null || ev.part == null) continue;
+                var crew = ev.part.protoModuleCrew;
+                if (crew.Count > 0 && crew[0] != null && crew[0].name == _kerbalName)
+                {
+                    eva = ev;
+                    part = ev.part;
+                    _occupiedPart = part;
+                    return CrewLocation.Eva;
+                }
+            }
+
+            // Seated full scan: re-seated into a different (loaded) part.
+            for (int i = 0; i < loaded.Count; i++)
+            {
+                var v = loaded[i];
+                if (v == null || v.isEVA) continue;
+                var parts = v.parts;
+                for (int p = 0; p < parts.Count; p++)
+                {
+                    if (PartHoldsSelf(parts[p]))
+                    {
+                        part = parts[p];
+                        _occupiedPart = part;
+                        return CrewLocation.Seat;
+                    }
+                }
+            }
+
+            return CrewLocation.None;
+        }
+
+        private bool PartHoldsSelf(Part p)
+        {
+            if (p == null) return false;
+            var crew = p.protoModuleCrew;
+            for (int c = 0; c < crew.Count; c++)
+                if (crew[c] != null && crew[c].name == _kerbalName) return true;
+            return false;
+        }
+
+        // Re-write the info.json with the current crew_location on a transition,
+        // so the sidecar (which re-reads the manifest per rescan) reflects the
+        // seat<->EVA switch on the SAME ring. No-op when unchanged or transient.
+        private void UpdateCrewLocationManifest(CrewLocation loc)
+        {
+            string s = loc == CrewLocation.Eva ? "eva"
+                     : loc == CrewLocation.Seat ? "seat"
+                     : null;
+            if (s == null || s == _crewLocation) return;
+            _crewLocation = s;
+            WriteInfoManifest();
+            Debug.Log($"[Kerbcast] kerbal cam={FlightId} crew_location → {s}");
+        }
+
+        // Render the seated IVA portrait into target, mirroring KSP's crew-tray
+        // path: prefer the seat's portrait camera (RenderDontRestore), fall back
+        // to the kerbal's own cam. Returns false when the avatar isn't spawned
+        // (portrait not visible) — no frame this tick, but NOT death.
+        private bool RenderSeat(RenderTexture target)
+        {
+            var k = _pcm.KerbalRef;
+            if (k == null) return false;
+            bool usedSeatCam = _pcm.seat != null && _pcm.seat.portraitCamera != null;
+            var cam = usedSeatCam ? _pcm.seat.portraitCamera : k.kerbalCam;
+            if (cam == null) return false;
+
+            var prevTarget = cam.targetTexture;
+            cam.targetTexture = target;
+            try
+            {
+                if (usedSeatCam) cam.RenderDontRestore();
+                else cam.Render();
+            }
+            finally
+            {
+                cam.targetTexture = prevTarget;
+            }
+            return true;
+        }
+
+        // Render KSP's EVA portrait stack into target. KerbalEVA composites five
+        // cameras into its AvatarTexture (skybox / atmos / far / near / portrait);
+        // we drive the same set, in KSP's own order (kerbalAvatarUpdateCycle), into
+        // our capture RT instead. Each cam's target is restored so the game's own
+        // portrait render is undisturbed. Returns false if the portrait camera is
+        // absent. We drive Render() ourselves, so this does not depend on the
+        // EVA_SHOW_PORTRAIT coroutine running.
+        private bool RenderEva(KerbalEVA eva, RenderTexture target)
+        {
+            if (eva == null || eva.kerbalPortraitCamera == null) return false;
+            RenderLayer(eva.kerbalCamSkyBox, target);
+            RenderLayer(eva.kerbalCamAtmos, target);
+            RenderLayer(eva.kerbalCam01, target);
+            RenderLayer(eva.kerbalCam00, target);
+            RenderLayer(eva.kerbalPortraitCamera, target);
+            return true;
+        }
+
+        private static void RenderLayer(Camera cam, RenderTexture target)
+        {
+            if (cam == null) return;
+            var prev = cam.targetTexture;
+            cam.targetTexture = target;
+            try { cam.Render(); }
+            finally { cam.targetTexture = prev; }
+        }
+
         public void Refresh(bool mayIssueReadback)
         {
             // Always drain a completed readback first, even while unsubscribed,
@@ -195,23 +361,17 @@ namespace Kerbcast
                 // issuing another this tick (it drains via the Drain above).
                 if (capture.ReadbackInFlight) return;
 
-                // Re-resolve the live IVA avatar every tick; never cache it. A null
-                // KerbalRef means the avatar isn't spawned (portrait not visible):
-                // no frame this tick, but NOT death (IsAlive stays keyed on the seat).
-                var k = _pcm.KerbalRef;
-                if (k == null) return;
+                // Where is the kerbal this tick? Never caches the resolved refs.
+                var loc = ResolveLocation(out _, out var eva);
+                UpdateCrewLocationManifest(loc);
+                // None = mid-transition (seat vacated, EVA part not spawned yet, or
+                // vice-versa): no frame this tick, but the feed stays alive.
+                if (loc == CrewLocation.None) return;
 
-                // Prefer the seat's portrait camera (the IVA portrait KSP renders in
-                // the crew tray); fall back to the kerbal's own cam.
-                bool usedSeatCam = _pcm.seat != null && _pcm.seat.portraitCamera != null;
-                var cam = usedSeatCam ? _pcm.seat.portraitCamera : k.kerbalCam;
-                if (cam == null) return;
-
-                var prevTarget = cam.targetTexture;
-                cam.targetTexture = capture.CaptureRt;
-
-                // Null Canvas.willRenderCanvases around the manual render (KSP's own
-                // portrait path), restoring it (and the camera target) in finally.
+                // Null Canvas.willRenderCanvases around the manual render(s) (KSP's
+                // own portrait path does this), restoring it in finally. Wraps both
+                // backends; the seated path's render/restore is otherwise identical
+                // to before.
                 object canvasCb = null;
                 bool nulledCanvas = false;
                 if (_willRenderCanvasesField != null)
@@ -220,18 +380,18 @@ namespace Kerbcast
                     _willRenderCanvasesField.SetValue(null, null);
                     nulledCanvas = true;
                 }
+                bool rendered;
                 try
                 {
-                    // Seat portrait uses RenderDontRestore (KSP's kerbalSeatCamUpdate
-                    // path); the fallback kerbal cam uses a plain Render.
-                    if (usedSeatCam) cam.RenderDontRestore();
-                    else cam.Render();
+                    rendered = loc == CrewLocation.Eva
+                        ? RenderEva(eva, capture.CaptureRt)
+                        : RenderSeat(capture.CaptureRt);
                 }
                 finally
                 {
                     if (nulledCanvas) _willRenderCanvasesField.SetValue(null, canvasCb);
-                    cam.targetTexture = prevTarget;
                 }
+                if (!rendered) return;
 
                 // Plain blit (no Hullcam filter); CaptureCore applies the flip and
                 // issues the readback under the one-in-flight invariant.
@@ -249,7 +409,10 @@ namespace Kerbcast
         // Same hand-rolled JSON shape as KerbcastCamera's active manifest, with
         // kerbal-specific fields. part_name/part_title empty, all fov/pan
         // numerics 0, supports_* false; adds kind, kerbal_persistent_id and
-        // crew_location so the sidecar can distinguish a face camera.
+        // crew_location so the sidecar can distinguish a face camera. The stable
+        // correlation key is flight_id (name-derived); camera_name carries the
+        // human name. kerbal_persistent_id is informational raw persistentID and
+        // is NOT stable across seat<->EVA (KSP reassigns it) — don't correlate on it.
         public void WriteInfoManifest()
         {
             WriteManifest("active");
@@ -277,10 +440,17 @@ namespace Kerbcast
                     + "  \"pan_yaw_max\": 0,\n"
                     + "  \"pan_pitch_min\": 0,\n"
                     + "  \"pan_pitch_max\": 0,\n"
-                    + $"  \"kerbal_persistent_id\": {_persistentId.ToString(inv)},\n"
-                    + "  \"crew_location\": \"seat\"\n"
+                    + $"  \"kerbal_persistent_id\": {_pcm.persistentID.ToString(inv)},\n"
+                    + $"  \"crew_location\": \"{_crewLocation}\"\n"
                     + "}\n";
-                File.WriteAllText(_infoPath, json);
+                // Atomic write: drop into .tmp + rename so the sidecar never reads a
+                // half-written file. Matters now that UpdateCrewLocationManifest
+                // rewrites this live during streaming while the sidecar re-reads it
+                // each rescan (mirrors KerbcastCore's status write + InFlightSignal).
+                var tmp = _infoPath + ".tmp";
+                File.WriteAllText(tmp, json);
+                if (File.Exists(_infoPath)) File.Delete(_infoPath);
+                File.Move(tmp, _infoPath);
             }
             catch (Exception ex)
             {

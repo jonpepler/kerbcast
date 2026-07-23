@@ -364,6 +364,22 @@ namespace Kerbcast
         // the camera list to `vessel`, tearing down anything not on it. This
         // is the documented "leaving a vessel drops its cameras" behavior.
         //
+        // EXCEPTION for kerbal-face feed continuity: a KerbalFaceCamera whose
+        // kerbal is still live (IsAlive) is PRESERVED (kept in _cameras, not
+        // disposed+recreated), so a seat<->EVA switch — which fires
+        // onVesselChange as control follows the kerbal onto/off the EVA vessel —
+        // keeps the same ring/info/control + subscription instead of dropping
+        // the feed. Liveness alone is the rule, matching OnVesselCrewWasModified
+        // and the LateUpdate defensive sweep (both dispose kerbal cams purely on
+        // !IsAlive), so an operator watching a kerbal keeps that feed even when
+        // the player switches to a different vessel. A truly-gone kerbal reports
+        // IsAlive==false (ResolveLocation scans all loaded vessels) and is still
+        // disposed here; if a kept kerbal later vanishes without a vessel change,
+        // the LateUpdate sweep disposes it on !IsAlive. Every part camera is
+        // disposed exactly as before: part-camera behaviour is unchanged (a part
+        // camera is never kept here — the `is KerbalFaceCamera` guard excludes
+        // it — so it is disposed and rebuilt below just like today).
+        //
         // disposeMissing=false (onVesselWasModified — dock/stage without a
         // pilot switch): additive only. A part leaving `vessel` via staging
         // is still physically out there on debris and should only stop
@@ -375,8 +391,14 @@ namespace Kerbcast
         {
             if (disposeMissing)
             {
-                foreach (var cam in _cameras) cam.Dispose();
-                _cameras.Clear();
+                for (int i = _cameras.Count - 1; i >= 0; i--)
+                {
+                    var cam = _cameras[i];
+                    bool keep = cam is KerbalFaceCamera && cam.IsAlive;
+                    if (keep) continue;
+                    cam.Dispose();
+                    _cameras.RemoveAt(i);
+                }
             }
 
             if (vessel == null) return;
