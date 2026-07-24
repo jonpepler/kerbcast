@@ -45,6 +45,14 @@ namespace Kerbcast
             return (NameHash(kerbalName) & PartMask) | KerbalTag;
         }
 
+        /* True when a wire-id is in the KERBAL namespace (bit 31 set), i.e. a
+           kerbal camera rather than a part camera. Lets Unity-free code tell the
+           two id spaces apart without duplicating the tag constant. */
+        public static bool IsKerbalId(uint flightId)
+        {
+            return (flightId & KerbalTag) != 0;
+        }
+
         /* Human label for a kerbal camera. Prefers the display name, falling back
            to the roster name when displayName is empty. A kerbal sourced fresh
            from the EVA part can have an empty displayName (the seated path

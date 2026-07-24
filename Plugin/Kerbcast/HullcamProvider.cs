@@ -27,11 +27,21 @@ namespace Kerbcast
             var result = new List<ICamera>();
             foreach (var part in vessel.parts)
             {
+                // Hullcam VDS patches an EVACamera onto every EVA kerbal part; the
+                // crew provider already surfaces that kerbal's EVA POV as a labelled
+                // KerbalFaceCamera, so skip the redundant part camera on an EVA
+                // kerbal (EvaPovDedupe keeps the labelled one).
+                bool ownerVesselIsEva = part.vessel != null && part.vessel.isEVA;
                 int moduleIdx = 0;
                 foreach (var hullcam in part.Modules.OfType<MuMechModuleHullCamera>())
                 {
                     var mount = new HullcamMountSource(hullcam);
                     uint flightId = CameraId.Synthetic(part.flightID, moduleIdx, hullcam.cameraName);
+                    if (!EvaPovDedupe.ShouldSurface(flightId, ownerVesselIsEva))
+                    {
+                        moduleIdx++;
+                        continue;
+                    }
                     if (existingFlightIds.Contains(flightId))
                     {
                         moduleIdx++;
