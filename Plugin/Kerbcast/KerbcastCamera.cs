@@ -1069,6 +1069,16 @@ namespace Kerbcast
         private uint _lastTrackSeq;
         private uint _trackReportSeq;
 
+        /* Last successfully-aimed track pose, recorded whenever the tracked target
+           resolves. On target LOSS (destroyed / unresolvable) while still tracking,
+           these are re-asserted every frame so POV + gimbal FREEZE at the moment of
+           loss rather than snapping back to the pre-tracking rest. _trackHasHeld is
+           false until the first successful aim (nothing to freeze before then). */
+        private bool _trackHasHeld;
+        private float _trackHoldYaw;
+        private float _trackHoldPitch;
+        private float _trackHoldFov;
+
         /* Auto-zoom reference pair for TrackAim.FovForDistance: at
            AutoZoomReferenceDistanceM the framing FoV is AutoZoomReferenceFovDeg;
            closer widens, farther narrows (clamped to [FovMin,FovMax]). A heuristic
@@ -1084,6 +1094,7 @@ namespace Kerbcast
         public void SetTrackMode(int mode)
         {
             _trackMode = mode;
+            if (mode == TrackAim.ModeNone) _trackHasHeld = false; // fresh next session
             // Route through the pinned policy (identity): the DOWN path must never
             // advance the up-report seq. Explicit so a future edit can't quietly
             // turn this into a feedback loop.
@@ -1098,6 +1109,7 @@ namespace Kerbcast
         public void RequestTrackMode(int mode)
         {
             _trackMode = mode;
+            if (mode == TrackAim.ModeNone) _trackHasHeld = false; // fresh next session
             _trackReportSeq = TrackAim.ReportSeqAfterKosSet(_trackReportSeq);
         }
 
@@ -1531,17 +1543,36 @@ namespace Kerbcast
             if (TrackAim.ShouldAim(_trackMode, SupportsPan, SupportsZoom))
             {
                 UnityEngine.Vector3? target = ResolveTrackTarget();
-                if (target.HasValue)
+                switch (TrackAim.Decide(
+                    _trackMode, SupportsPan, SupportsZoom, target.HasValue, _trackHasHeld))
                 {
-                    AimAt(target.Value);
-                    // Frame by camera->target distance; SetFov clamps to
-                    // [FovMin,FovMax] and slews, so a receding vessel stays framed
-                    // smoothly. Reference pair (distance,fov) is a heuristic tuning
-                    // constant, not a per-part datum.
-                    float distance = (target.Value - PositionWorld).magnitude;
-                    SetFov(TrackAim.FovForDistance(
-                        distance, FovMin, FovMax,
-                        AutoZoomReferenceDistanceM, AutoZoomReferenceFovDeg));
+                    case TrackAim.TrackAction.Aim:
+                        AimAt(target.Value);
+                        // Frame by camera->target distance; SetFov clamps to
+                        // [FovMin,FovMax] and slews, so a receding vessel stays
+                        // framed smoothly. Reference pair (distance,fov) is a
+                        // heuristic tuning constant, not a per-part datum.
+                        float distance = (target.Value - PositionWorld).magnitude;
+                        SetFov(TrackAim.FovForDistance(
+                            distance, FovMin, FovMax,
+                            AutoZoomReferenceDistanceM, AutoZoomReferenceFovDeg));
+                        // Record the just-aimed pose so a subsequent target loss
+                        // freezes here (SetPanTarget/SetFov clamp, so read the
+                        // clamped targets back rather than the raw solve).
+                        _trackHoldYaw = _panYawTarget;
+                        _trackHoldPitch = _panPitchTarget;
+                        _trackHoldFov = _fovTarget;
+                        _trackHasHeld = true;
+                        break;
+                    case TrackAim.TrackAction.HoldLast:
+                        // Target lost — FREEZE at the last-aimed pose. Re-asserted
+                        // every frame so POV + gimbal stay put and no stale
+                        // pre-track absolute (from a control poll) can snap them
+                        // back. Track mode stays set until the operator clears it.
+                        SetPanTarget(_trackHoldYaw, _trackHoldPitch);
+                        SetFov(_trackHoldFov);
+                        break;
+                    // None: nothing to aim or hold (e.g. lost before the first aim).
                 }
             }
 

@@ -74,5 +74,24 @@ Check(TrackAim.ReportSeqAfterDownApply(0u) == 0u, "DOWN apply identity at zero")
 Check(TrackAim.ReportSeqAfterKosSet(7u) == 8u, "kOS set advances the up-report seq");
 Check(TrackAim.ReportSeqAfterKosSet(uint.MaxValue) == 0u, "kOS set wraps (u32) rather than overflows");
 
+// --- Target-loss HOLD decision (freeze last-aimed, never snap back) ---
+// Not tracking / not pan+zoom capable => neither aim nor hold.
+Check(TrackAim.Decide(TrackAim.ModeNone, true, true, false, false) == TrackAim.TrackAction.None,
+    "mode none -> no track action");
+Check(TrackAim.Decide(TrackAim.ModeActiveVessel, true, false, true, true) == TrackAim.TrackAction.None,
+    "no zoom -> no track action (gate)");
+// Tracking + target resolved => aim (and record the held pose).
+Check(TrackAim.Decide(TrackAim.ModeActiveVessel, true, true, true, false) == TrackAim.TrackAction.Aim,
+    "tracking + target resolved -> Aim");
+Check(TrackAim.Decide(TrackAim.ModeTarget, true, true, true, true) == TrackAim.TrackAction.Aim,
+    "tracking + target resolved -> Aim (even with a prior held pose)");
+// THE fix: tracking + target LOST, and we have a held pose => HOLD last-aimed
+// (freeze POV + gimbal at the moment of loss; do NOT snap back). Track stays set.
+Check(TrackAim.Decide(TrackAim.ModeTarget, true, true, false, true) == TrackAim.TrackAction.HoldLast,
+    "tracking + target lost + held -> HoldLast (freeze, no snap-back)");
+// Target never resolved (lost before we ever aimed) => nothing to hold; stay at rest.
+Check(TrackAim.Decide(TrackAim.ModeTarget, true, true, false, false) == TrackAim.TrackAction.None,
+    "tracking + target never resolved -> None (no held pose to freeze)");
+
 Console.WriteLine(failures == 0 ? "ALL PASS" : $"{failures} FAILED");
 return failures == 0 ? 0 : 1;

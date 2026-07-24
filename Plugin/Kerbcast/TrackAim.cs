@@ -23,6 +23,30 @@ namespace Kerbcast
             return mode != ModeNone && supportsPan && supportsZoom;
         }
 
+        /* What the per-frame track step should do. */
+        public enum TrackAction
+        {
+            None,      // not tracking / not capable — do nothing (kOS path untouched)
+            Aim,       // target resolved — aim + auto-zoom, and RECORD the held pose
+            HoldLast,  // target lost but we have a held pose — FREEZE at last-aimed
+        }
+
+        /* Decide the track step. On target LOSS while tracking (target destroyed /
+           unresolvable), a camera that has already aimed must HOLD the last-aimed
+           pose — POV and gimbal freeze where they were pointed at the moment of
+           loss, never snapping back to the pre-tracking rest. Re-asserting the held
+           pose every frame (HoldLast) also overrides any stale pre-track absolute a
+           control poll might otherwise re-apply. Track mode stays set; the operator
+           clears it with mode=none. If the target was never resolved (lost before
+           the first aim), there is no held pose, so stay at rest (None). */
+        public static TrackAction Decide(
+            int mode, bool supportsPan, bool supportsZoom, bool targetResolved, bool hasHeld)
+        {
+            if (!ShouldAim(mode, supportsPan, supportsZoom)) return TrackAction.None;
+            if (targetResolved) return TrackAction.Aim;
+            return hasHeld ? TrackAction.HoldLast : TrackAction.None;
+        }
+
         /* DISTINCT auto-zoom primitive (spec: independently deployable, NOT
            bundled with the aim). Maps camera->target distance to a field of
            view: closer = wider, farther = narrower, via a simple angular-size
