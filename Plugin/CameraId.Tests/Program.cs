@@ -55,5 +55,10 @@ Check(CameraId.KerbalCameraName("Jeb (call sign)", "Jebediah Kerman") == "Jeb (c
 Check(CameraId.KerbalCameraName(null, null) == "",
     "label is empty (not null) when both are absent");
 
+// IsKerbalId tells the two namespaces apart.
+Check(CameraId.IsKerbalId(CameraId.KerbalWireId("Jebediah Kerman")), "IsKerbalId true for a kerbal id");
+Check(!CameraId.IsKerbalId(CameraId.Synthetic(100u, 0, "")), "IsKerbalId false for a part id");
+Check(!CameraId.IsKerbalId(CameraId.Synthetic(0xFFFFFFFFu, 2, "cam")), "IsKerbalId false for a masked part id");
+
 Console.WriteLine(failures == 0 ? "ALL PASS" : $"{failures} FAILED");
 return failures == 0 ? 0 : 1;
