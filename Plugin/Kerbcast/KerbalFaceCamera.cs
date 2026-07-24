@@ -96,7 +96,11 @@ namespace Kerbcast
             _occupiedPart = occupiedPart;
             _kerbalName = pcm.name;
             FlightId = CameraId.KerbalWireId(_kerbalName);
-            _cachedCameraName = pcm.displayName;
+            // Prefer displayName, fall back to the roster name: a kerbal sourced
+            // fresh from the EVA part can have an empty displayName, which left the
+            // EVA POV camera unlabelled. The roster name is the same lineage as the
+            // wire-id, so the label always matches the FlightId identity.
+            _cachedCameraName = CameraId.KerbalCameraName(pcm.displayName, _kerbalName);
             var vessel = occupiedPart != null ? occupiedPart.vessel : null;
             _cachedVesselName = vessel != null
                 ? (vessel.GetDisplayName() ?? vessel.vesselName ?? "<unknown>")
