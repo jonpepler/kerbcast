@@ -1,4 +1,4 @@
-import type { KerbcastClient } from "@ksp-gonogo/kerbcast";
+import type { CameraState, KerbcastClient } from "@ksp-gonogo/kerbcast";
 import { PanZoomController, QualityPreset, TrackMode } from "@ksp-gonogo/kerbcast";
 import {
   forwardRef,
@@ -255,6 +255,13 @@ export interface CameraFeedProps {
    */
   onSelectCamera?: (flightId: number) => void;
   /**
+   * Restrict the cameras this feed can select / step through / auto-latch onto
+   * (the picker menu + stepper + fallback). Omit to consider every camera (the
+   * default). A host uses it to scope the selectable set — e.g. a part-grid tile
+   * offering only part cameras so crew cams stay in the crew bar.
+   */
+  cameraFilter?: (camera: CameraState) => boolean;
+  /**
    * Called whenever the camera this feed actually displays changes — including
    * auto-latch and fallback picks, not just explicit selection. The argument
    * is the resolved flightId (null when nothing is shown). Use it to label or
@@ -374,6 +381,7 @@ const CameraFeedInner = forwardRef<CameraFeedHandle, CameraFeedProps>(
     {
       flightId: requestedFlightId,
       onSelectCamera,
+      cameraFilter,
       onDisplayedCameraChange,
       showDebugInfo = false,
       showStatic,
@@ -393,7 +401,15 @@ const CameraFeedInner = forwardRef<CameraFeedHandle, CameraFeedProps>(
     ref,
   ) {
     const client = useKerbcastClient();
-    const cameras = useKerbcastCameras();
+    // The selectable set: every live camera, optionally narrowed by the host's
+    // cameraFilter (e.g. a part-grid tile offering only part cams). Drives the
+    // picker menu, the stepper, and the auto-latch fallback so none can land on
+    // a filtered-out camera.
+    const allCameras = useKerbcastCameras();
+    const cameras = useMemo(
+      () => (cameraFilter ? allCameras.filter(cameraFilter) : allCameras),
+      [allCameras, cameraFilter],
+    );
     const inFlightFromClient = useKerbcastInFlight();
     const inFlight = inFlightProp ?? inFlightFromClient;
     const outOfFlight = inFlight === false;

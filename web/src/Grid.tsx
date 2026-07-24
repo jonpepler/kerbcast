@@ -166,6 +166,7 @@ export function Grid({ mergeCrew, tiles, onTilesChange, showDebugInfo, showStati
           spotlit={tile.spotlit}
           variant={spotlightActive ? "cell" : "grid"}
           spotlightActive={spotlightActive}
+          mergeCrew={mergeCrew}
           showDebugInfo={showDebugInfo}
           showStatic={showStatic}
           onSelectCamera={(fid) => handleSelectCamera(i, fid)}

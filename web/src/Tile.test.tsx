@@ -12,11 +12,11 @@
 
 import { KerbcastClient } from "@ksp-gonogo/kerbcast";
 import type { CameraLifecycle } from "@ksp-gonogo/kerbcast";
-import { Layer } from "@ksp-gonogo/kerbcast";
+import { CameraKind, CrewLocation, Layer } from "@ksp-gonogo/kerbcast";
 import type { MockCameraInit } from "@ksp-gonogo/kerbcast/testing";
 import { MockSidecar } from "@ksp-gonogo/kerbcast/testing";
 import { KerbcastProvider } from "@ksp-gonogo/kerbcast-react";
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Tile } from "./Tile";
 
@@ -75,7 +75,11 @@ async function buildConnectedFixture(cameras: MockCameraInit[] = []) {
   return { client, sidecar };
 }
 
-function renderTile(client: KerbcastClient, flightId: number | null) {
+function renderTile(
+  client: KerbcastClient,
+  flightId: number | null,
+  opts: { mergeCrew?: boolean; onSelectCamera?: (id: number) => void } = {},
+) {
   return render(
     <KerbcastProvider client={client}>
       <Tile
@@ -84,7 +88,9 @@ function renderTile(client: KerbcastClient, flightId: number | null) {
         showDebugInfo={false}
         showStatic={false}
         spotlit={false}
-        onSelectCamera={() => {}}
+        // Default true (no filter) so existing part-cam tests are unchanged.
+        mergeCrew={opts.mergeCrew ?? true}
+        onSelectCamera={opts.onSelectCamera ?? (() => {})}
         onRemove={() => {}}
         onToggleSpotlight={() => {}}
       />
@@ -138,5 +144,62 @@ describe("Tile - missing camera state", () => {
     // The feed mounts (its video element is present); no reconnecting text.
     expect(container!.querySelector("video")).not.toBeNull();
     expect(screen.queryByText(/reconnecting|camera gone/i)).toBeNull();
+  });
+});
+
+describe("Tile - camera picker excludes crew when merge is OFF", () => {
+  const PART = () => makeCamera({ flightId: 1, cameraName: "NavCam", vesselName: "Kerbal X" });
+  const KERBAL = () => makeCamera({
+    flightId: 900,
+    kind: CameraKind.Kerbal,
+    crewLocation: CrewLocation.Seat,
+    cameraName: "Jebediah Kerman",
+    vesselName: "Kerbal X",
+    partName: "",
+    partTitle: "",
+  });
+
+  async function openMenu() {
+    // The picker trigger is the button labelled with the currently-shown camera.
+    const trigger = await screen.findByRole("button", { name: /navcam/i });
+    await act(async () => { fireEvent.click(trigger); });
+    return screen.getAllByRole("menuitemradio").map((i) => i.textContent ?? "");
+  }
+
+  it("merge OFF: the picker lists ONLY part cams, never crew", async () => {
+    const { client } = await buildConnectedFixture([PART(), KERBAL()]);
+    await act(async () => { renderTile(client, 1, { mergeCrew: false }); });
+
+    const labels = await openMenu();
+    expect(labels.some((l) => /navcam/i.test(l))).toBe(true);        // part offered
+    expect(labels.some((l) => /jebediah/i.test(l))).toBe(false);     // crew NOT offered
+  });
+
+  it("merge ON: crew cams ARE offered (they're grid cams then)", async () => {
+    const { client } = await buildConnectedFixture([PART(), KERBAL()]);
+    await act(async () => { renderTile(client, 1, { mergeCrew: true }); });
+
+    const labels = await openMenu();
+    expect(labels.some((l) => /jebediah/i.test(l))).toBe(true);
+  });
+
+  it("merge OFF: picking a part option selects it (and doesn't drop an unrelated tile)", async () => {
+    const onSelectCamera = vi.fn();
+    // Two part cams so there's a second option to pick.
+    const { client } = await buildConnectedFixture([
+      PART(),
+      makeCamera({ flightId: 2, cameraName: "BoosterCam", vesselName: "Kerbal X" }),
+      KERBAL(),
+    ]);
+    await act(async () => { renderTile(client, 1, { mergeCrew: false, onSelectCamera }); });
+
+    const trigger = await screen.findByRole("button", { name: /navcam/i });
+    await act(async () => { fireEvent.click(trigger); });
+    const booster = screen.getByRole("menuitemradio", { name: /boostercam/i });
+    await act(async () => { fireEvent.click(booster); });
+    expect(onSelectCamera).toHaveBeenCalledWith(2);
+    // No crew option was ever selectable, so the "picking crew drops a tile"
+    // side effect cannot occur.
+    expect(screen.queryByRole("menuitemradio", { name: /jebediah/i })).toBeNull();
   });
 });
