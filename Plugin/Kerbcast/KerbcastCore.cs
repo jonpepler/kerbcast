@@ -270,7 +270,14 @@ namespace Kerbcast
         private void OnVesselChange(Vessel v)
         {
             Debug.Log($"[Kerbcast] vessel change: {(v != null ? v.vesselName : "<null>")}");
-            RebuildCameraList(v);
+            // Going EVA fires onVesselChange (control follows the kerbal onto the
+            // EVA vessel), but the ship stays loaded and in physics range — like a
+            // dock/stage change (onVesselWasModified, additive). Keep the ship's
+            // cameras through the EVA switch instead of the scope-and-drop a real
+            // craft switch does; a genuine out-of-range unload is still caught by
+            // onPartDestroyed + the LateUpdate !IsAlive sweep. See VesselChangePolicy.
+            bool goingEva = v != null && v.isEVA;
+            RebuildCameraList(v, VesselChangePolicy.DisposeMissingOnVesselChange(goingEva));
         }
 
         // GameEvents.onPartDestroyed fires when a Part's GameObject is
@@ -918,7 +925,14 @@ namespace Kerbcast
                     sb.Append($"      \"enableAtmosphericFx\": {(kc.EnableFx ? "true" : "false")},\n");
                     sb.Append($"      \"fov\": {kc.Fov.ToString(System.Globalization.CultureInfo.InvariantCulture)},\n");
                     sb.Append($"      \"panYaw\": {kc.PanYaw.ToString(System.Globalization.CultureInfo.InvariantCulture)},\n");
-                    sb.Append($"      \"panPitch\": {kc.PanPitch.ToString(System.Globalization.CultureInfo.InvariantCulture)}\n");
+                    sb.Append($"      \"panPitch\": {kc.PanPitch.ToString(System.Globalization.CultureInfo.InvariantCulture)},\n");
+                    // Auto-track echo UP: the plugin's CURRENT applied mode + a
+                    // monotonic seq bumped ONLY on a kOS-facade set. The sidecar
+                    // adopts the mode into its authoritative ControlState when the
+                    // seq advances (linked track_mode: kOS proposes, sidecar
+                    // converges), never re-adopting a control-block-applied change.
+                    sb.Append($"      \"trackMode\": {kc.GetTrackMode()},\n");
+                    sb.Append($"      \"trackReportSeq\": {kc.TrackReportSeq}\n");
                     sb.Append(i == streaming.Count - 1 ? "    }\n" : "    },\n");
                 }
                 sb.Append("  ]");

@@ -1,5 +1,5 @@
 import type { AdaptiveShedPayload, CameraState, ClientMessage, ErrorPayload, ServerMessage, SettingsStatePayload } from "../__generated__/types";
-import { CameraLifecycle, ErrorSource, Layer, QualityPreset } from "../__generated__/types";
+import { CameraKind, CameraLifecycle, CrewLocation, ErrorSource, Layer, QualityPreset, TrackMode } from "../__generated__/types";
 import type {
   InboundVideoStats,
   KerbcastConnectionState,
@@ -11,6 +11,13 @@ import type {
 export interface MockCameraInit {
   flightId: number;
   lifecycle?: CameraLifecycle;
+  /** Part vs kerbal face camera. Defaults to `part` when omitted, so existing
+   *  part-cam callers are unchanged. */
+  kind?: CameraKind;
+  /** Only meaningful for `kind: Kerbal`: seated IVA portrait vs EVA view. */
+  crewLocation?: CrewLocation;
+  /** Only meaningful for `kind: Kerbal`: informational raw persistentID. */
+  kerbalPersistentId?: number;
   partName?: string;
   partTitle?: string;
   cameraName?: string;
@@ -37,12 +44,17 @@ export interface MockCameraInit {
   degradeLevel?: number;
   viewerQuality?: QualityPreset;
   qualityLimitedBy?: string;
+  /** Server-authoritative auto-track mode. Defaults to `None` (untracked). */
+  trackMode?: TrackMode;
 }
 
 function buildCamera(init: MockCameraInit): CameraState {
   return {
     flightId: init.flightId,
     lifecycle: init.lifecycle ?? CameraLifecycle.Active,
+    kind: init.kind ?? CameraKind.Part,
+    crewLocation: init.crewLocation,
+    kerbalPersistentId: init.kerbalPersistentId,
     partName: init.partName ?? `part-${init.flightId}`,
     partTitle: init.partTitle ?? `Part ${init.flightId}`,
     cameraName: init.cameraName ?? `camera-${init.flightId}`,
@@ -69,6 +81,7 @@ function buildCamera(init: MockCameraInit): CameraState {
     degradeLevel: init.degradeLevel ?? 0,
     viewerQuality: init.viewerQuality,
     qualityLimitedBy: init.qualityLimitedBy,
+    trackMode: init.trackMode ?? TrackMode.None,
   };
 }
 
@@ -119,6 +132,9 @@ export class MockSidecar {
   private _stateHandler: ((s: KerbcastConnectionState) => void) | undefined;
   private _onTrackHandler:
     | ((track: MediaStreamTrack, idx: number, mid: string) => void)
+    | undefined;
+  private _subscribeHandler:
+    | ((flightId: number, mid: string) => void)
     | undefined;
   private _trackIdx = 0;
   /** Slot mids available for the dynamic-subscription model. Override with
@@ -293,6 +309,16 @@ export class MockSidecar {
   deliverTrack(mid: string, track: MediaStreamTrack): void {
     this._deliveredTracks.set(mid, track);
     this._onTrackHandler?.(track, this._trackIdx++, mid);
+  }
+
+  /**
+   * Register a handler fired each time a `subscribe` binds a camera to a slot,
+   * with `(flightId, mid)`. A browser harness uses it to deliver that camera's
+   * track to the mid it was actually bound to — so tracks follow the real
+   * subscription order, not the registration/array order. Set before connecting.
+   */
+  onSubscribe(handler: (flightId: number, mid: string) => void): void {
+    this._subscribeHandler = handler;
   }
 
   /** The slot mid currently carrying `flightId`, or undefined. */
@@ -520,6 +546,18 @@ export class MockSidecar {
         this._sendToClient({ type: "camera-state-changed", content: { state: updated } });
         break;
       }
+      case "set-track-target": {
+        // Server-authoritative: hold the chosen mode and broadcast it back as
+        // camera-state-changed, mirroring the sidecar so every browser reflects
+        // the same trackMode (never optimistic-local).
+        const cam = this._cameras.get(msg.content.flightId);
+        if (cam) {
+          const updated: CameraState = { ...cam, trackMode: msg.content.mode };
+          this._cameras.set(msg.content.flightId, updated);
+          this._sendToClient({ type: "camera-state-changed", content: { state: updated } });
+        }
+        break;
+      }
       case "subscribe": {
         const flightId = msg.content.flightId;
         const freeMid = this._slotMids.find((m) => !this._slotBindings.has(m));
@@ -534,6 +572,9 @@ export class MockSidecar {
             type: "slot-map",
             content: { mid: freeMid, flightId },
           });
+          // Let a harness deliver this camera's track to the slot it was just
+          // bound to (so tracks follow the actual subscription, not array order).
+          this._subscribeHandler?.(flightId, freeMid);
         }
         break;
       }
@@ -559,6 +600,11 @@ export class MockSidecar {
       // the mock has no frame clock, so it doesn't model their *effect* on
       // panYaw/fov. They're still recorded in `_commands`, so consumer tests
       // can assert the command was sent via `lastCommand("set-pan-rate")`.
+      // Advisory per-consumer display-size input. The real sidecar aggregates
+      // it MAX-across-consumers to drive auto-resolution; the mock has no
+      // aggregator, so it just records the command (via `_commands`) and does
+      // NOT mutate camera render dims (unlike the operator `set-render-size`).
+      case "report-display-size":
       case "set-pan-rate":
       case "set-zoom-rate":
       case "hello":

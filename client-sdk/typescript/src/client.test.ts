@@ -4,6 +4,7 @@ import {
   ErrorSource,
   Layer,
   QualityPreset,
+  TrackMode,
 } from "./__generated__/types";
 import {
   BrowserKerbcastTransport,
@@ -377,6 +378,44 @@ describe("KerbcastClient", () => {
       JSON.stringify({
         type: "set-render-size",
         content: { flightId: 7, width: 384, height: 384 },
+      }),
+    ]);
+  });
+
+  it("reportDisplaySize sends a report-display-size command", async () => {
+    const { transport, captured } = makeFakeTransport();
+    const client = new KerbcastClient({ host: "h", port: 1 }, transport);
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(fakeAnswer());
+
+    await client.connect();
+    captured.dc?._open();
+    captured.dc!.sent.length = 0;
+
+    await client.reportDisplaySize(3, 40, 40);
+
+    expect(captured.dc?.sent).toEqual([
+      JSON.stringify({
+        type: "report-display-size",
+        content: { flightId: 3, width: 40, height: 40 },
+      }),
+    ]);
+  });
+
+  it("setTrackTarget sends a set-track-target command", async () => {
+    const { transport, captured } = makeFakeTransport();
+    const client = new KerbcastClient({ host: "h", port: 1 }, transport);
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(fakeAnswer());
+
+    await client.connect();
+    captured.dc?._open();
+    captured.dc!.sent.length = 0;
+
+    await client.setTrackTarget(5, TrackMode.ActiveVessel);
+
+    expect(captured.dc?.sent).toEqual([
+      JSON.stringify({
+        type: "set-track-target",
+        content: { flightId: 5, mode: TrackMode.ActiveVessel },
       }),
     ]);
   });

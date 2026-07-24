@@ -40,5 +40,25 @@ Check(CameraId.KerbalWireId("Jebediah Kerman") != CameraId.KerbalWireId("Bill Ke
 Check(CameraId.KerbalWireId("Jebediah Kerman") != CameraId.Synthetic(100u, 0, ""), "kerbal disjoint from part (module 0)");
 Check(CameraId.KerbalWireId("Bob Kerman") != CameraId.Synthetic(0xFFFFFFFFu, 2, "cam"), "kerbal disjoint from part (module 2)");
 
+// Kerbal camera LABEL: prefer the display name, fall back to the roster name.
+// A kerbal sourced fresh from the EVA part can have an empty displayName (the
+// seated path populates it, the EVA-construction path may not), so the EVA POV
+// cam must still carry the crew identity via the name the wire-id derives from.
+Check(CameraId.KerbalCameraName("Jebediah Kerman", "Jebediah Kerman") == "Jebediah Kerman",
+    "label uses displayName when present");
+Check(CameraId.KerbalCameraName("", "Jebediah Kerman") == "Jebediah Kerman",
+    "label falls back to roster name when displayName empty");
+Check(CameraId.KerbalCameraName(null, "Bob Kerman") == "Bob Kerman",
+    "label falls back to roster name when displayName null");
+Check(CameraId.KerbalCameraName("Jeb (call sign)", "Jebediah Kerman") == "Jeb (call sign)",
+    "label keeps a custom displayName over the roster name");
+Check(CameraId.KerbalCameraName(null, null) == "",
+    "label is empty (not null) when both are absent");
+
+// IsKerbalId tells the two namespaces apart.
+Check(CameraId.IsKerbalId(CameraId.KerbalWireId("Jebediah Kerman")), "IsKerbalId true for a kerbal id");
+Check(!CameraId.IsKerbalId(CameraId.Synthetic(100u, 0, "")), "IsKerbalId false for a part id");
+Check(!CameraId.IsKerbalId(CameraId.Synthetic(0xFFFFFFFFu, 2, "cam")), "IsKerbalId false for a masked part id");
+
 Console.WriteLine(failures == 0 ? "ALL PASS" : $"{failures} FAILED");
 return failures == 0 ? 0 : 1;

@@ -13,7 +13,7 @@
 
 import { KerbcastClient } from "@ksp-gonogo/kerbcast";
 import type { CameraLifecycle } from "@ksp-gonogo/kerbcast";
-import { Layer } from "@ksp-gonogo/kerbcast";
+import { CameraKind, CrewLocation, Layer } from "@ksp-gonogo/kerbcast";
 import type { MockCameraInit } from "@ksp-gonogo/kerbcast/testing";
 import { MockSidecar } from "@ksp-gonogo/kerbcast/testing";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -534,6 +534,36 @@ describe("App - remove controls", () => {
     expect(stored.map((t) => t.flightId)).toEqual([1]);
   });
 
+  it("merge OFF prunes a kerbal tile stranded by a prior merge-ON session", async () => {
+    // Repro: kerbal was a grid tile while merged (persisted), then merge went
+    // OFF. On reload the stranded kerbal tile would keep rendering in the grid,
+    // duplicating the crew bar. The reconciler must evict it. Merge is OFF by
+    // default (loadCrewMerge), so no localStorage crewMerge key is set here.
+    saveTiles([
+      { flightId: 1, spotlit: false, key: "Kerbal X|mumech.MuMechModuleHullCamera|Alpha" },
+      { flightId: 201, spotlit: false, key: "Kerbal X||Jebediah Kerman" },
+    ]);
+
+    const { client, openSidecar } = buildFixture([
+      makeCamera({ flightId: 1, cameraName: "Alpha" }),
+      makeCamera({
+        flightId: 201,
+        kind: CameraKind.Kerbal,
+        crewLocation: CrewLocation.Seat,
+        cameraName: "Jebediah Kerman",
+      }),
+    ]);
+    await renderApp(client);
+    await act(async () => { openSidecar(); });
+
+    // Only the part tile survives; the kerbal tile is pruned from the grid.
+    await waitFor(() => {
+      const stored = JSON.parse(localStorage.getItem("kerbcast:tiles") ?? "[]") as
+        { flightId: number | null }[];
+      expect(stored.map((t) => t.flightId)).toEqual([1]);
+    });
+  });
+
   it("offers no remove-lost control when nothing is lost", async () => {
     saveTiles([{ flightId: 1, spotlit: false }]);
 
@@ -574,7 +604,7 @@ describe("App - settings", () => {
     fireEvent.click(screen.getByRole("button", { name: /settings/i }));
     await waitFor(() => screen.getByRole("dialog"));
 
-    const select = screen.getByRole("combobox") as HTMLSelectElement;
+    const select = screen.getByLabelText("Theme") as HTMLSelectElement;
     await act(async () => {
       fireEvent.change(select, { target: { value: "dark" } });
     });
@@ -594,7 +624,7 @@ describe("App - settings", () => {
     fireEvent.click(screen.getByRole("button", { name: /settings/i }));
     await waitFor(() => screen.getByRole("dialog"));
 
-    const select = screen.getByRole("combobox") as HTMLSelectElement;
+    const select = screen.getByLabelText("Theme") as HTMLSelectElement;
     await act(async () => {
       fireEvent.change(select, { target: { value: "auto" } });
     });
@@ -1320,3 +1350,28 @@ describe("App - out-of-flight standby", () => {
     ).toBeNull();
   });
 });
+
+describe("App - kerbal-only vessel does not double-feed (crew bar + grid)", () => {
+  it("merge OFF: a lone kerbal cam shows in the crew bar only, never as a grid tile", async () => {
+    const { client, openSidecar } = buildFixture([
+      makeCamera({
+        flightId: 900,
+        kind: CameraKind.Kerbal,
+        crewLocation: CrewLocation.Seat,
+        cameraName: "Jebediah Kerman",
+        partName: "",
+        partTitle: "",
+      }),
+    ]);
+    await renderApp(client);
+    await act(async () => { openSidecar(); });
+
+    await waitFor(() => {
+      expect(screen.getAllByTestId("crew-face").length).toBe(1);
+    });
+    // The kerbal must NOT also be a grid tile: no remove-tile control exists
+    // (an empty grid has none), i.e. it is not gridded.
+    expect(screen.queryAllByRole("button", { name: /remove tile/i })).toHaveLength(0);
+  });
+});
+

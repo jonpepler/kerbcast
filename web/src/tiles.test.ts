@@ -1,10 +1,12 @@
 import { beforeEach, describe, expect, it } from "vitest";
+import { CameraKind } from "@ksp-gonogo/kerbcast";
 import {
   addAllCameras,
   addTile,
   cameraKey,
   loadPerfNoteDismissed,
   loadTiles,
+  pruneCrewTiles,
   reconcileTiles,
   removeAllCameras,
   removeAllLostCameras,
@@ -429,6 +431,64 @@ describe("tile key persistence", () => {
     const loaded = loadTiles();
     expect(loaded).not.toBeNull();
     expect(loaded![0].key).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// pruneCrewTiles
+// ---------------------------------------------------------------------------
+
+/** A kerbal-kind (face) camera, as it appears in the UNFILTERED camera list. */
+function kerbalCam(flightId: number, cameraName = "Jebediah Kerman") {
+  return { flightId, kind: CameraKind.Kerbal, cameraName };
+}
+
+/** A part-kind (Hullcam) camera. `kind` may be absent on legacy snapshots. */
+function partCam(flightId: number, kind?: CameraKind) {
+  return { flightId, kind, cameraName: "Camera" };
+}
+
+describe("pruneCrewTiles", () => {
+  it("drops a tile bound to a kerbal-kind camera", () => {
+    const tiles = [tile(1), tile(201)];
+    const cameras = [partCam(1), kerbalCam(201)];
+    const result = pruneCrewTiles(tiles, cameras);
+    expect(result.map((t) => t.flightId)).toEqual([1]);
+  });
+
+  it("keeps part tiles and empty slots", () => {
+    const tiles = [tile(1), tile(null), tile(2)];
+    const cameras = [partCam(1), partCam(2)];
+    expect(pruneCrewTiles(tiles, cameras)).toBe(tiles);
+  });
+
+  it("returns the same array reference when no kerbal tile is present", () => {
+    const tiles = [tile(1), tile(null), tile(201)];
+    // 201 is not a kerbal here (it is a part cam), so nothing is pruned.
+    const cameras = [partCam(1), partCam(201)];
+    expect(pruneCrewTiles(tiles, cameras)).toBe(tiles);
+  });
+
+  it("preserves the object identity of surviving part tiles", () => {
+    const partTile = tile(1);
+    const tiles = [partTile, tile(201)];
+    const cameras = [partCam(1), kerbalCam(201)];
+    const result = pruneCrewTiles(tiles, cameras);
+    expect(result[0]).toBe(partTile);
+  });
+
+  it("keeps empty slots even when a kerbal tile is pruned", () => {
+    const tiles = [tile(null), tile(201), tile(2)];
+    const cameras = [partCam(2), kerbalCam(201)];
+    const result = pruneCrewTiles(tiles, cameras);
+    expect(result.map((t) => t.flightId)).toEqual([null, 2]);
+  });
+
+  it("keeps a tile whose flightId is not in the camera list (unknown, not kerbal)", () => {
+    const tiles = [tile(1), tile(999)];
+    const cameras = [partCam(1), kerbalCam(201)];
+    // 999 maps to no camera: it is not a known kerbal, so it survives.
+    expect(pruneCrewTiles(tiles, cameras)).toBe(tiles);
   });
 });
 

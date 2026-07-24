@@ -1050,6 +1050,100 @@ namespace Kerbcast
             SetPanTarget(yaw, pitch);
         }
 
+        /* Browser auto-track (issue #6). 0=none, 1=active-vessel, 2=target,
+           set from the control block (SetTrackTarget) each poll. None (the
+           default) makes Refresh's track step a single bool check with no other
+           effect, so the kOS aim path is untouched. */
+        private int _trackMode = TrackAim.ModeNone;
+        /* Linked track_mode (sidecar-authoritative + eventual-consistency).
+           DOWN: the control block carries track_mode + a track_seq the sidecar
+           bumps on ANY authoritative change; we apply the control-block
+           track_mode ONLY when track_seq moves (edge-trigger), so the sidecar's
+           every-flush stale value can't revert a kOS-set mode. Init 0 = matches
+           a freshly-created block, so a never-tracked camera never applies.
+           UP: a kOS-facade SetTrackMode is optimistic-local (aims at once) and
+           bumps _trackReportSeq, which the status writer echoes; the sidecar
+           adopts it into its authoritative ControlState on the seq change. We
+           bump _trackReportSeq ONLY for a kOS set, NEVER when applying a
+           control-block flush — the anti-loop guard. */
+        private uint _lastTrackSeq;
+        private uint _trackReportSeq;
+
+        /* Last successfully-aimed track pose, recorded whenever the tracked target
+           resolves. On target LOSS (destroyed / unresolvable) while still tracking,
+           these are re-asserted every frame so POV + gimbal FREEZE at the moment of
+           loss rather than snapping back to the pre-tracking rest. _trackHasHeld is
+           false until the first successful aim (nothing to freeze before then). */
+        private bool _trackHasHeld;
+        private float _trackHoldYaw;
+        private float _trackHoldPitch;
+        private float _trackHoldFov;
+
+        /* Auto-zoom reference pair for TrackAim.FovForDistance: at
+           AutoZoomReferenceDistanceM the framing FoV is AutoZoomReferenceFovDeg;
+           closer widens, farther narrows (clamped to [FovMin,FovMax]). A heuristic
+           tuning constant (no per-part target-size datum), so a tracked vessel that
+           recedes stays framed. */
+        private const float AutoZoomReferenceDistanceM = 1000f;
+        private const float AutoZoomReferenceFovDeg = 20f;
+
+        /// <summary>Apply the authoritative auto-track mode from the control
+        /// block (the DOWN path). Called by PollControlFile on a track_seq edge.
+        /// Does NOT bump the up-report seq (that is reserved for a kOS set — the
+        /// anti-loop guard). Only acted on for a pan+zoom camera.</summary>
+        public void SetTrackMode(int mode)
+        {
+            _trackMode = mode;
+            if (mode == TrackAim.ModeNone) _trackHasHeld = false; // fresh next session
+            // Route through the pinned policy (identity): the DOWN path must never
+            // advance the up-report seq. Explicit so a future edit can't quietly
+            // turn this into a feedback loop.
+            _trackReportSeq = TrackAim.ReportSeqAfterDownApply(_trackReportSeq);
+        }
+
+        /// <summary>Set the auto-track mode from kOS (the UP path). Synchronous
+        /// + optimistic-local: applies immediately (the camera aims at once) and
+        /// stages an up-report by bumping _trackReportSeq, which the sidecar
+        /// adopts as authoritative on its next status poll. GET reflects it at
+        /// once. Only acted on for a pan+zoom camera.</summary>
+        public void RequestTrackMode(int mode)
+        {
+            _trackMode = mode;
+            if (mode == TrackAim.ModeNone) _trackHasHeld = false; // fresh next session
+            _trackReportSeq = TrackAim.ReportSeqAfterKosSet(_trackReportSeq);
+        }
+
+        /// <summary>Current applied auto-track mode (0=none/1=active-vessel/
+        /// 2=target). The synchronous kOS read.</summary>
+        public int GetTrackMode() => _trackMode;
+
+        /// <summary>Monotonic kOS-report seq, echoed in global.status.json so
+        /// the sidecar adopts a kOS-set mode exactly once (never bumped by a
+        /// control-block apply).</summary>
+        public uint TrackReportSeq => _trackReportSeq;
+
+        /* Resolve the current track target's WORLD position from FlightGlobals
+           only (no orbit math): the active vessel's CoM, or its target's
+           transform. Null when there is no active vessel / no target this
+           frame (a no-op tick). */
+        private UnityEngine.Vector3? ResolveTrackTarget()
+        {
+            if (_trackMode == TrackAim.ModeActiveVessel)
+            {
+                var v = FlightGlobals.ActiveVessel;
+                return v != null ? (UnityEngine.Vector3?)v.CoM : null;
+            }
+            if (_trackMode == TrackAim.ModeTarget)
+            {
+                var tgt = FlightGlobals.ActiveVessel != null
+                    ? FlightGlobals.ActiveVessel.targetObject
+                    : null;
+                var tr = tgt != null ? tgt.GetTransform() : null;
+                return tr != null ? (UnityEngine.Vector3?)tr.position : null;
+            }
+            return null;
+        }
+
         /// <summary>
         /// Cascade table: (resolution multiplier, layers to drop). Lower
         /// levels are gentler on perception. Resolution reduction wins over
@@ -1281,6 +1375,22 @@ namespace Kerbcast
                     _zoomRate = Mathf.Clamp(snap.ZoomRate.Value, -1f, 1f);
                 }
 
+                // Auto-track mode (linked, sidecar-authoritative). Apply the
+                // control-block track_mode ONLY when track_seq changes: the
+                // sidecar re-publishes the full state every flush, so applying
+                // every poll would let its stale track_mode overwrite a kOS-set
+                // mode each frame. The edge-trigger (mirroring _lastFovSeq) makes
+                // a stale flush idempotent while a genuine authoritative change
+                // (browser SetTrackTarget OR the sidecar adopting a kOS report)
+                // still lands. Absent bit => none (the sidecar writes full state,
+                // so absent means not-tracking). Uses SetTrackMode (the DOWN
+                // path) so it does NOT bump the up-report seq.
+                if (TrackAim.ShouldApplyDown(snap.TrackSeq, _lastTrackSeq))
+                {
+                    _lastTrackSeq = snap.TrackSeq;
+                    SetTrackMode((int)(snap.TrackMode ?? 0u));
+                }
+
                 if (SupportsPan)
                 {
                     // Absolute pan is applied only when panSeq changes (covers
@@ -1414,6 +1524,56 @@ namespace Kerbcast
             {
                 _controlCheckCountdown = 1;
                 PollControlFile();
+            }
+
+            // Browser auto-track (issue #6): resolve the tracked world point and
+            // set the pan target BEFORE the slew, so the existing MoveTowards
+            // filter animates toward it. Gated on a real mode + a pan+zoom mount;
+            // track_mode==none (the default) makes this a single bool check with
+            // no other effect, so the kOS aim path is untouched. A browser track
+            // overrides a kOS aim on the same camera (this runs in LateUpdate,
+            // after kOS's in-cycle aim). AimAt no-ops if the point is unresolved.
+            // Auto-zoom rides the SAME gate as the aim: automatic whenever a track
+            // mode is set (Jon's call — a tracked vessel that flies away stays
+            // framed), no separate control. While tracking, auto-zoom OWNS the zoom
+            // (overrides manual, as the aim owns pan); track_mode==none skips the
+            // whole block, so the zero-effect-when-off guarantee covers FOV too (no
+            // zoom write when not tracking). The aim math (AimAt) and zoom math
+            // (TrackAim.FovForDistance) stay distinct — this only CALLS both.
+            if (TrackAim.ShouldAim(_trackMode, SupportsPan, SupportsZoom))
+            {
+                UnityEngine.Vector3? target = ResolveTrackTarget();
+                switch (TrackAim.Decide(
+                    _trackMode, SupportsPan, SupportsZoom, target.HasValue, _trackHasHeld))
+                {
+                    case TrackAim.TrackAction.Aim:
+                        AimAt(target.Value);
+                        // Frame by camera->target distance; SetFov clamps to
+                        // [FovMin,FovMax] and slews, so a receding vessel stays
+                        // framed smoothly. Reference pair (distance,fov) is a
+                        // heuristic tuning constant, not a per-part datum.
+                        float distance = (target.Value - PositionWorld).magnitude;
+                        SetFov(TrackAim.FovForDistance(
+                            distance, FovMin, FovMax,
+                            AutoZoomReferenceDistanceM, AutoZoomReferenceFovDeg));
+                        // Record the just-aimed pose so a subsequent target loss
+                        // freezes here (SetPanTarget/SetFov clamp, so read the
+                        // clamped targets back rather than the raw solve).
+                        _trackHoldYaw = _panYawTarget;
+                        _trackHoldPitch = _panPitchTarget;
+                        _trackHoldFov = _fovTarget;
+                        _trackHasHeld = true;
+                        break;
+                    case TrackAim.TrackAction.HoldLast:
+                        // Target lost — FREEZE at the last-aimed pose. Re-asserted
+                        // every frame so POV + gimbal stay put and no stale
+                        // pre-track absolute (from a control poll) can snap them
+                        // back. Track mode stays set until the operator clears it.
+                        SetPanTarget(_trackHoldYaw, _trackHoldPitch);
+                        SetFov(_trackHoldFov);
+                        break;
+                    // None: nothing to aim or hold (e.g. lost before the first aim).
+                }
             }
 
             // Pan slew runs every tick regardless of subscription state so

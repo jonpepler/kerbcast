@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { CameraLifecycle, Layer } from "./__generated__/types";
+import { CameraLifecycle, Layer, TrackMode } from "./__generated__/types";
 import { KerbcastClient } from "./index";
 import { MockSidecar } from "./testing/index";
 
@@ -119,6 +119,48 @@ describe("MockSidecar", () => {
 
     const last = sidecar.lastCommand("set-fov", 42);
     expect(last?.content.fov).toBe(60);
+  });
+
+  it("accepts and records report-display-size as an advisory command", async () => {
+    const sidecar = new MockSidecar();
+    sidecar.addCamera({ flightId: 42 });
+
+    const client = new KerbcastClient(
+      { host: "localhost", port: 8088 },
+      sidecar.createTransport(),
+    );
+    await client.connect([42]);
+    sidecar.open();
+
+    // Must not throw on the new message type, and must be retrievable.
+    await client.reportDisplaySize(42, 40, 40);
+
+    const cmd = sidecar.lastCommand("report-display-size", 42);
+    expect(cmd?.content).toEqual({ flightId: 42, width: 40, height: 40 });
+    // Advisory: reporting a display size must NOT be translated into an
+    // operator set-render-size command (that path is the manual cap only).
+    expect(sidecar.commands.some((c) => c.type === "set-render-size")).toBe(false);
+  });
+
+  it("set-track-target updates trackMode and echoes it to the client (server-authoritative)", async () => {
+    const sidecar = new MockSidecar();
+    sidecar.addCamera({ flightId: 7, supportsPan: true, supportsZoom: true });
+
+    const client = new KerbcastClient(
+      { host: "localhost", port: 8088 },
+      sidecar.createTransport(),
+    );
+    await client.connect([7]);
+    sidecar.open();
+
+    await client.setTrackTarget(7, TrackMode.Target);
+    expect(sidecar.lastCommand("set-track-target", 7)?.content.mode).toBe(TrackMode.Target);
+    // The mock echoes camera-state-changed so every client reflects the same
+    // server-held mode (never optimistic-local).
+    expect(client.cameras.find((c) => c.flightId === 7)?.trackMode).toBe(TrackMode.Target);
+
+    await client.setTrackTarget(7, TrackMode.None);
+    expect(client.cameras.find((c) => c.flightId === 7)?.trackMode).toBe(TrackMode.None);
   });
 
   it("updateCamera pushes state-change to the client", async () => {

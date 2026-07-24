@@ -49,6 +49,10 @@ if (block != null)
     Check(s.PanSeq == 9u, "panSeq == 9");
     Check(s.FovSeq == 4u, "fovSeq == 4");
     Check(s.ViewerLevel == 2u, "viewerLevel == 2 (the half preset)");
+    // track_mode is an append: the v2 golden fixture predates it, so its
+    // present bit is clear and the reader decodes it as null (not tracking).
+    Check(s.TrackMode == null, "trackMode == null (fixture predates the append)");
+    Check(s.TrackSeq == 0u, "trackSeq == 0 (fixed field, fixture not tracking)");
     Check(s.Seq == 2L, "seqlock seq == 2 (exactly one published write)");
 
     // Change detection: re-reading the same (unchanged) block yields nothing.

@@ -11,7 +11,7 @@
  * /profile fetch is intercepted to return plausible stagger numbers.
  */
 
-import { CameraLifecycle, KerbcastClient } from "@ksp-gonogo/kerbcast";
+import { CameraKind, CameraLifecycle, CrewLocation, KerbcastClient } from "@ksp-gonogo/kerbcast";
 import type { MockCameraInit } from "@ksp-gonogo/kerbcast/testing";
 import { MockSidecar } from "@ksp-gonogo/kerbcast/testing";
 
@@ -83,10 +83,105 @@ const MOCK_CAMERAS: MockCameraInit[] = [
     operatorHeight: 0,
     encoderBitrateBps: 0,
   },
+  // Kerbal face cameras (square, no pan/zoom). Kerbal wire-ids are name-hashed
+  // with the top bit set on the plugin side; the exact values are arbitrary in
+  // the mock — the crew bar distinguishes them by `kind: "kerbal"`. Seated crew
+  // report crewLocation "seat"; Val is on EVA; one kerbal is destroyed to
+  // exercise SIGNAL LOST in the crew bar.
+  {
+    flightId: 2_147_483_701,
+    kind: CameraKind.Kerbal,
+    crewLocation: CrewLocation.Seat,
+    kerbalPersistentId: 2854682590,
+    cameraName: "Jebediah Kerman",
+    vesselName: "Kerbal X",
+    partName: "",
+    partTitle: "",
+    lifecycle: CameraLifecycle.Active,
+    supportsZoom: false,
+    supportsPan: false,
+    renderWidth: 360,
+    renderHeight: 360,
+    operatorWidth: 512,
+    operatorHeight: 512,
+    encoderBitrateBps: 700_000,
+  },
+  {
+    flightId: 2_147_483_702,
+    kind: CameraKind.Kerbal,
+    crewLocation: CrewLocation.Seat,
+    kerbalPersistentId: 1904857326,
+    cameraName: "Bill Kerman",
+    vesselName: "Kerbal X",
+    partName: "",
+    partTitle: "",
+    lifecycle: CameraLifecycle.Active,
+    supportsZoom: false,
+    supportsPan: false,
+    renderWidth: 360,
+    renderHeight: 360,
+    operatorWidth: 512,
+    operatorHeight: 512,
+    encoderBitrateBps: 680_000,
+  },
+  {
+    flightId: 2_147_483_703,
+    kind: CameraKind.Kerbal,
+    crewLocation: CrewLocation.Seat,
+    kerbalPersistentId: 771203944,
+    cameraName: "Bob Kerman",
+    vesselName: "Kerbal X",
+    partName: "",
+    partTitle: "",
+    lifecycle: CameraLifecycle.Active,
+    supportsZoom: false,
+    supportsPan: false,
+    renderWidth: 360,
+    renderHeight: 360,
+    operatorWidth: 512,
+    operatorHeight: 512,
+    encoderBitrateBps: 690_000,
+  },
+  {
+    flightId: 2_147_483_704,
+    kind: CameraKind.Kerbal,
+    crewLocation: CrewLocation.Eva,
+    kerbalPersistentId: 2235898073,
+    cameraName: "Valentina Kerman",
+    vesselName: "Valentina Kerman (EVA)",
+    partName: "",
+    partTitle: "",
+    lifecycle: CameraLifecycle.Active,
+    supportsZoom: false,
+    supportsPan: false,
+    renderWidth: 360,
+    renderHeight: 360,
+    operatorWidth: 512,
+    operatorHeight: 512,
+    encoderBitrateBps: 720_000,
+  },
+  {
+    flightId: 2_147_483_705,
+    kind: CameraKind.Kerbal,
+    crewLocation: CrewLocation.Seat,
+    kerbalPersistentId: 448921077,
+    cameraName: "Kirrim Kerman",
+    vesselName: "Kerbal X",
+    partName: "",
+    partTitle: "",
+    lifecycle: CameraLifecycle.Destroyed,
+    supportsZoom: false,
+    supportsPan: false,
+    renderWidth: 0,
+    renderHeight: 0,
+    operatorWidth: 512,
+    operatorHeight: 512,
+    encoderBitrateBps: 0,
+  },
 ];
 
-/** HSL hue for each camera's test pattern. */
-const CAMERA_HUES = [210, 30, 140, 0];
+/** HSL hue for each camera's test pattern (part cams then kerbal faces). */
+const CAMERA_HUES = [210, 30, 140, 0, 265, 320, 95, 45, 175];
 
 /**
  * Create a KerbcastClient backed by a MockSidecar.
@@ -98,35 +193,45 @@ const CAMERA_HUES = [210, 30, 140, 0];
  */
 export async function createMockClient(): Promise<KerbcastClient> {
   const sidecar = new MockSidecar();
-  sidecar.withSlots(["0", "1", "2", "3", "4", "5", "6", "7"]);
+  sidecar.withSlots(["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11"]);
 
   for (const cam of MOCK_CAMERAS) {
     sidecar.addCamera(cam);
   }
 
   /*
-   * Canvas tracks are built once per camera and reused across reconnects;
-   * the canvases keep animating regardless of connection state.
+   * Canvas tracks are built once per camera (keyed by flightId, drawing that
+   * camera's own name/hue) and reused across reconnects; the canvases keep
+   * animating regardless of connection state.
+   *
+   * Delivery follows the actual SUBSCRIPTION, not array order: the app decides
+   * which cameras to subscribe (crew bar + grid, in its own order), the mock
+   * binds each to a free slot, and onSubscribe fires (flightId, mid) so we
+   * deliver THAT camera's track to THAT slot. Delivering by array index instead
+   * crossed the feeds once the subscribed set stopped matching array order.
    */
   const tracks = new Map<number, MediaStreamTrack>();
-  const deliverTracks = () => {
-    let slotIdx = 0;
-    for (let i = 0; i < MOCK_CAMERAS.length; i++) {
-      const cam = MOCK_CAMERAS[i];
-      if ((cam.lifecycle ?? CameraLifecycle.Active) === CameraLifecycle.Destroyed) {
-        slotIdx++;
-        continue;
-      }
-      const mid = String(slotIdx);
-      let track = tracks.get(cam.flightId);
-      if (!track) {
-        track = buildCanvasTrack(cam.cameraName ?? "Camera", CAMERA_HUES[i] ?? 0);
-        tracks.set(cam.flightId, track);
-      }
-      sidecar.deliverTrack(mid, track);
-      slotIdx++;
-    }
+  const trackFor = (flightId: number): MediaStreamTrack | undefined => {
+    const existing = tracks.get(flightId);
+    if (existing) return existing;
+    const i = MOCK_CAMERAS.findIndex((c) => c.flightId === flightId);
+    if (i < 0) return undefined;
+    const cam = MOCK_CAMERAS[i];
+    // Destroyed cams have no live track (the UI shows SIGNAL LOST).
+    if ((cam.lifecycle ?? CameraLifecycle.Active) === CameraLifecycle.Destroyed) return undefined;
+    // Kerbal face cams render SQUARE; part cams stay 16:9.
+    const square = cam.kind === CameraKind.Kerbal;
+    const track = buildCanvasTrack(cam.cameraName ?? "Camera", CAMERA_HUES[i] ?? 0, square ? 360 : 640, 360);
+    tracks.set(flightId, track);
+    return track;
   };
+
+  // Registered before connect: fires for every subscribe (incl. re-subscribe
+  // after a reconnect), so a camera's track always lands on its bound slot.
+  sidecar.onSubscribe((flightId, mid) => {
+    const track = trackFor(flightId);
+    if (track) sidecar.deliverTrack(mid, track);
+  });
 
   const mockClient = new KerbcastClient(
     {
@@ -141,7 +246,8 @@ export async function createMockClient(): Promise<KerbcastClient> {
         setTimeout(() => {
           sidecar.open();
           sidecar.setConnectionState("connected");
-          deliverTracks();
+          // Tracks are delivered per-subscription via the onSubscribe handler
+          // above, so there's nothing to push eagerly here.
         }, 50);
         return answer;
       },
@@ -172,10 +278,10 @@ export async function createMockClient(): Promise<KerbcastClient> {
 // Animated canvas track
 // ---------------------------------------------------------------------------
 
-function buildCanvasTrack(label: string, hue: number): MediaStreamTrack {
+function buildCanvasTrack(label: string, hue: number, width = 640, height = 360): MediaStreamTrack {
   const canvas = document.createElement("canvas");
-  canvas.width = 640;
-  canvas.height = 360;
+  canvas.width = width;
+  canvas.height = height;
   const ctx = canvas.getContext("2d");
 
   let frame = 0;
@@ -186,19 +292,19 @@ function buildCanvasTrack(label: string, hue: number): MediaStreamTrack {
 
     // Background gradient sweep
     ctx.fillStyle = `hsl(${hue}, 60%, ${15 + t * 10}%)`;
-    ctx.fillRect(0, 0, 640, 360);
+    ctx.fillRect(0, 0, width, height);
 
     // Moving brightness bar
-    const barY = Math.round(t * 360);
+    const barY = Math.round(t * height);
     ctx.fillStyle = `hsl(${hue}, 80%, 70%)`;
-    ctx.fillRect(0, barY, 640, 8);
+    ctx.fillRect(0, barY, width, 8);
 
     // Camera label
     ctx.fillStyle = "#ffffff";
     ctx.font = "bold 24px sans-serif";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
-    ctx.fillText(label, 320, 180);
+    ctx.fillText(label, width / 2, height / 2);
   }, 1000 / 24);
 
   // captureStream is stubbed by installDomStubs in test environments

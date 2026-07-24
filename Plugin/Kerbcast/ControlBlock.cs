@@ -29,6 +29,21 @@
 //     [+48]    u32 fov_seq
 //     [+52]    u32 viewer_level  (viewer quality clamp: index into
 //                                 QualityClamp.ViewerScales; absent = auto)
+//     [+56]    u32 track_mode    (auto-track: 0=none, 1=active-vessel,
+//                                 2=target. Present-bit CLEAR = none/off; the
+//                                 sidecar always writes full state so absence
+//                                 means not-tracking, not leave-untouched.)
+//     [+60]    u32 track_seq     (FIXED field, always read — like pan_seq/
+//                                 fov_seq. Sidecar bumps it on any authoritative
+//                                 track_mode change; the plugin applies
+//                                 track_mode only on a change (edge-trigger).)
+//
+// track_mode (+56) is an APPEND with its own fields_present bit — NOT a
+// LAYOUT_VERSION bump. The bitmask is forward-compatible: an old reader ignores
+// the bit and never touches +56 (previously-zero reserved body), so a v2 build
+// and a track_mode-aware build interoperate, and the golden fixture stays
+// byte-identical (its state leaves track_mode = none). Only a reorder / body
+// resize needs a version bump.
 //
 // Seqlock read: load seq (Interlocked = acquire barrier); if odd the writer is
 // mid-write — retry; if it matches the last applied seq nothing changed — skip;
@@ -68,6 +83,15 @@ namespace Kerbcast
         /// <summary>Viewer-requested quality clamp (index into
         /// QualityClamp.ViewerScales). Null = auto, no viewer clamp.</summary>
         public uint? ViewerLevel;
+        /// <summary>Auto-track mode (0=none, 1=active-vessel, 2=target). Null
+        /// when the present bit is clear = not tracking. A browser track
+        /// overrides a kOS aim on the same camera.</summary>
+        public uint? TrackMode;
+        /// <summary>Monotonic counter the sidecar bumps on any authoritative
+        /// track_mode change. The plugin applies track_mode only when this
+        /// moves (edge-trigger), so a stale flush can't revert a kOS-set mode.
+        /// Always read (fixed field), like PanSeq/FovSeq.</summary>
+        public uint TrackSeq;
         /// <summary>The seqlock value this snapshot was read at (even).</summary>
         public long Seq;
     }
@@ -99,6 +123,12 @@ namespace Kerbcast
         private const int BPanSeq = HeaderSize + 44;
         private const int BFovSeq = HeaderSize + 48;
         private const int BViewerLevel = HeaderSize + 52;
+        private const int BTrackMode = HeaderSize + 56;
+        // track_seq (+60): FIXED field (always read, like BPanSeq/BFovSeq). The
+        // sidecar bumps it on any authoritative track_mode change; we apply the
+        // control-block track_mode only when it moves (edge-trigger), so a stale
+        // flush can't revert a kOS-set mode. Append -> no LayoutVersion bump.
+        private const int BTrackSeq = HeaderSize + 60;
 
         // fields_present bits — one per Option/Vec field.
         public const uint FpLayers = 1u << 0;
@@ -111,6 +141,7 @@ namespace Kerbcast
         public const uint FpPanPitchRate = 1u << 7;
         public const uint FpZoomRate = 1u << 8;
         public const uint FpViewerLevel = 1u << 9;
+        public const uint FpTrackMode = 1u << 10;
 
         private readonly MemoryMappedFile _mmf;
         private readonly MemoryMappedViewAccessor _view;
@@ -219,6 +250,8 @@ namespace Kerbcast
                 PanSeq = _view.ReadUInt32(BPanSeq),
                 FovSeq = _view.ReadUInt32(BFovSeq),
                 ViewerLevel = (present & FpViewerLevel) != 0 ? _view.ReadUInt32(BViewerLevel) : (uint?)null,
+                TrackMode = (present & FpTrackMode) != 0 ? _view.ReadUInt32(BTrackMode) : (uint?)null,
+                TrackSeq = _view.ReadUInt32(BTrackSeq),
                 Seq = seq,
             };
         }

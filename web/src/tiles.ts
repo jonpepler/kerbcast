@@ -16,7 +16,7 @@
  * all tiles). Seeding from cameras only happens on the first visit (key absent).
  */
 
-import { CameraLifecycle } from "@ksp-gonogo/kerbcast";
+import { CameraKind, CameraLifecycle } from "@ksp-gonogo/kerbcast";
 import type { CameraState } from "@ksp-gonogo/kerbcast";
 
 export interface Tile {
@@ -182,6 +182,36 @@ export function reconcileTiles(
   }
 
   return changed ? next : tiles;
+}
+
+/**
+ * Evict grid tiles bound to a kerbal-kind (face) camera.
+ *
+ * When crew-merge is OFF, kerbal faces live in the crew bar, not the grid. But
+ * a kerbal tile persisted while merge was ON (kerbals ARE grid tiles then)
+ * survives the flip to merge-off and keeps rendering the face in the grid,
+ * duplicating what the crew bar already shows. This drops those stranded tiles.
+ *
+ * `cameras` must be the UNFILTERED camera list: the merge-off list has kerbal
+ * cams stripped, so a filtered list can't tell a kerbal tile from an unknown
+ * one. Only tiles whose flightId maps to a live kerbal-kind camera are dropped;
+ * empty slots (flightId === null), part tiles, and tiles pointing at ids not in
+ * the list (unknown, possibly reconnecting) are all kept.
+ *
+ * Surviving tiles keep their object identity (filter preserves refs), so part
+ * feeds never remount. Returns the same array reference when nothing is pruned
+ * (safe for React state comparison; matches reconcileTiles/removeAllLostCameras).
+ */
+export function pruneCrewTiles(
+  tiles: Tile[],
+  cameras: Pick<CameraState, "flightId" | "kind">[],
+): Tile[] {
+  const kerbalIds = new Set(
+    cameras.filter((c) => c.kind === CameraKind.Kerbal).map((c) => c.flightId),
+  );
+  if (kerbalIds.size === 0) return tiles;
+  const next = tiles.filter((t) => t.flightId === null || !kerbalIds.has(t.flightId));
+  return next.length === tiles.length ? tiles : next;
 }
 
 /**

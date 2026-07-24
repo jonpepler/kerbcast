@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import { X } from "lucide-react";
 import styled from "styled-components";
-import type { ThemePreference } from "./settings";
+import type { CrewBarPlacement, ThemePreference } from "./settings";
 
 interface SettingsProps {
   theme: ThemePreference;
@@ -9,10 +9,14 @@ interface SettingsProps {
   /** Effective (resolved) value of the show-static setting. */
   showStatic: boolean;
   showPerfWarnings: boolean;
+  crewPlacement: CrewBarPlacement;
+  crewMerge: boolean;
   onThemeChange: (t: ThemePreference) => void;
   onDebugChange: (enabled: boolean) => void;
   onShowStaticChange: (enabled: boolean) => void;
   onShowPerfWarningsChange: (enabled: boolean) => void;
+  onCrewPlacementChange: (placement: CrewBarPlacement) => void;
+  onCrewMergeChange: (merge: boolean) => void;
   onClose: () => void;
 }
 
@@ -21,10 +25,14 @@ export function Settings({
   debug,
   showStatic,
   showPerfWarnings,
+  crewPlacement,
+  crewMerge,
   onThemeChange,
   onDebugChange,
   onShowStaticChange,
   onShowPerfWarningsChange,
+  onCrewPlacementChange,
+  onCrewMergeChange,
   onClose,
 }: SettingsProps): React.JSX.Element {
   const panelRef = useRef<HTMLDivElement>(null);
@@ -98,6 +106,35 @@ export function Settings({
             onChange={(e) => onShowPerfWarningsChange(e.target.checked)}
             style={{ accentColor: "var(--kc-accent)", width: "1rem", height: "1rem" }}
           />
+        </FieldRow>
+
+        <SectionLabel style={{ marginTop: "0.75rem" }}>Crew</SectionLabel>
+
+        <FieldRow>
+          <div>
+            <FieldLabel htmlFor="kc-crew-merge-toggle">Merge crew into the camera list</FieldLabel>
+            <FieldHint>Show crew as ordinary camera tiles instead of a separate crew bar</FieldHint>
+          </div>
+          <input
+            id="kc-crew-merge-toggle"
+            type="checkbox"
+            checked={crewMerge}
+            onChange={(e) => onCrewMergeChange(e.target.checked)}
+            style={{ accentColor: "var(--kc-accent)", width: "1rem", height: "1rem" }}
+          />
+        </FieldRow>
+
+        <FieldRow>
+          <FieldLabel htmlFor="kc-crew-placement-select">Crew bar position</FieldLabel>
+          <NativeSelect
+            id="kc-crew-placement-select"
+            value={crewPlacement}
+            disabled={crewMerge}
+            onChange={(e) => onCrewPlacementChange(e.target.value as CrewBarPlacement)}
+          >
+            <option value="row">Bottom row</option>
+            <option value="column">Side column</option>
+          </NativeSelect>
         </FieldRow>
 
         <SectionLabel style={{ marginTop: "0.75rem" }}>Developer</SectionLabel>

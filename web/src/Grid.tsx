@@ -18,10 +18,13 @@ import {
   toggleSpotlight,
   updateTile,
 } from "./tiles";
-import { CameraLifecycle } from "@ksp-gonogo/kerbcast";
+import { CameraKind, CameraLifecycle } from "@ksp-gonogo/kerbcast";
 import type { Tile as TileData } from "./tiles";
 
 interface GridProps {
+  /** When true, kerbal face cams are regular grid cameras (merged). When false
+   *  they are filtered out (shown only in the crew bar). */
+  mergeCrew: boolean;
   tiles: TileData[];
   onTilesChange: (tiles: TileData[]) => void;
   showDebugInfo: boolean;
@@ -30,8 +33,13 @@ interface GridProps {
 
 const GAP = 16; // 1rem; keep in sync with Root `gap`
 
-export function Grid({ tiles, onTilesChange, showDebugInfo, showStatic }: GridProps): React.JSX.Element {
-  const cameras = useKerbcastCameras();
+export function Grid({ mergeCrew, tiles, onTilesChange, showDebugInfo, showStatic }: GridProps): React.JSX.Element {
+  // Merge OFF: kerbal face cams live in the crew bar, so the grid's seeding /
+  // add-all / missing-count / reconcile never pull one in. Merge ON: kerbal cams
+  // are regular grid cameras, indistinguishable from part cams. Part-camera grid
+  // behaviour is unchanged either way.
+  const all = useKerbcastCameras();
+  const cameras = mergeCrew ? all : all.filter((c) => c.kind === CameraKind.Part);
   const [showPerfNote, setShowPerfNote] = useState(false);
 
   const commit = (next: TileData[]) => {
@@ -158,6 +166,7 @@ export function Grid({ tiles, onTilesChange, showDebugInfo, showStatic }: GridPr
           spotlit={tile.spotlit}
           variant={spotlightActive ? "cell" : "grid"}
           spotlightActive={spotlightActive}
+          mergeCrew={mergeCrew}
           showDebugInfo={showDebugInfo}
           showStatic={showStatic}
           onSelectCamera={(fid) => handleSelectCamera(i, fid)}

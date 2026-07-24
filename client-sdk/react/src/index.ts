@@ -10,16 +10,23 @@
 export {
   KerbcastProvider,
   createClientSubscriptions,
+  createClientDisplaySizes,
   useKerbcastClient,
   useKerbcastSubscriptions,
+  useKerbcastDisplaySizes,
 } from "./context";
-export type { KerbcastProviderProps, KerbcastSubscriptions } from "./context";
+export type {
+  KerbcastProviderProps,
+  KerbcastSubscriptions,
+  KerbcastDisplaySizes,
+} from "./context";
 
 // Hooks
 export { useKerbcastCameras } from "./hooks/useKerbcastCameras";
 export { useKerbcastStream } from "./hooks/useKerbcastStream";
 export { useKerbcastClock } from "./hooks/useKerbcastClock";
 export { useKerbcastInFlight } from "./hooks/useKerbcastInFlight";
+export { useReportDisplaySize } from "./hooks/useReportDisplaySize";
 
 // Shared standby glyph (used by CameraFeed + downstream dashboards)
 export { StandbyIcon } from "./StandbyIcon";
@@ -40,3 +47,7 @@ export type {
   CameraStreamHook,
   FeedAction,
 } from "./CameraFeed";
+
+// KerbalFaceFeed — shared single-kerbal-face primitive
+export { KerbalFaceFeed } from "./KerbalFaceFeed";
+export type { KerbalFaceFeedProps, KerbalFeedState } from "./KerbalFaceFeed";

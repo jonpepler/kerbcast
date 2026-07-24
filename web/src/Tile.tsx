@@ -4,6 +4,7 @@ import {
   useKerbcastCameras,
 } from "@ksp-gonogo/kerbcast-react";
 import type { FeedAction } from "@ksp-gonogo/kerbcast-react";
+import { CameraKind } from "@ksp-gonogo/kerbcast";
 import { Check, ListPlus, ListX, Pencil, Pin, PinOff, Plus, Trash2, WifiOff, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import styled from "styled-components";
@@ -28,6 +29,9 @@ interface TileProps {
   variant?: TileVariant;
   /** True when any tile is spotlit (drives spotlight grid placement). */
   spotlightActive?: boolean;
+  /** When false (crew NOT merged), the camera picker offers ONLY part cams, so
+   *  crew cams stay in the crew bar and can't be selected into a part tile. */
+  mergeCrew: boolean;
   onSelectCamera: (flightId: number) => void;
   onRemove: () => void;
   onToggleSpotlight: () => void;
@@ -41,6 +45,7 @@ export function Tile({
   spotlit,
   variant = "grid",
   spotlightActive = false,
+  mergeCrew,
   onSelectCamera,
   onRemove,
   onToggleSpotlight,
@@ -195,10 +200,12 @@ export function Tile({
           showStatic={showStatic}
           showStandbyIcon={false}
           onSelectCamera={onSelectCamera}
+          cameraFilter={mergeCrew ? undefined : (c) => c.kind === CameraKind.Part}
           onDisplayedCameraChange={setDisplayedFlightId}
           enableFullscreen
           enablePictureInPicture
           enableQualityControl
+          enableTracking
           actions={actions}
           trailingActions={trailingActions}
         />

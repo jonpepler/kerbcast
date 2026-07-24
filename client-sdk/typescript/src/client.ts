@@ -7,6 +7,7 @@ import type {
   QualityPreset,
   ServerMessage,
   SettingsStatePayload,
+  TrackMode,
 } from "./__generated__/types";
 import { CameraLifecycle, ErrorSource } from "./__generated__/types";
 import { type NoisePipeline, tryCreateNoisePipeline } from "./noise";
@@ -1038,6 +1039,29 @@ export class KerbcastClient extends TypedEmitter<KerbcastClientEvents> {
    */
   async unsubscribe(flightId: number): Promise<void> {
     await this._send({ type: "unsubscribe", content: { flightId } });
+  }
+
+  /**
+   * Report this consumer's own displayed pixel size for a camera, driving the
+   * sidecar's auto-resolution. Unlike `setRenderSize` (an operator command that
+   * sets the shared render size directly, last-writer-wins), this is a
+   * per-consumer input the sidecar aggregates MAX-across-consumers, so a big
+   * spotlight bumps the stream up while tiny avatars leave it small. The SDK's
+   * feed primitives self-measure and call this; consumers do not report by hand.
+   */
+  async reportDisplaySize(flightId: number, width: number, height: number): Promise<void> {
+    await this._send({ type: "report-display-size", content: { flightId, width, height } });
+  }
+
+  /**
+   * Ask a pan+zoom camera to auto-track a moving vessel (or stop). Sends the
+   * intent; the sidecar holds the chosen mode per camera and publishes it in
+   * `CameraState.trackMode`, so the UI must reflect that server-confirmed value
+   * rather than this call (two browsers stay in agreement). While tracking, the
+   * camera also auto-zooms; `TrackMode.None` hands aiming/zoom back.
+   */
+  async setTrackTarget(flightId: number, mode: TrackMode): Promise<void> {
+    await this._send({ type: "set-track-target", content: { flightId, mode } });
   }
 
   /**

@@ -518,6 +518,7 @@ async fn broadcast_destroyed_cameras(
             kind: cam.kind,
             kerbal_persistent_id: cam.kerbal_persistent_id,
             crew_location: cam.crew_location(),
+            track_mode: cam.track_mode(),
             part_name: cam.part_name.clone(),
             part_title: cam.part_title.clone(),
             camera_name: cam.camera_name.clone(),
